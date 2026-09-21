@@ -1,0 +1,125 @@
+@font-face {
+	font-family: "Manrope";
+	src: url("/fonts/manrope-latin-variable.woff2") format("woff2-variations");
+	font-style: normal;
+	font-weight: 200 800;
+	font-display: swap;
+}
+
+:root {
+	--font-ui: "Manrope", "SF Pro Text", "Segoe UI Variable Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	--font-display: "Manrope", "SF Pro Display", "Segoe UI Variable Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	font-family: var(--font-ui);
+	font-synthesis: none;
+	color: #e7e9ea;
+	background: #08090b;
+	color-scheme: dark;
+	--surface-0: #07090c;
+	--surface-1: #0c0f13;
+	--surface-2: #13171c;
+	--surface-3: #1b2026;
+	--surface-inset: #050608;
+	--line-subtle: rgba(236, 241, 245, 0.09);
+	--line-strong: rgba(236, 241, 245, 0.18);
+	--text-strong: #f5f7f8;
+	--text-soft: #ccd2d7;
+	--text-muted: #909aa3;
+	--text-dim: #66707a;
+	--accent: #9ec6d6;
+	--accent-soft: #d8e5e9;
+	--material-window: rgba(8, 10, 13, 0.7);
+	--material-content: rgba(9, 11, 14, 0.5);
+	--material-chrome: rgba(18, 21, 26, 0.52);
+	--material-control: rgba(38, 43, 50, 0.52);
+	--material-border: rgba(255, 255, 255, 0.1);
+	--material-highlight: rgba(255, 255, 255, 0.045);
+	--success: var(--accent);
+	--warning: #aaa48d;
+	--danger: #b88984;
+	--radius-sm: 6px;
+	--radius-md: 11px;
+	--radius-lg: 18px;
+	--content-gutter: clamp(20px, 4vw, 64px);
+	--content-width: 1600px;
+	--shadow-soft: 0 18px 60px rgba(0, 0, 0, 0.32);
+}
+
+* { box-sizing: border-box; }
+
+html {
+	min-width: 320px;
+	background: var(--surface-0);
+	text-rendering: optimizeLegibility;
+}
+
+body {
+	min-width: 320px;
+	min-height: 100vh;
+	margin: 0;
+	background: var(--surface-0);
+	color: var(--text-soft);
+	font-size: 16px;
+	font-weight: 480;
+	letter-spacing: -0.012em;
+	line-height: 1.5;
+	overflow-x: hidden;
+	font-variant-numeric: tabular-nums;
+}
+
+button,
+input,
+select { font: inherit; }
+
+button,
+a,
+input,
+select { -webkit-tap-highlight-color: transparent; }
+
+button { color: inherit; }
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 3px;
+}
+
+::selection { color: var(--surface-0); background: var(--accent-soft); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--surface-0); }
+::-webkit-scrollbar-thumb { border: 3px solid var(--surface-0); border-radius: 4px; background: var(--surface-3); }
+::-webkit-scrollbar-thumb:hover { background: #2b333a; }
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after {
+		scroll-behavior: auto !important;
+		transition-duration: 0.001ms !important;
+		animation-duration: 0.001ms !important;
+		animation-iteration-count: 1 !important;
+	}
+}
+
+@media (prefers-reduced-transparency: reduce) {
+	:root {
+		--surface-0: #08090b;
+		--surface-1: #0d0f12;
+		--material-window: #08090b;
+		--material-content: #0b0d10;
+		--material-chrome: #111419;
+		--material-control: #20242a;
+	}
+}
