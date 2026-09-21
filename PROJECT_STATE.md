@@ -3,7 +3,7 @@
 Current phase: Phase 1 — Browser visual prototype  
 Current milestone: Canonical Home v2 and shared material shell  
 Status: Implemented and under visual review; not user-approved yet  
-Repository state: Uncommitted working tree; no initial repository commit exists
+Repository state: Git repository initialized on `master`; initial implementation snapshot committed
 
 ## Current implementation
 
