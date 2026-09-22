@@ -1,5 +1,20 @@
 # Project State
 
+Current phase: Windows desktop foundation
+
+Current milestone: Tauri shell integration of the existing UI
+
+Status: Static frontend validated; native compilation blocked by this host's virtual-memory limit
+Branch: `codex/desktop-shell`
+
+The current Svelte UI and CSS are preserved. SvelteKit now produces a local static SPA for Tauri 2/WebView2, including dynamic title routes through a fallback page. The Windows shell is configured with Mica Dark where available, a CSS fallback, a 12px drag region and automatic window-state persistence. A small Rust command provides desktop bootstrap information after UI mount.
+
+`npm run check` reports 0 errors and warnings; `npm run build` succeeds. WebView2, MSVC and Rust are installed. Full `cargo check`/`cargo test` reached the upstream `windows` crate, then `rustc` exhausted virtual memory on this host (about 2 GB of commit headroom and a fixed 5 GB page file). No native executable has opened, so startup, Mica, dragging and RAM are still unverified. The catalog and Player remain fixture-backed visual prototypes.
+
+Next: compile and open `npm run desktop:dev` with more virtual-memory headroom, inspect the unchanged Home, measure startup/idle RAM, then implement a real folder → SQLite → probe → direct-play slice. Browser-first rollout and the Qwik comparison are deferred by ADR-010.
+
+## Browser prototype record (2026-09-20)
+
 Current phase: Phase 1 — Browser visual prototype  
 Current milestone: Phase 1 visual surface family pass
 Status: Implemented and validated; stopped at the reserved visual review gate

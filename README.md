@@ -1,10 +1,10 @@
 # Unnamed Media Platform
 
-Browser-first prototype for a self-hosted media library and player. The product name is intentionally unset; all visible application copy is English.
+Windows-first desktop media library in progress. The product name is intentionally unset; all visible application copy is English.
 
 ## Current phase
 
-Phase 1: visual and interaction prototype in Svelte 5/SvelteKit.
+Desktop foundation: reuse the existing Svelte 5/SvelteKit UI in a Tauri 2/WebView2 shell. The catalog and Player are still fixture-backed visual prototypes.
 
 The current Home and shared shell are the canonical visual reference. Read these files before changing UI:
 
@@ -23,7 +23,7 @@ C:\Users\muris\OneDrive\Imagens\Documentos\ChatGPT\Bountys
 
 ```sh
 npm install
-npm run dev
+npm run desktop:dev
 ```
 
 Validation:
@@ -31,6 +31,9 @@ Validation:
 ```sh
 npm run check
 npm run build
+npm run desktop:build
 ```
+
+`npm run build` creates the local static frontend in `build/`; the desktop command also compiles Rust and packages the Windows application. The browser preview remains available with `npm run dev` at `http://127.0.0.1:1420/`. See `PROJECT_STATE.md` for the native-build limitation on this machine.
 
 Do not add product branding, a general-purpose UI kit, eager player loading or large scrolling live-blur surfaces without an accepted architectural decision.

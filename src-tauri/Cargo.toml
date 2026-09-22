@@ -1,0 +1,25 @@
+[package]
+name = "media-platform-desktop"
+version = "0.1.0"
+description = "A fast local media library and player"
+edition = "2021"
+
+[lib]
+name = "media_platform_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-window-state = "2"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false

@@ -1,10 +1,11 @@
 <script lang="ts">
-	import { setContext } from 'svelte';
+	import { onMount, setContext } from 'svelte';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import PlayerHost from '$lib/components/PlayerHost.svelte';
 	import { featuredAmbient } from '$lib/data';
 	import { PLAYER_CONTEXT } from '$lib/player-context';
+	import { readDesktopBootstrap } from '$lib/platform/desktop';
 	import type { IconName } from '$lib/components/Icon.svelte';
 	import type { MediaItem } from '$lib/types';
 	import '../app.css';
@@ -67,6 +68,16 @@
 
 	const mobileNavItems = [...navItems, searchItem];
 
+	onMount(() => {
+		void readDesktopBootstrap()
+			.then((bootstrap) => {
+				if (!bootstrap) return;
+				document.documentElement.dataset.runtime = bootstrap.platform;
+				document.documentElement.dataset.appVersion = bootstrap.version;
+			})
+			.catch((error) => console.warn('Desktop bootstrap unavailable', error));
+	});
+
 </script>
 
 <svelte:head>
@@ -74,7 +85,7 @@
 	<meta name="description" content="A focused media library for browsing and playback." />
 </svelte:head>
 
-<div class="app-stage" style={`--shell-backdrop: url("${featuredAmbient}")`}>
+<div class="app-stage" data-tauri-drag-region style={`--shell-backdrop: url("${featuredAmbient}")`}>
 	<div class="app-shell">
 		<aside class="sidebar" aria-label="Application navigation">
 			<div class="library-context">

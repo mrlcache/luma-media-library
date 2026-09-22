@@ -80,3 +80,12 @@ Decision: Preserve the lazy `PlayerHost` boundary, existing playback controls, r
 Evidence: Desktop and 390×844 captures in `.artifacts/ui-captures-player`; browser assertions confirm no player resource before open, resource load after open, zero stage radius/border, play/pause, Escape close, mobile no-overflow and no console errors.
 Consequences: Catalog routes remain free of eager player loading, while playback has a stronger cinematic transition from the Home and Details actions. The current frame is still a visual prototype; real media transport remains outside this milestone.
 Revisit trigger: User visual review, a real playback/media contract, device performance evidence or accessibility testing of the transient controls.
+
+## ADR-010 — Move to a Windows-first desktop application
+Date: 2026-09-22
+Status: accepted for implementation; native runtime validation pending
+Context: The user explicitly ended the browser-first rollout and authorized translating the existing UI into an application while retaining its current appearance and speed.
+Decision: Keep Svelte 5/SvelteKit as a local static SPA inside Tauri 2/WebView2. Use Rust for privileged local media work behind narrow commands. Preserve the current UI and postpone visual redesign. Configure a transparent Windows shell with Mica Dark when available, a CSS fallback, and window-state persistence. Defer the Qwik benchmark and public web deployment.
+Evidence: The existing UI passes `npm run check` and static `npm run build`. WebView2, Rust and MSVC are available. Native build was attempted but this host exhausted virtual memory while compiling the upstream `windows` crate, so startup/material/RAM claims are not yet verified.
+Consequences: SSR is disabled for the installed frontend and dynamic routes use a static SPA fallback. Media indexing/playback are not yet implemented. This decision supersedes browser-first sequencing in the second-brain plan and Luna handoff.
+Revisit trigger: Measured startup, RAM, video compatibility or old-device behavior demonstrates that WebView2/Tauri cannot meet the agreed targets.
