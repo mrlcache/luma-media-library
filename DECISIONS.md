@@ -44,3 +44,39 @@ Decision: Use a 224px lighter material sidebar on desktop, a darker cinematic wo
 Evidence: The new rendered Home visibly separates sidebar, chrome, hero and shelf plane at desktop and 390×844. The first useful shelf remains in the initial viewport. Live blur is confined to fixed shell/control layers.
 Consequences: ADR-004's horizontal shell is obsolete. Future routes must reuse the v2 shell, font, icon wrapper, material hierarchy and focus behavior. The two small dependencies add a maintained icon set and one approximately 25 KiB WOFF2 font asset; licenses are recorded in `THIRD_PARTY_NOTICES.md`.
 Revisit trigger: User visual review, measured low-end GPU cost, accessibility conflict or a native desktop material prototype demonstrating a required structural change.
+
+## ADR-006 — Translate Library/Search as a quiet catalog surface
+Date: 2026-09-20
+Status: provisional pending user review
+Context: Library and Search were still using the pre-v2 dashboard generation: uppercase collection labels, helper prose, a segmented toolbar, filter-status copy and permanent Movie/Series badges on every poster.
+Decision: Keep the existing routes, deterministic media data, search/filter/sort behavior and virtualized rendering, but use a quiet title/count header, line-based inline controls, a minimal result line and a catalog PosterCard variant without type badges. Preserve the shared v2 shell, Manrope typography, Phosphor icons and material hierarchy. Let the mobile surface begin on the workspace canvas without compensating for a duplicate top utility bar.
+Evidence: Desktop and 390×844 captures in `.artifacts/ui-captures-library-search`; browser assertions confirm 1 search result for “ordinary”, 5 Series results, empty/reset behavior, no horizontal overflow, no catalog badges, no player dialog/chunk on catalog load, and no console/HTTP errors. `npm run check` and `npm run build` pass.
+Consequences: Library/Search now belong to the Home visual family without changing Home, Details, Settings or Player styling. `PosterCard` supports scoped `home` and `catalog` variants while the default variant remains available to legacy/detail surfaces. The grid remains bounded and scrollable rather than mounting an unbounded library.
+Revisit trigger: User review identifies a visual mismatch, a real-device accessibility/performance measurement exposes a defect, or the future backend contract requires replacing local filtering with server queries.
+
+## ADR-007 — Translate Details/Episodes as a canvas-led content surface
+Date: 2026-09-20
+Status: provisional pending user review
+Context: Details still used a rounded hero panel, uppercase kicker, gold interaction styling, helper note and dense episode rows from the pre-v2 visual generation.
+Decision: Preserve route data, bookmark state, season control, episode actions and lazy playback, but move the backdrop into a borderless canvas hero, retain the poster as an editorial anchor, use the Home typography/material grammar, remove redundant helper copy, compress Episodes into quiet rows and use the catalog poster variant for related content. Tune mobile independently on the canvas without a secondary top utility bar.
+Evidence: Desktop and 390×844 captures in `.artifacts/ui-captures-details`; browser assertions confirm borderless hero, four episode rows, no related badges, bookmark toggle, season selection, episode player open/close, no mobile overflow and no console/HTTP errors. `npm run check` passes after the implementation.
+Consequences: Details belongs to the same visual family as Home and Library/Search without modifying the Player implementation. Episode data still uses the existing fixture for every season until real backend season data exists.
+Revisit trigger: User review, a real season-data contract, or measured accessibility/performance evidence requiring a structural change.
+
+## ADR-008 — Translate Settings as native grouped lists
+Date: 2026-09-20
+Status: provisional pending user review
+Context: Settings still used rounded dashboard cards, numbered section labels and generic panel treatment that did not belong to the Home/sidebar material system.
+Decision: Preserve the existing Playback, Appearance and local-library settings and their state bindings, but render them as quiet grouped lists with native separators, restrained values, accessible toggles and a small functional scan action. Remove the uppercase workspace kicker, decorative indexes, card containers and gold toggle state.
+Evidence: Desktop and 390×844 captures in `.artifacts/ui-captures-settings`; browser assertions confirm three grouped lists, zero legacy setting cards, working autoplay toggle state, no horizontal overflow, reduced-motion fallback and no console errors.
+Consequences: Settings now reads as part of the same dark workspace plane as Home, Library/Search and Details rather than as a SaaS control panel. The local server data remains fixture-backed until the backend contract exists.
+Revisit trigger: User visual review, a real server/settings contract or accessibility evidence requiring a different grouping.
+
+## ADR-009 — Keep Player edge-to-edge and transient
+Date: 2026-09-20
+Status: provisional pending user review
+Context: The preview player still presented a rounded, blurred stage with uppercase preview language and a generic modal-card silhouette.
+Decision: Preserve the lazy `PlayerHost` boundary, existing playback controls, range inputs, Escape close behavior and accessibility labels, but make the player an edge-to-edge viewport surface. Use the artwork as the frame, remove fake readiness copy, keep controls transient and material, and tune mobile independently without changing the app shell.
+Evidence: Desktop and 390×844 captures in `.artifacts/ui-captures-player`; browser assertions confirm no player resource before open, resource load after open, zero stage radius/border, play/pause, Escape close, mobile no-overflow and no console errors.
+Consequences: Catalog routes remain free of eager player loading, while playback has a stronger cinematic transition from the Home and Details actions. The current frame is still a visual prototype; real media transport remains outside this milestone.
+Revisit trigger: User visual review, a real playback/media contract, device performance evidence or accessibility testing of the transient controls.

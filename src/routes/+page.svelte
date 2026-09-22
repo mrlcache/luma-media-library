@@ -24,11 +24,11 @@
 			</div>
 			<p class="featured__synopsis">{featured.synopsis}</p>
 			<div class="featured__actions">
-				<button class="button button--primary" onclick={() => player.open(featured)}>
+				<button class="button button--primary" style="corner-shape: squircle" onclick={() => player.open(featured)}>
 					<Icon name="play" size={16} weight="fill" />
 					Play
 				</button>
-				<a class="button button--secondary" href={`/title/${featured.id}`}>
+				<a class="button button--secondary" style="corner-shape: squircle" href={`/title/${featured.id}`}>
 					<Icon name="info" size={18} weight="bold" />
 					Details
 				</a>
@@ -36,7 +36,7 @@
 		</div>
 	</section>
 
-	<div class="home-content">
+	<div class="home-content" style="corner-shape: squircle">
 		<div class="home-section home-section--first">
 			<MediaRow title="Continue watching" items={continueWatching} showProgress />
 		</div>
@@ -195,12 +195,16 @@
 	.section-link { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--text-muted); font-size: 0.71rem; font-weight: 590; text-decoration: none; transition: color 140ms ease; }
 	.section-link:hover { color: var(--text-strong); }
 	.poster-grid-preview {
+		--hover-clearance: 14px;
+		--hover-inline-clearance: 14px;
 		display: grid;
 		grid-auto-columns: clamp(142px, 12.3vw, 198px);
 		grid-auto-flow: column;
 		gap: 17px;
 		overflow-x: auto;
-		padding: 3px 3px 16px;
+		margin: calc(-1 * var(--hover-clearance)) calc(-1 * var(--hover-inline-clearance));
+		padding: calc(3px + var(--hover-clearance)) calc(3px + var(--hover-inline-clearance)) calc(16px + var(--hover-clearance));
+		scroll-padding-inline: calc(3px + var(--hover-inline-clearance));
 		scrollbar-width: none;
 		scroll-snap-type: x proximity;
 	}
@@ -216,7 +220,7 @@
 			background-position: 60% center;
 			filter: saturate(0.83) contrast(1.04);
 		}
-		.featured__content { min-height: clamp(445px, 61svh, 540px); padding: 100px 18px 48px; }
+		.featured__content { min-height: clamp(445px, 61svh, 540px); padding: 48px 18px 48px; }
 		.featured h1 { max-width: 94%; font-size: clamp(2.75rem, 12vw, 3.6rem); font-weight: 650; line-height: 0.94; }
 		.featured__meta { margin-top: 14px; font-size: 0.67rem; }
 		.featured__meta span:nth-child(4) { display: none; }

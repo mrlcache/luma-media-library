@@ -10,9 +10,9 @@
 	let scrollTop = $state(0);
 	let viewportHeight = $state(620);
 	let columns = $state(5);
-	const rowHeight = 365;
-	const columnGap = 24;
-	const minCardWidth = 142;
+	const rowHeight = 342;
+	const columnGap = 18;
+	const minCardWidth = 146;
 
 	let totalRows = $derived(Math.ceil(items.length / columns));
 	let startRow = $derived(Math.max(0, Math.floor(scrollTop / rowHeight) - 2));
@@ -48,7 +48,7 @@
 		>
 			{#each visibleItems as item, index (item.id)}
 				<div role="listitem" aria-setsize={items.length} aria-posinset={startRow * columns + index + 1}>
-					<PosterCard media={item} />
+				<PosterCard media={item} variant="catalog" />
 				</div>
 			{/each}
 		</div>
@@ -56,8 +56,8 @@
 </div>
 
 <style>
-	.virtual-grid { height: min(68vh, 700px); min-height: 410px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+	.virtual-grid { height: min(69vh, 720px); min-height: 410px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 	.virtual-grid__track { position: relative; width: 100%; }
-	.virtual-grid__window { position: absolute; top: 0; right: 0; left: 0; display: grid; gap: 28px 24px; padding: 0 10px 36px 2px; }
-	@media (max-width: 760px) { .virtual-grid { height: min(70vh, 620px); } .virtual-grid__window { gap: 22px 14px; padding-right: 6px; } }
+	.virtual-grid__window { position: absolute; top: 0; right: 0; left: 0; display: grid; gap: 18px; padding: 0 8px 36px 1px; }
+	@media (max-width: 760px) { .virtual-grid { height: min(70vh, 620px); } .virtual-grid__window { gap: 15px 14px; padding-right: 3px; } }
 </style>

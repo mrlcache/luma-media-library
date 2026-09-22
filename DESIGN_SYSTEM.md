@@ -88,12 +88,12 @@ Rules:
 - Primary destinations: Home, Library, Movies, Series.
 - Bottom: Settings and the current profile. No server-ready status, fake analytics, notification bell or admin sections.
 - Active navigation is a soft light material with a filled icon; it must not rely on a colored line alone.
-- Main workspace is darker than the sidebar and uses a compact 58px top strip.
+- Main workspace is darker than the sidebar and begins directly below the shell frame; do not add a second application header for page location or profile controls.
 
 ### Mobile
 
 - Do not compress the desktop sidebar.
-- Use an artwork-overlay top utility bar and a floating, blurred bottom destination bar.
+- Use the full workspace canvas and a floating, blurred bottom destination bar; do not add a secondary top utility bar.
 - The Home composition is independently tuned for 390px width.
 - Touch behavior never depends on hover-only controls.
 

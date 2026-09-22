@@ -67,15 +67,6 @@
 
 	const mobileNavItems = [...navItems, searchItem];
 
-	function pageLabel(url: URL) {
-		if (url.pathname === '/') return 'Home';
-		if (url.pathname === '/search') return 'Search';
-		if (url.pathname === '/settings') return 'Settings';
-		if (url.pathname.startsWith('/title/')) return 'Details';
-		if (url.searchParams.get('type') === 'movie') return 'Movies';
-		if (url.searchParams.get('type') === 'series') return 'Series';
-		return 'Library';
-	}
 </script>
 
 <svelte:head>
@@ -98,6 +89,7 @@
 				class="sidebar-search"
 				class:active={searchItem.isActive(page.url)}
 				href={searchItem.href}
+				style="corner-shape: squircle"
 				aria-current={searchItem.isActive(page.url) ? 'page' : undefined}
 			>
 				<Icon name="search" size={17} weight="bold" />
@@ -111,6 +103,7 @@
 						class="sidebar-link"
 						class:active={item.isActive(page.url)}
 						href={item.href}
+						style="corner-shape: squircle"
 						aria-current={item.isActive(page.url) ? 'page' : undefined}
 					>
 						<Icon name={item.icon} size={19} weight={item.isActive(page.url) ? 'fill' : 'regular'} />
@@ -129,7 +122,7 @@
 					<Icon name="settings" size={19} weight={settingsItem.isActive(page.url) ? 'fill' : 'regular'} />
 					<span>Settings</span>
 				</a>
-				<button class="profile-row" type="button" aria-label="Open profile menu">
+				<button class="profile-row" type="button" style="corner-shape: squircle" aria-label="Open profile menu">
 					<span class="profile-avatar">M</span>
 					<span class="profile-copy"><strong>Murilo</strong><small>Profile</small></span>
 					<Icon name="more" size={18} weight="bold" />
@@ -138,16 +131,6 @@
 		</aside>
 
 		<div class="workspace">
-			<header class="topbar">
-				<strong>{pageLabel(page.url)}</strong>
-				<div class="topbar-actions">
-					<a class="mobile-search" href="/search" aria-label="Search library">
-						<Icon name="search" size={19} weight="bold" />
-					</a>
-					<button class="profile-button" type="button" aria-label="Open profile menu">M</button>
-				</div>
-			</header>
-
 			<main class="content-area"><div class="route-content">{@render children()}</div></main>
 		</div>
 
@@ -198,16 +181,36 @@
 	}
 
 	.sidebar {
+		position: relative;
+		isolation: isolate;
+		overflow: hidden;
 		display: flex;
 		min-height: 0;
 		padding: 18px 13px 14px;
 		flex-direction: column;
-		border-right: 1px solid rgba(255, 255, 255, 0.105);
-		background: rgba(46, 51, 58, 0.63);
-		box-shadow: inset -1px 0 rgba(0, 0, 0, 0.1), inset 1px 0 rgba(255, 255, 255, 0.04);
-		-webkit-backdrop-filter: blur(44px) saturate(155%);
-		backdrop-filter: blur(44px) saturate(155%);
+		border-right: 1px solid rgba(218, 231, 239, 0.12);
+		background:
+			radial-gradient(ellipse 130% 48% at 8% -8%, rgba(181, 216, 232, 0.13), transparent 48%),
+			radial-gradient(ellipse 104% 38% at 86% 104%, rgba(91, 125, 151, 0.12), transparent 52%),
+			linear-gradient(158deg, rgba(18, 23, 29, 0.98) 0%, rgba(4, 6, 9, 0.985) 50%, rgba(9, 12, 16, 0.99) 100%);
+		box-shadow:
+			inset -1px 0 rgba(0, 0, 0, 0.44),
+			inset 1px 0 rgba(255, 255, 255, 0.06),
+			inset 0 1px rgba(255, 255, 255, 0.09);
+		-webkit-backdrop-filter: blur(44px) saturate(135%);
+		backdrop-filter: blur(44px) saturate(135%);
 	}
+
+	.sidebar::before {
+		position: absolute;
+		inset: 0;
+		z-index: 0;
+		background: linear-gradient(116deg, rgba(255, 255, 255, 0.11) -12%, transparent 28%, transparent 68%, rgba(172, 206, 220, 0.035) 100%);
+		content: '';
+		pointer-events: none;
+	}
+
+	.sidebar > * { position: relative; z-index: 1; }
 
 	.library-context {
 		display: flex;
@@ -256,7 +259,8 @@
 	.sidebar-search.active { border-color: rgba(255, 255, 255, 0.16); color: var(--text-strong); background: rgba(10, 13, 17, 0.36); }
 	.sidebar-search kbd { margin-left: auto; color: rgba(225, 230, 235, 0.38); font: 540 0.62rem var(--font-ui); }
 
-	.sidebar-nav { display: grid; gap: 3px; margin-top: 17px; }
+	.sidebar-nav { display: grid; gap: 8px; margin-top: 17px; }
+	.sidebar-nav .sidebar-link { border-radius: 14px; }
 	.sidebar-link {
 		display: flex;
 		align-items: center;
@@ -297,8 +301,7 @@
 		text-align: left;
 	}
 
-	.profile-avatar,
-	.profile-button {
+	.profile-avatar {
 		display: grid;
 		place-items: center;
 		border: 1px solid rgba(255, 255, 255, 0.17);
@@ -318,30 +321,13 @@
 
 	.workspace {
 		display: grid;
-		grid-template-rows: 58px minmax(0, 1fr);
+		grid-template-rows: minmax(0, 1fr);
 		min-width: 0;
 		min-height: 0;
 		background: rgba(5, 7, 10, 0.54);
 		-webkit-backdrop-filter: blur(20px) saturate(125%);
 		backdrop-filter: blur(20px) saturate(125%);
 	}
-
-	.topbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0 22px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.075);
-		background: rgba(13, 16, 20, 0.39);
-		box-shadow: inset 0 1px rgba(255, 255, 255, 0.035);
-		-webkit-backdrop-filter: blur(30px) saturate(140%);
-		backdrop-filter: blur(30px) saturate(140%);
-		z-index: 20;
-	}
-	.topbar > strong { color: rgba(245, 247, 249, 0.88); font-size: 0.79rem; font-weight: 650; letter-spacing: -0.02em; }
-	.topbar-actions { display: flex; align-items: center; gap: 10px; }
-	.mobile-search { display: none; color: var(--text-soft); }
-	.profile-button { width: 31px; height: 31px; padding: 0; cursor: pointer; }
 
 	.content-area { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; }
 	.route-content { min-height: 100%; }
@@ -352,21 +338,6 @@
 		.app-shell { display: block; min-height: 100vh; height: auto; overflow: visible; border: 0; border-radius: 0; box-shadow: none; }
 		.sidebar { display: none; }
 		.workspace { display: block; min-height: 100vh; background: var(--surface-0); backdrop-filter: none; }
-		.topbar {
-			position: absolute;
-			top: 0;
-			right: 0;
-			left: 0;
-			height: 58px;
-			padding: 0 18px;
-			border: 0;
-			background: linear-gradient(180deg, rgba(6, 8, 11, 0.72), transparent);
-			box-shadow: none;
-			backdrop-filter: none;
-		}
-		.topbar > strong { font-size: 0.76rem; }
-		.mobile-search { display: grid; width: 34px; height: 34px; place-items: center; text-decoration: none; }
-		.profile-button { width: 30px; height: 30px; }
 		.content-area { overflow: visible; }
 		.mobile-nav {
 			position: fixed;
@@ -397,11 +368,9 @@
 	@media (prefers-reduced-transparency: reduce) {
 		.sidebar,
 		.workspace,
-		.topbar,
 		.mobile-nav { -webkit-backdrop-filter: none; backdrop-filter: none; }
-		.sidebar { background: #292e34; }
+		.sidebar { background: #07090c; }
 		.workspace { background: #090b0e; }
-		.topbar { background: #111419; }
 		.mobile-nav { background: #22272d; }
 	}
 </style>
