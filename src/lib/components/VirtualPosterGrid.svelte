@@ -13,6 +13,7 @@
 	const rowHeight = 342;
 	const columnGap = 18;
 	const minCardWidth = 146;
+	const hoverClearance = 14;
 
 	let totalRows = $derived(Math.ceil(items.length / columns));
 	let startRow = $derived(Math.max(0, Math.floor(scrollTop / rowHeight) - 2));
@@ -21,9 +22,9 @@
 
 	function updateMetrics() {
 		if (!viewport) return;
-		const width = viewport.clientWidth;
+		const width = viewport.clientWidth - hoverClearance * 2;
 		columns = Math.max(2, Math.floor((width + columnGap) / (minCardWidth + columnGap)));
-		viewportHeight = viewport.clientHeight;
+		viewportHeight = viewport.clientHeight - hoverClearance * 2;
 	}
 
 	function handleScroll(event: Event) {
@@ -56,8 +57,8 @@
 </div>
 
 <style>
-	.virtual-grid { height: min(69vh, 720px); min-height: 410px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+	.virtual-grid { --hover-clearance: 14px; box-sizing: border-box; height: calc(min(69vh, 720px) + var(--hover-clearance) + var(--hover-clearance)); min-height: calc(410px + var(--hover-clearance) + var(--hover-clearance)); margin: calc(-1 * var(--hover-clearance)); padding: var(--hover-clearance); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 	.virtual-grid__track { position: relative; width: 100%; }
 	.virtual-grid__window { position: absolute; top: 0; right: 0; left: 0; display: grid; gap: 18px; padding: 0 8px 36px 1px; }
-	@media (max-width: 760px) { .virtual-grid { height: min(70vh, 620px); } .virtual-grid__window { gap: 15px 14px; padding-right: 3px; } }
+	@media (max-width: 760px) { .virtual-grid { height: calc(min(70vh, 620px) + var(--hover-clearance) + var(--hover-clearance)); } .virtual-grid__window { gap: 15px 14px; padding-right: 3px; } }
 </style>
