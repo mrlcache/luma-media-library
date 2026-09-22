@@ -61,13 +61,15 @@
 
 <style>
 	.home-page {
+		--featured-content-bottom: 64px;
+		--home-content-overlap: 20px;
 		min-height: 100%;
 		background: #080a0d;
 	}
 
 	.featured {
 		position: relative;
-		min-height: clamp(410px, 49svh, 530px);
+		min-height: 0;
 		overflow: hidden;
 		isolation: isolate;
 	}
@@ -88,11 +90,11 @@
 
 	.featured__content {
 		display: grid;
-		align-content: end;
-		min-height: clamp(410px, 49svh, 530px);
+		align-content: start;
+		min-height: 0;
 		max-width: var(--content-width);
 		margin: 0 auto;
-		padding: 76px var(--content-gutter) 64px;
+		padding: calc(var(--featured-content-bottom) - var(--home-content-overlap)) var(--content-gutter) var(--featured-content-bottom);
 	}
 
 	.featured h1 {
@@ -102,7 +104,7 @@
 		font-family: var(--font-display);
 		font-size: clamp(3.25rem, 5vw, 5.2rem);
 		font-weight: 650;
-		letter-spacing: -0.065em;
+		letter-spacing: -0.04em;
 		line-height: 0.94;
 		text-wrap: balance;
 		text-shadow: 0 12px 42px rgba(0, 0, 0, 0.38);
@@ -175,7 +177,7 @@
 	.home-content {
 		position: relative;
 		max-width: var(--content-width);
-		margin: -20px auto 0;
+		margin: calc(-1 * var(--home-content-overlap)) auto 0;
 		padding: 40px var(--content-gutter) 92px;
 		border-top: 1px solid rgba(255, 255, 255, 0.1);
 		border-radius: 22px 22px 0 0;
@@ -212,7 +214,8 @@
 	.poster-grid-preview > :global(*) { scroll-snap-align: start; }
 
 	@media (max-width: 760px) {
-		.featured { min-height: clamp(445px, 61svh, 540px); }
+		.home-page { --featured-content-bottom: 48px; --home-content-overlap: 18px; }
+		.featured { min-height: 0; }
 		.featured__backdrop {
 			background-image:
 				linear-gradient(0deg, rgba(7, 9, 12, 0.97) 0%, rgba(7, 9, 12, 0.64) 35%, rgba(7, 9, 12, 0.06) 73%),
@@ -220,7 +223,7 @@
 			background-position: 60% center;
 			filter: saturate(0.83) contrast(1.04);
 		}
-		.featured__content { min-height: clamp(445px, 61svh, 540px); padding: 48px 18px 48px; }
+		.featured__content { min-height: 0; padding: calc(var(--featured-content-bottom) - var(--home-content-overlap)) 18px var(--featured-content-bottom); }
 		.featured h1 { max-width: 94%; font-size: clamp(2.75rem, 12vw, 3.6rem); font-weight: 650; line-height: 0.94; }
 		.featured__meta { margin-top: 14px; font-size: 0.67rem; }
 		.featured__meta span:nth-child(4) { display: none; }
