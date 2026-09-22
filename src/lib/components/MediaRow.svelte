@@ -49,14 +49,14 @@
 	.media-row__track::-webkit-scrollbar { display: none; }
 	.landscape-card { --art-radius: 12px; position: relative; min-width: 0; scroll-snap-align: start; transform-origin: center bottom; transition: transform 190ms cubic-bezier(0.2, 0.72, 0.2, 1); }
 	.landscape-card__link { display: block; color: inherit; text-decoration: none; }
-	.landscape-card__art { position: relative; isolation: isolate; aspect-ratio: 16 / 9; border-radius: var(--art-radius); background: var(--surface-2); box-shadow: 0 13px 30px rgba(0,0,0,0.22); transition: box-shadow 180ms ease; }
-	.landscape-card__selection-halo { position: absolute; z-index: 2; inset: -2px; box-sizing: border-box; border: 2px solid transparent; border-radius: calc(var(--art-radius) + 2px); pointer-events: none; transition: border-color 180ms ease; }
+	.landscape-card__art { position: relative; isolation: isolate; aspect-ratio: 16 / 9; border-radius: var(--art-radius); background: transparent; transition: box-shadow 180ms ease; }
+	.landscape-card__selection-halo { position: absolute; z-index: 2; inset: -2px; box-sizing: border-box; border: 2px solid transparent; border-radius: calc(var(--art-radius) + 2px); pointer-events: none; opacity: 0; transition: border-color 180ms ease, opacity 180ms ease; }
 	.landscape-card__media { position: absolute; z-index: 1; inset: 0; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); clip-path: inset(0 round var(--art-radius)); transform: translateZ(0); }
 	.landscape-card__art img,
 	.landscape-card__scrim { display: block; width: 100%; height: 100%; border-radius: var(--art-radius); }
 	.landscape-card__art img { object-fit: cover; transition: filter 180ms ease, transform 260ms ease; }
 	.landscape-card__scrim { position: absolute; inset: 0; pointer-events: none; }
-	.landscape-card__progress { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; overflow: hidden; border-radius: 0 0 var(--art-radius) var(--art-radius); background: rgba(255, 255, 255, 0.24); }
+	.landscape-card__progress { position: absolute; right: 8px; bottom: 8px; left: 8px; height: 3px; overflow: hidden; border-radius: 2px; background: rgba(255, 255, 255, 0.24); }
 	.landscape-card__progress span { display: block; width: var(--progress); height: 100%; background: var(--accent); }
 	.landscape-card__copy { display: grid; gap: 3px; padding: 10px 2px 0; }
 	.landscape-card__copy strong { overflow: hidden; color: var(--text-soft); font-size: 0.8rem; font-weight: 650; letter-spacing: -0.018em; text-overflow: ellipsis; white-space: nowrap; }
@@ -65,7 +65,7 @@
 	.landscape-card:hover .landscape-card__play, .landscape-card:focus-within .landscape-card__play { opacity: 1; transform: translateY(0); }
 	.landscape-card:hover, .landscape-card:focus-within { transform: translateY(-3px) scale(1.018); }
 	.landscape-card:hover .landscape-card__art, .landscape-card:focus-within .landscape-card__art { box-shadow: 0 18px 38px rgba(0,0,0,0.34); }
-	.landscape-card:hover .landscape-card__selection-halo, .landscape-card:focus-within .landscape-card__selection-halo { border-color: rgba(255,255,255,0.48); }
+	.landscape-card:hover .landscape-card__selection-halo, .landscape-card:focus-within .landscape-card__selection-halo { border-color: rgba(255,255,255,0.48); opacity: 1; }
 	.landscape-card:hover .landscape-card__art img, .landscape-card:focus-within .landscape-card__art img { filter: brightness(1.06) saturate(1.03); transform: scale(1.012); }
 	@media (max-width: 680px) { .media-row { gap: 14px; } .section-heading h2 { font-size: 1.02rem; } .media-row__track { grid-auto-columns: 72vw; gap: 12px; margin-right: -18px; padding-right: 18px; } .landscape-card__play { display: none; } }
 	@media (prefers-reduced-motion: reduce) { .landscape-card, .landscape-card__art img, .landscape-card__play { transition: none; } .landscape-card:hover, .landscape-card:focus-within { transform: none; } }
