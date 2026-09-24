@@ -11,6 +11,8 @@ export type TmdbSearchResult = {
 	backdropUrl: string | null;
 };
 
+export type TmdbTrailer = { key: string; name: string };
+
 export type CatalogMedia = {
 	id: number;
 	title: string;
@@ -23,6 +25,43 @@ export type CatalogMedia = {
 	voteAverage: number | null;
 	posterUrl: string | null;
 	backdropUrl: string | null;
+};
+
+export type LocalEpisodeFile = {
+	mediaId: number;
+	fileName: string;
+	path: string;
+	season: number | null;
+	episode: number | null;
+};
+
+export type LocalTitleDetail = {
+	media: CatalogMedia;
+	files: LocalEpisodeFile[];
+};
+
+export type ContinueWatchingItem = {
+	id: number;
+	title: string;
+	kind: MediaKind | null;
+	year: number | null;
+	posterUrl: string | null;
+	backdropUrl: string | null;
+	positionSeconds: number;
+	durationSeconds: number;
+	updatedAt: number;
+};
+
+export type SubtitleFileSource = { label: string; path: string };
+export type ResolvedMediaFile = { path: string; subtitles: SubtitleFileSource[]; resumePositionSeconds: number };
+
+export type OpenSubtitleSearchResult = {
+	fileId: number;
+	release: string;
+	language: string;
+	downloads: number;
+	hearingImpaired: boolean;
+	uploader: string | null;
 };
 
 export type Episode = {

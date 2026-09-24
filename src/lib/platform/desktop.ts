@@ -1,4 +1,4 @@
-import type { CatalogMedia, TmdbSearchResult } from '$lib/types';
+import type { CatalogMedia, ContinueWatchingItem, LocalTitleDetail, OpenSubtitleSearchResult, ResolvedMediaFile, TmdbSearchResult, TmdbTrailer } from '$lib/types';
 
 export type DesktopBootstrap = {
 	version: string;
@@ -112,6 +112,104 @@ export async function readCatalogPage(
 	entry.pending = pending;
 	catalogPageCache.set(cacheKey, entry);
 	return pending;
+}
+
+export async function readLocalTitleDetail(mediaId: number): Promise<LocalTitleDetail | null> {
+	if (!isDesktopRuntime()) return null;
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<LocalTitleDetail | null>('get_local_title_detail', { mediaId });
+}
+
+const trailerCache = new Map<number, Promise<TmdbTrailer | null>>();
+const logoCache = new Map<number, Promise<string | null>>();
+
+export async function readTitleLogo(mediaId: number): Promise<string | null> {
+	if (!isDesktopRuntime() || !Number.isSafeInteger(mediaId) || mediaId <= 0) return null;
+	let pending = logoCache.get(mediaId);
+	if (!pending) {
+		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
+			invoke<string | null>('get_title_logo', { mediaId })
+		).catch((error) => {
+			logoCache.delete(mediaId);
+			throw error;
+		});
+		logoCache.set(mediaId, pending);
+	}
+	return pending;
+}
+
+export async function readTitleTrailer(mediaId: number): Promise<TmdbTrailer | null> {
+	if (!isDesktopRuntime() || !Number.isSafeInteger(mediaId) || mediaId <= 0) return null;
+	let pending = trailerCache.get(mediaId);
+	if (!pending) {
+		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
+			invoke<TmdbTrailer | null>('get_title_trailer', { mediaId })
+		).catch((error) => {
+			trailerCache.delete(mediaId);
+			throw error;
+		});
+		trailerCache.set(mediaId, pending);
+	}
+	return pending;
+}
+
+export async function resolveMediaFile(mediaId: number): Promise<ResolvedMediaFile> {
+	if (!isDesktopRuntime()) throw new Error('Local playback is available in the desktop app.');
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<ResolvedMediaFile>('resolve_media_file', { mediaId });
+}
+
+export async function savePlaybackProgress(mediaId: number, positionSeconds: number, durationSeconds: number): Promise<void> {
+	if (!isDesktopRuntime()) return;
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<void>('save_playback_progress', { mediaId, positionSeconds, durationSeconds });
+}
+
+export async function readContinueWatching(count = 12): Promise<ContinueWatchingItem[]> {
+	if (!isDesktopRuntime()) return [];
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<ContinueWatchingItem[]>('get_continue_watching', { count });
+}
+
+export async function localMediaUrl(path: string): Promise<string> {
+	if (!isDesktopRuntime()) throw new Error('Local media files require the desktop app.');
+	const { convertFileSrc } = await import('@tauri-apps/api/core');
+	return convertFileSrc(path);
+}
+
+export async function setOpenSubtitlesApiKey(apiKey: string): Promise<void> {
+	if (!isDesktopRuntime()) throw new Error('OpenSubtitles integration is available in the desktop app.');
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<void>('set_opensubtitles_api_key', { apiKey });
+}
+
+export async function loginOpenSubtitles(username: string, password: string): Promise<void> {
+	if (!isDesktopRuntime()) throw new Error('OpenSubtitles integration is available in the desktop app.');
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<void>('login_opensubtitles', { username, password });
+}
+
+export async function searchOpenSubtitles(
+	query: string,
+	language: string,
+	year: number | undefined,
+	kind: 'movie' | 'series'
+): Promise<OpenSubtitleSearchResult[]> {
+	if (!isDesktopRuntime()) throw new Error('OpenSubtitles integration is available in the desktop app.');
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<OpenSubtitleSearchResult[]>('search_opensubtitles', { query, language, year, kind });
+}
+
+export async function downloadOpenSubtitle(mediaId: number, fileId: number): Promise<string> {
+	if (!isDesktopRuntime()) throw new Error('OpenSubtitles integration is available in the desktop app.');
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<string>('download_opensubtitle', { mediaId, fileId });
+}
+
+export async function openMediaInSystemPlayer(mediaId: number): Promise<void> {
+	if (!isDesktopRuntime()) throw new Error('External playback is available in the desktop app.');
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<void>('open_media_in_system_player', { mediaId });
 }
 
 export async function chooseMediaFolder(): Promise<string | null> {

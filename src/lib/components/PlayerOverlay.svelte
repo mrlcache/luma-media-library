@@ -1,36 +1,65 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import type { MediaItem } from '$lib/types';
+	import {
+		downloadOpenSubtitle,
+		isDesktopRuntime,
+		localMediaUrl,
+		loginOpenSubtitles,
+		openMediaInSystemPlayer,
+		resolveMediaFile,
+		setOpenSubtitlesApiKey,
+		savePlaybackProgress,
+		searchOpenSubtitles
+	} from '$lib/platform/desktop';
+import type { MediaItem } from '$lib/types';
+import type { OpenSubtitleSearchResult } from '$lib/types';
 
 	type Props = { media: MediaItem; onClose: () => void };
 	let { media, onClose }: Props = $props();
 
 	let overlay: HTMLDivElement;
 	let playerStage: HTMLDivElement;
+	let video: HTMLVideoElement;
 	let isPlaying = $state(false);
 	let controlsVisible = $state(true);
-	let progress = $state(12);
+	let mediaReady = $state(false);
+	let currentTime = $state(0);
+	let duration = $state(0);
 	let volume = $state(72);
-	let storedVolume = 72;
+	let isMuted = $state(false);
+	let isLoading = $state(true);
+	let playbackError = $state('');
+	let resumePosition = 0;
+	let lastSavedPosition = -1;
+	let subtitleTracks = $state<{ label: string; language: string; url: string }[]>([]);
+	let activeSubtitle = $state(-1);
+	let subtitlePanelOpen = $state(false);
+	let subtitleSize = $state(100);
+	let subtitleOffset = $state(0);
+	let subtitleQuery = $state('');
+	let subtitleLanguage = $state('en');
+	let subtitleApiKey = $state('');
+	let subtitleUsername = $state('');
+	let subtitlePassword = $state('');
+	let subtitleResults = $state<OpenSubtitleSearchResult[]>([]);
+	let subtitleSearchBusy = $state(false);
+	let subtitleBusyFile = $state<number | null>(null);
+	let subtitleStatus = $state('');
+	let subtitleError = $state('');
+	let playbackRate = $state(1);
+	let audioTracks = $state<{ index: number; label: string; language: string }[]>([]);
+	let activeAudio = $state(0);
 	let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-	let durationMinutes = $derived(runtimeInMinutes(media.runtime));
-	let elapsedLabel = $derived(formatClock(durationMinutes * (progress / 100)));
-	let remainingLabel = $derived(`-${formatClock(durationMinutes * (1 - progress / 100))}`);
+	let progressPercent = $derived(duration > 0 ? currentTime / duration * 100 : 0);
+	let elapsedLabel = $derived(formatClock(currentTime));
+	let remainingLabel = $derived(`-${formatClock(Math.max(0, duration - currentTime))}`);
 
-	$effect.pre(() => {
-		progress = Math.round((media.progress ?? 0.12) * 100);
-	});
+	$effect.pre(() => { subtitleQuery = media.title; });
 
-	function runtimeInMinutes(runtime: string) {
-		const hours = Number(runtime.match(/(\d+)\s*h/)?.[1] ?? 0);
-		const minutes = Number(runtime.match(/(\d+)\s*m/)?.[1] ?? 0);
-		return hours * 60 + minutes || 1;
-	}
-
-	function formatClock(minutes: number) {
-		const seconds = Math.max(0, Math.round(minutes * 60));
+	function formatClock(value: number) {
+		const seconds = Math.max(0, Math.round(value));
 		const hours = Math.floor(seconds / 3600);
 		const remainingMinutes = Math.floor((seconds % 3600) / 60);
 		const remainingSeconds = seconds % 60;
@@ -43,55 +72,276 @@
 		controlsVisible = true;
 		if (timeoutId) clearTimeout(timeoutId);
 		timeoutId = setTimeout(() => {
-			if (isPlaying) controlsVisible = false;
-		}, 2800);
+			if (isPlaying && !subtitlePanelOpen) controlsVisible = false;
+		}, 2400);
 	}
 
-	function togglePlayback() {
-		isPlaying = !isPlaying;
+	async function togglePlayback() {
+		if (!video || playbackError) return;
+		if (video.paused) {
+			try { await video.play(); }
+			catch (error) { playbackError = error instanceof Error ? error.message : 'Playback could not start.'; }
+		} else video.pause();
 		revealControls();
 	}
 
 	function seekBy(amount: number) {
-		progress = Math.min(100, Math.max(0, progress + amount));
+		if (video && Number.isFinite(video.duration)) video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + amount));
 		revealControls();
 	}
 
 	function toggleMuted() {
-		if (volume > 0) {
-			storedVolume = volume;
-			volume = 0;
-		} else {
-			volume = storedVolume || 72;
-		}
+		isMuted = !isMuted;
+		if (video) video.muted = isMuted;
 		revealControls();
 	}
 
+	function setVolume(event: Event) {
+		volume = Number((event.currentTarget as HTMLInputElement).value);
+		if (video) { video.volume = volume / 100; video.muted = volume === 0; isMuted = video.muted; }
+		revealControls();
+	}
+
+	function setPlaybackRate(event: Event) {
+		playbackRate = Number((event.currentTarget as HTMLSelectElement).value);
+		if (video) video.playbackRate = playbackRate;
+		revealControls();
+	}
+
+	function seekToPercent(event: Event) {
+		if (!video || duration <= 0) return;
+		video.currentTime = duration * Number((event.currentTarget as HTMLInputElement).value) / 100;
+		revealControls();
+	}
+
+	function onTimeUpdate() {
+		if (!video) return;
+		currentTime = video.currentTime;
+		duration = Number.isFinite(video.duration) ? video.duration : duration;
+		if (Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
+	}
+
+	async function persistProgress() {
+		const mediaId = Number(media.id);
+		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || !video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+		lastSavedPosition = video.currentTime;
+		try { await savePlaybackProgress(mediaId, video.currentTime, video.duration); }
+		catch (error) { console.warn('Playback progress could not be saved', error); }
+	}
+
+	function onLoadedMetadata() {
+		if (!video) return;
+		duration = Number.isFinite(video.duration) ? video.duration : 0;
+		if (resumePosition > 15 && resumePosition < duration - 10) video.currentTime = resumePosition;
+		currentTime = video.currentTime;
+		isLoading = false;
+		readAudioTracks();
+	}
+
+	function readAudioTracks() {
+		const list = (video as HTMLVideoElement & { audioTracks?: { length: number; [index: number]: { label?: string; language?: string; enabled: boolean } } }).audioTracks;
+		if (!list) { audioTracks = []; return; }
+		audioTracks = Array.from({ length: list.length }, (_, index) => ({
+			index,
+			label: list[index].label || list[index].language || `Track ${index + 1}`,
+			language: list[index].language || ''
+		}));
+		activeAudio = Math.max(0, audioTracks.findIndex((track) => list[track.index].enabled));
+	}
+
+	function selectAudio(index: number) {
+		const list = (video as HTMLVideoElement & { audioTracks?: { length: number; [index: number]: { enabled: boolean } } }).audioTracks;
+		if (list && list[index]) {
+			for (let trackIndex = 0; trackIndex < list.length; trackIndex += 1) list[trackIndex].enabled = trackIndex === index;
+			activeAudio = index;
+		}
+	}
+
+	function selectSubtitle(index: number) {
+		activeSubtitle = index;
+		for (let trackIndex = 0; trackIndex < video.textTracks.length; trackIndex += 1) {
+			video.textTracks[trackIndex].mode = trackIndex === index ? 'showing' : 'disabled';
+			setCueOffset(video.textTracks[trackIndex]);
+		}
+	}
+
+	function onTrackLoad(event: Event, index: number) {
+		const trackElement = event.currentTarget as HTMLTrackElement;
+		trackElement.track.mode = activeSubtitle === index ? 'showing' : 'disabled';
+		setCueOffset(trackElement.track);
+	}
+
+	function setCueOffset(track: TextTrack) {
+		if (!track.cues) return;
+		for (const cue of Array.from(track.cues)) {
+			if (cue instanceof VTTCue) cue.line = subtitleOffset === 0 ? 'auto' : -subtitleOffset;
+		}
+	}
+
+	function changeSubtitleOffset(event: Event) {
+		subtitleOffset = Number((event.currentTarget as HTMLInputElement).value);
+		for (const track of Array.from(video.textTracks)) setCueOffset(track);
+	}
+
+	async function signInToOpenSubtitles() {
+		subtitleStatus = '';
+		subtitleError = '';
+		try {
+			if (subtitleApiKey.trim()) await setOpenSubtitlesApiKey(subtitleApiKey);
+			await loginOpenSubtitles(subtitleUsername, subtitlePassword);
+			subtitleApiKey = '';
+			subtitlePassword = '';
+			subtitleStatus = 'Signed in for this app session. Your password was not saved.';
+		} catch (error) { subtitleError = error instanceof Error ? error.message : 'OpenSubtitles sign-in failed.'; }
+	}
+
+	async function findOpenSubtitles() {
+		subtitleSearchBusy = true;
+		subtitleError = '';
+		subtitleStatus = '';
+		try {
+			if (subtitleApiKey.trim()) {
+				await setOpenSubtitlesApiKey(subtitleApiKey);
+				subtitleApiKey = '';
+			}
+			subtitleResults = await searchOpenSubtitles(
+				subtitleQuery,
+				subtitleLanguage,
+				media.year > 0 ? media.year : undefined,
+				media.kind === 'series' ? 'series' : 'movie'
+			);
+			if (subtitleResults.length === 0) subtitleStatus = 'No matching subtitle files found.';
+		} catch (error) { subtitleError = error instanceof Error ? error.message : 'OpenSubtitles search failed.'; }
+		finally { subtitleSearchBusy = false; }
+	}
+
+	async function downloadSubtitle(result: OpenSubtitleSearchResult) {
+		const mediaId = Number(media.id);
+		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) return;
+		subtitleBusyFile = result.fileId;
+		subtitleError = '';
+		subtitleStatus = '';
+		try {
+			const path = await downloadOpenSubtitle(mediaId, result.fileId);
+			const url = await localMediaUrl(path);
+			const label = `${result.release} · ${result.language}`;
+			subtitleTracks = [...subtitleTracks, { label, language: result.language || subtitleLanguage, url }];
+			selectSubtitle(subtitleTracks.length - 1);
+			subtitleStatus = 'Subtitle downloaded and enabled.';
+		} catch (error) { subtitleError = error instanceof Error ? error.message : 'Subtitle download failed.'; }
+		finally { subtitleBusyFile = null; }
+	}
+
+	async function loadSubtitleFile(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		const text = await file.text();
+		const vtt = file.name.toLowerCase().endsWith('.vtt') ? text : `WEBVTT\n\n${text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')}`;
+		const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+		subtitleTracks = [...subtitleTracks, { label: file.name, language: 'und', url }];
+		selectSubtitle(subtitleTracks.length - 1);
+		input.value = '';
+	}
+
 	async function toggleFullscreen() {
-		if (document.fullscreenElement) await document.exitFullscreen();
-		else await playerStage?.requestFullscreen();
+		try {
+			if (document.fullscreenElement) await document.exitFullscreen();
+			else await playerStage?.requestFullscreen();
+		} catch (error) {
+			console.warn('Fullscreen could not be toggled', error);
+		}
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+		if (event.key === 'F11') {
+			event.preventDefault();
+			void toggleFullscreen();
+			return;
+		}
 		revealControls();
 		const target = event.target;
 		const isRange = target instanceof HTMLInputElement && target.type === 'range';
 
-		if (event.key === 'Escape' && !document.fullscreenElement) onClose();
+		if (event.key === 'Escape' && subtitlePanelOpen) { subtitlePanelOpen = false; return; }
+		if (event.key === 'Escape' && !document.fullscreenElement) void closePlayer();
 		if (event.code === 'Space' && !isRange) {
 			event.preventDefault();
 			togglePlayback();
 		}
-		if (event.key === 'ArrowLeft' && !isRange) seekBy(-5);
-		if (event.key === 'ArrowRight' && !isRange) seekBy(5);
+		if (event.key === 'ArrowLeft' && !isRange) seekBy(-10);
+		if (event.key === 'ArrowRight' && !isRange) seekBy(10);
 		if (event.key.toLowerCase() === 'm' && !isRange) toggleMuted();
 	}
 
+	function onPlaybackError() {
+		if (!video?.error) return;
+		playbackError = video.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+			? 'This file or its video codec is not supported by the built-in Windows player. Try an MP4 or WebM file, or open it in your configured desktop player.'
+			: 'This media file could not be played. Check that it is still available in the library.';
+		isLoading = false;
+	}
+
+	async function closePlayer() {
+		if (document.fullscreenElement === playerStage) {
+			try { await document.exitFullscreen(); } catch { /* The stage is removed immediately after closing. */ }
+		}
+		await persistProgress();
+		for (const track of subtitleTracks) if (track.url.startsWith('blob:')) URL.revokeObjectURL(track.url);
+		onClose();
+	}
+
+	async function openInSystemPlayer() {
+		const mediaId = Number(media.id);
+		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) return;
+		try { await openMediaInSystemPlayer(mediaId); }
+		catch (error) { playbackError = error instanceof Error ? error.message : 'Could not open the desktop player.'; return; }
+		await closePlayer();
+	}
+
 	onMount(() => {
+		const handleFullscreenChange = () => {
+			controlsVisible = true;
+			revealControls();
+		};
+		document.addEventListener('fullscreenchange', handleFullscreenChange);
 		overlay.focus();
 		revealControls();
+		if (!isDesktopRuntime()) {
+			isLoading = false;
+			playbackError = 'Local playback is available in the desktop app.';
+			return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+		}
+		const mediaId = Number(media.id);
+		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) {
+			isLoading = false;
+			playbackError = 'This item is not connected to a local media file.';
+			return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+		}
+		void resolveMediaFile(mediaId)
+			.then(async (source) => {
+				resumePosition = source.resumePositionSeconds;
+				const episodeMarker = source.path.match(/(?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{2})/i)?.[0];
+				if (episodeMarker && media.kind === 'series') subtitleQuery = `${media.title} ${episodeMarker.toUpperCase()}`;
+				const tracks = await Promise.all(source.subtitles.map(async (subtitle) => ({
+					label: subtitle.label.replace(/\.[^.]+$/, ''),
+					language: subtitle.label.match(/\.([a-z]{2,3}(?:-[A-Z]{2})?)\.(?:srt|vtt)$/i)?.[1] ?? 'und',
+					url: await localMediaUrl(subtitle.path)
+				})));
+				subtitleTracks = tracks;
+				await tick();
+				video.src = await localMediaUrl(source.path);
+				video.load();
+			})
+			.catch((error) => {
+				isLoading = false;
+				playbackError = error instanceof Error ? error.message : 'The local media file could not be opened.';
+			});
 		return () => {
+			document.removeEventListener('fullscreenchange', handleFullscreenChange);
 			if (timeoutId) clearTimeout(timeoutId);
+			void persistProgress();
+			for (const track of subtitleTracks) if (track.url.startsWith('blob:')) URL.revokeObjectURL(track.url);
 		};
 	});
 </script>
@@ -107,14 +357,40 @@
 	tabindex="-1"
 	onpointermove={revealControls}
 >
-	<div class="player-stage" bind:this={playerStage} style={`--backdrop: url("${media.backdrop}")`}>
+	<div class="player-stage" class:player-stage--media-ready={mediaReady} bind:this={playerStage} style={`--backdrop: url("${media.backdrop}")`}>
 		<div class="player-stage__image" aria-label={`Preview frame for ${media.title}`} role="img"></div>
 		<div class="player-stage__ambient"></div>
 		<div class="player-stage__vignette"></div>
+		<video
+			class="player-video"
+			class:player-video--hidden={playbackError}
+			bind:this={video}
+			playsinline
+			preload="metadata"
+			aria-label={`${media.title} video`}
+			style={`--caption-size: ${subtitleSize}%;`}
+			onloadedmetadata={onLoadedMetadata}
+			onloadeddata={() => (mediaReady = true)}
+			ontimeupdate={onTimeUpdate}
+			onplay={() => (isPlaying = true)}
+			onpause={() => { isPlaying = false; void persistProgress(); }}
+			onended={() => { isPlaying = false; currentTime = duration; void persistProgress(); }}
+			onerror={onPlaybackError}
+		>
+			{#each subtitleTracks as track, index (track.url)}
+				<track kind="subtitles" src={track.url} srclang={track.language} label={track.label} onload={(event) => onTrackLoad(event, index)} />
+			{/each}
+		</video>
+
+		{#if isLoading}
+			<div class="player-message" role="status"><span class="player-loading__spinner"></span><span>Opening media…</span></div>
+		{:else if playbackError}
+			<div class="player-message player-message--error" role="alert"><strong>Playback unavailable</strong><span>{playbackError}</span>{#if isDesktopRuntime()}<button type="button" onclick={openInSystemPlayer}>Open in desktop player</button>{/if}</div>
+		{/if}
 
 		<div class:player-ui--hidden={!controlsVisible && isPlaying} class="player-ui">
 			<div class="player-topbar">
-				<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="Close player" title="Close player" onclick={onClose}>
+				<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="Close player" title="Close player" onclick={closePlayer}>
 					<Icon name="close" size={20} />
 				</button>
 
@@ -137,11 +413,11 @@
 						min="0"
 						max="100"
 						step="0.1"
-						bind:value={progress}
-						style={`--player-progress: ${progress}%`}
+						value={progressPercent}
+						oninput={seekToPercent}
+						style={`--player-progress: ${progressPercent}%`}
 						aria-label="Playback position"
 						aria-valuetext={`${elapsedLabel} elapsed, ${remainingLabel} remaining`}
-						oninput={revealControls}
 					/>
 				</div>
 
@@ -150,21 +426,28 @@
 						<button class="player-primary-button" type="button" style="corner-shape: squircle" aria-label={isPlaying ? 'Pause' : 'Play'} title={isPlaying ? 'Pause' : 'Play'} onclick={togglePlayback}>
 							<Icon name={isPlaying ? 'pause' : 'play'} size={19} weight="fill" />
 						</button>
-						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Go back five percent" title="Go back" onclick={() => seekBy(-5)}>
+						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Go back ten seconds" title="Back 10 seconds" onclick={() => seekBy(-10)}>
 							<Icon name="arrow-left" size={18} />
 						</button>
+						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Forward ten seconds" title="Forward 10 seconds" onclick={() => seekBy(10)}>
+							<Icon name="arrow-left" size={18} mirrored />
+						</button>
 						<div class="player-volume" style="corner-shape: squircle">
-							<button class="player-volume__button" type="button" aria-label={volume === 0 ? 'Unmute' : 'Mute'} title={volume === 0 ? 'Unmute' : 'Mute'} onclick={toggleMuted}>
+							<button class="player-volume__button" type="button" aria-label={isMuted ? 'Unmute' : 'Mute'} title={isMuted ? 'Unmute' : 'Mute'} onclick={toggleMuted}>
 								<Icon name="volume" size={18} />
 							</button>
-							<input class="player-volume__range" type="range" min="0" max="100" bind:value={volume} style={`--volume: ${volume}%`} aria-label="Volume" oninput={revealControls} />
+							<input class="player-volume__range" type="range" min="0" max="100" value={volume} style={`--volume: ${volume}%`} aria-label="Volume" oninput={setVolume} />
 						</div>
 					</div>
 
 					<div class="player-transport__group player-transport__group--end">
-						<button class="player-chip" type="button" style="corner-shape: squircle" aria-label="Audio and subtitles" title="Audio and subtitles"><Icon name="captions" size={17} /><span>Subtitles</span></button>
-						<button class="player-chip" type="button" style="corner-shape: squircle" aria-label="Audio track" title="Audio track"><Icon name="audio" size={17} /><span>English</span></button>
-						<button class="player-chip" type="button" style="corner-shape: squircle" aria-label="Quality" title="Quality"><span>Auto</span><Icon name="chevron-down" size={14} /></button>
+						<button class="player-chip" type="button" style="corner-shape: squircle" aria-label="Subtitles" title="Subtitles" onclick={() => (subtitlePanelOpen = !subtitlePanelOpen)}><Icon name="captions" size={17} /><span>Subtitles</span></button>
+						{#if audioTracks.length > 1}
+							<select class="player-chip player-chip--select" aria-label="Audio track" value={activeAudio} onchange={(event) => selectAudio(Number(event.currentTarget.value))}>
+								{#each audioTracks as track}<option value={track.index}>{track.label}</option>{/each}
+							</select>
+						{/if}
+						<label class="player-chip player-rate" style="corner-shape: squircle"><span class="player-rate__caption">Speed</span><strong class="player-rate__value">{playbackRate}×</strong><Icon name="chevron-down" size={13} /><select aria-label="Playback speed" value={playbackRate} onchange={setPlaybackRate}><option value={0.75}>0.75×</option><option value={1}>1×</option><option value={1.25}>1.25×</option><option value={1.5}>1.5×</option><option value={2}>2×</option></select></label>
 						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Toggle fullscreen" title="Fullscreen" onclick={toggleFullscreen}><Icon name="fullscreen" size={18} /></button>
 					</div>
 				</div>
@@ -172,22 +455,75 @@
 		</div>
 
 		{#if !isPlaying}
-			<button class="player-center-play" type="button" style="corner-shape: squircle" aria-label="Play" onclick={togglePlayback}>
+			{#if !playbackError}<button class="player-center-play" type="button" style="corner-shape: squircle" aria-label="Play" onclick={togglePlayback}>
 				<Icon name="play" size={28} weight="fill" />
-			</button>
+			</button>{/if}
+		{/if}
+
+		{#if subtitlePanelOpen}
+			<section class="subtitle-panel" aria-label="Subtitle settings" style="corner-shape: squircle">
+				<header><strong>Subtitles</strong><button type="button" aria-label="Close subtitle settings" onclick={() => (subtitlePanelOpen = false)}><Icon name="close" size={16} /></button></header>
+				<div class="subtitle-panel__tracks">
+					<button type="button" class:active={activeSubtitle === -1} onclick={() => selectSubtitle(-1)}>Off</button>
+					{#each subtitleTracks as track, index}<button type="button" class:active={activeSubtitle === index} onclick={() => selectSubtitle(index)}>{track.label}</button>{/each}
+				</div>
+				<label>Text size <input type="range" min="75" max="150" step="5" bind:value={subtitleSize} aria-label="Subtitle text size" /></label>
+				<label>Vertical position <input type="range" min="0" max="12" step="1" value={subtitleOffset} oninput={changeSubtitleOffset} aria-label="Subtitle vertical position" /></label>
+				<div class="subtitle-panel__actions">
+					<button type="button" onclick={() => document.getElementById('player-subtitle-file-input')?.click()}><Icon name="captions" size={15} /> Load subtitle file</button>
+					<input id="player-subtitle-file-input" class="sr-only" type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" onchange={loadSubtitleFile} />
+				</div>
+				<details class="subtitle-online">
+					<summary><Icon name="search" size={15} /> Find on OpenSubtitles</summary>
+					<p class="subtitle-online__note">The API key and sign-in stay in memory for this session; your password is not saved.</p>
+					<label>API key <input type="password" bind:value={subtitleApiKey} autocomplete="off" placeholder="OpenSubtitles API key" /></label>
+					<div class="subtitle-online__row"><input bind:value={subtitleUsername} autocomplete="username" placeholder="Username" aria-label="OpenSubtitles username" /><input type="password" bind:value={subtitlePassword} autocomplete="current-password" placeholder="Password" aria-label="OpenSubtitles password" /></div>
+					<button class="subtitle-online__button" type="button" onclick={signInToOpenSubtitles}>Sign in to download</button>
+					<label>Title <input bind:value={subtitleQuery} maxlength="120" aria-label="Subtitle search title" /></label>
+					<label>Language
+						<select bind:value={subtitleLanguage} aria-label="Subtitle language">
+							<option value="en">English</option><option value="pt-br">Portuguese (Brazil)</option><option value="es">Spanish</option><option value="fr">French</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="de">German</option>
+						</select>
+					</label>
+					<button class="subtitle-online__button subtitle-online__button--primary" type="button" disabled={subtitleSearchBusy} onclick={findOpenSubtitles}>{subtitleSearchBusy ? 'Searching…' : 'Search subtitles'}</button>
+					{#if subtitleStatus}<p class="subtitle-online__status" role="status">{subtitleStatus}</p>{/if}
+					{#if subtitleError}<p class="subtitle-online__error" role="alert">{subtitleError}</p>{/if}
+					{#if subtitleResults.length > 0}
+						<div class="subtitle-online__results" aria-label="Subtitle results">
+							{#each subtitleResults as result (result.fileId)}
+								<div><span><strong>{result.release}</strong><small>{result.language}{result.hearingImpaired ? ' · SDH' : ''} · {result.downloads} downloads</small></span><button type="button" aria-label={`Download ${result.release}`} disabled={subtitleBusyFile === result.fileId} onclick={() => downloadSubtitle(result)}>{subtitleBusyFile === result.fileId ? '…' : 'Get'}</button></div>
+							{/each}
+						</div>
+					{/if}
+					<a class="subtitle-online__account" href="https://www.opensubtitles.com/" target="_blank" rel="noreferrer">OpenSubtitles account and API key ↗</a>
+				</details>
+			</section>
 		{/if}
 	</div>
 </div>
 
 <style>
 	.player-overlay { position: fixed; inset: 0; z-index: 80; color: #f4f6f7; background: #020304; outline: none; }
-	.player-stage { position: relative; width: 100%; height: 100%; overflow: hidden; isolation: isolate; background: #05070a; }
-	.player-stage__image { position: absolute; inset: -2.5%; background-image: var(--backdrop); background-position: center; background-size: cover; filter: saturate(0.8) contrast(1.06) brightness(0.74); transform: scale(1.025); z-index: -3; }
-	.player-stage__ambient { position: absolute; inset: 0; background: radial-gradient(circle at 70% 42%, rgba(151, 193, 211, 0.13), transparent 32%), radial-gradient(circle at 18% 78%, rgba(45, 65, 76, 0.24), transparent 34%); mix-blend-mode: screen; pointer-events: none; z-index: -2; }
-	.player-stage__vignette { position: absolute; inset: 0; background: radial-gradient(ellipse 82% 72% at 50% 48%, transparent 24%, rgba(2, 4, 6, 0.34) 72%, rgba(2, 4, 6, 0.78) 100%), linear-gradient(180deg, rgba(2,4,6,0.58), transparent 25%, transparent 57%, rgba(2,4,6,0.74)); pointer-events: none; z-index: -1; }
+	.player-stage { position: relative; width: 100%; height: 100%; overflow: hidden; isolation: isolate; background: #000; }
+	.player-stage:fullscreen { width: 100vw; height: 100vh; background: #000; }
+	.player-stage__image { position: absolute; inset: -2.5%; background-image: var(--backdrop); background-position: center; background-size: cover; filter: saturate(0.8) contrast(1.06) brightness(0.74); transform: scale(1.025); z-index: -3; transition: opacity 320ms ease, visibility 0s; }
+	.player-stage__ambient { position: absolute; inset: 0; background: radial-gradient(circle at 70% 42%, rgba(151, 193, 211, 0.13), transparent 32%), radial-gradient(circle at 18% 78%, rgba(45, 65, 76, 0.24), transparent 34%); mix-blend-mode: screen; pointer-events: none; z-index: -2; transition: opacity 320ms ease, visibility 0s; }
+	.player-stage__vignette { position: absolute; inset: 0; background: radial-gradient(ellipse 82% 72% at 50% 48%, transparent 24%, rgba(2, 4, 6, 0.34) 72%, rgba(2, 4, 6, 0.78) 100%), linear-gradient(180deg, rgba(2,4,6,0.58), transparent 25%, transparent 57%, rgba(2,4,6,0.74)); pointer-events: none; z-index: -1; transition: opacity 320ms ease, visibility 0s; }
+	.player-stage--media-ready .player-stage__image,
+	.player-stage--media-ready .player-stage__ambient,
+	.player-stage--media-ready .player-stage__vignette { visibility: hidden; opacity: 0; transition: opacity 320ms ease, visibility 0s linear 320ms; }
+	.player-video { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; background: #000; object-fit: contain; outline: none; }
+	.player-video--hidden { visibility: hidden; }
+	.player-video::cue { color: #fff; font-size: var(--caption-size, 100%); background: rgba(0,0,0,0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
+	.player-message { position: absolute; top: 50%; left: 50%; z-index: 2; display: grid; justify-items: center; gap: 12px; width: min(440px, calc(100% - 36px)); color: rgba(244,247,249,0.72); font-size: 0.78rem; text-align: center; transform: translate(-50%,-50%); }
+	.player-message--error { padding: 22px 24px; border: 1px solid rgba(255,255,255,0.15); border-radius: 18px; background: rgba(13,16,20,0.72); box-shadow: 0 24px 60px rgba(0,0,0,0.38); backdrop-filter: blur(24px) saturate(135%); }
+	.player-message--error strong { color: #fff; font-size: 0.95rem; font-weight: 650; }
+	.player-message--error button { min-height: 36px; margin-top: 4px; padding: 0 13px; border: 1px solid rgba(255,255,255,0.16); border-radius: 10px; color: #12161a; background: rgba(240,246,248,0.94); cursor: pointer; font: inherit; font-weight: 650; }
+	.player-loading__spinner { width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #e8f3f5; border-radius: 50%; animation: player-spin 700ms linear infinite; }
+	@keyframes player-spin { to { transform: rotate(360deg); } }
 
-	.player-ui { position: absolute; inset: 0; z-index: 3; opacity: 1; pointer-events: none; transition: opacity 220ms ease; }
-	.player-ui--hidden { opacity: 0; }
+	.player-ui { position: absolute; inset: 0; z-index: 3; visibility: visible; opacity: 1; pointer-events: none; transition: opacity 220ms ease, visibility 0s; }
+	.player-ui--hidden { visibility: hidden; opacity: 0; transition: opacity 220ms ease, visibility 0s linear 220ms; }
 	.player-ui--hidden * { pointer-events: none !important; }
 
 	.player-topbar { position: absolute; top: 0; right: 0; left: 0; display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 86px; background: linear-gradient(180deg, rgba(2,4,6,0.68), transparent); }
@@ -242,6 +578,54 @@
 
 	.player-chip { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 10px; border: 1px solid transparent; border-radius: 13px; color: rgba(244,247,249,0.64); font-size: 0.67rem; font-weight: 620; background: transparent; transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease; }
 	.player-chip:hover { border-color: rgba(255,255,255,0.1); color: #fff; background: rgba(255,255,255,0.08); }
+	.player-chip--select, .player-rate select { max-width: 150px; color: inherit; font: inherit; }
+	.player-chip--select option, .player-rate option { color: #eaf0f3; background: #161b21; }
+	.player-rate { position: relative; min-width: 108px; justify-content: center; cursor: pointer; }
+	.player-rate__value { color: rgba(244,247,249,0.88); font-size: 0.68rem; font-variant-numeric: tabular-nums; font-weight: 700; }
+	.player-rate select { position: absolute; inset: 0; z-index: 1; width: 100%; max-width: none; height: 100%; padding: 0; border: 0; outline: 0; opacity: 0; cursor: pointer; }
+	.player-rate:focus-within { outline: 2px solid rgba(158,198,214,0.8); outline-offset: 2px; }
+	.subtitle-panel { position: absolute; right: 20px; bottom: 124px; z-index: 8; display: grid; gap: 14px; width: min(340px, calc(100vw - 32px)); max-height: min(70vh, 620px); overflow: auto; padding: 17px; border: 1px solid rgba(255,255,255,0.16); border-radius: 19px; color: rgba(244,247,249,0.76); background: rgba(20,24,29,0.91); box-shadow: 0 22px 66px rgba(0,0,0,0.42), inset 0 1px rgba(255,255,255,0.07); backdrop-filter: blur(34px) saturate(145%); pointer-events: auto; }
+	.subtitle-panel header { display: flex; align-items: center; justify-content: space-between; color: #f8fafb; font-size: 0.86rem; font-weight: 650; }
+	.subtitle-panel header button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 9px; color: inherit; background: transparent; cursor: pointer; }
+	.subtitle-panel header button:hover { background: rgba(255,255,255,0.09); }
+	.subtitle-panel__tracks { display: grid; gap: 4px; max-height: 145px; overflow: auto; }
+	.subtitle-panel__tracks button { overflow: hidden; min-height: 34px; padding: 0 10px; border: 1px solid transparent; border-radius: 9px; color: rgba(244,247,249,0.68); background: transparent; cursor: pointer; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+	.subtitle-panel__tracks button:hover { background: rgba(255,255,255,0.06); }
+	.subtitle-panel__tracks button.active { border-color: rgba(255,255,255,0.12); color: #fff; background: rgba(255,255,255,0.1); }
+	.subtitle-panel > label { display: grid; gap: 7px; font-size: 0.68rem; }
+	.subtitle-panel input[type='range'] { width: 100%; accent-color: #e8f3f5; }
+	.subtitle-panel__actions { display: grid; gap: 7px; padding-top: 5px; border-top: 1px solid rgba(255,255,255,0.1); }
+	.subtitle-panel__actions button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; color: #f1f5f6; background: rgba(255,255,255,0.06); cursor: pointer; font-size: 0.69rem; font-weight: 600; }
+	.subtitle-panel__actions button:hover:not(:disabled) { background: rgba(255,255,255,0.12); }
+	.subtitle-panel__actions button:disabled { opacity: 0.45; cursor: not-allowed; }
+	.subtitle-online { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); }
+	.subtitle-online summary { display: flex; align-items: center; gap: 8px; color: #f1f5f6; cursor: pointer; font-size: 0.72rem; font-weight: 640; list-style: none; }
+	.subtitle-online summary::-webkit-details-marker { display: none; }
+	.subtitle-online[open] summary { margin-bottom: 2px; }
+	.subtitle-online__note { margin: -4px 0 0; color: rgba(235,240,244,0.5); font-size: 0.63rem; line-height: 1.45; }
+	.subtitle-online > label { display: grid; gap: 5px; font-size: 0.63rem; }
+	.subtitle-online input, .subtitle-online select { min-width: 0; height: 34px; padding: 0 9px; border: 1px solid rgba(255,255,255,0.12); border-radius: 9px; outline: none; color: #f2f5f7; background: rgba(5,8,11,0.38); font: inherit; font-size: 0.67rem; }
+	.subtitle-online input:focus, .subtitle-online select:focus { border-color: rgba(225,242,248,0.38); }
+	.subtitle-online input::placeholder { color: rgba(235,240,244,0.4); }
+	.subtitle-online option { color: #edf2f4; background: #171c22; }
+	.subtitle-online__row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+	.subtitle-online__button { min-height: 34px; padding: 0 9px; border: 1px solid rgba(255,255,255,0.13); border-radius: 9px; color: rgba(244,247,249,0.8); background: rgba(255,255,255,0.055); cursor: pointer; font-size: 0.66rem; font-weight: 620; }
+	.subtitle-online__button:hover:not(:disabled) { background: rgba(255,255,255,0.11); }
+	.subtitle-online__button:disabled { opacity: 0.48; cursor: wait; }
+	.subtitle-online__button--primary { color: #101418; background: rgba(232,243,245,0.94); }
+	.subtitle-online__button--primary:hover:not(:disabled) { background: #fff; }
+	.subtitle-online__status, .subtitle-online__error { margin: 0; font-size: 0.64rem; line-height: 1.45; }
+	.subtitle-online__status { color: #b8d9cf; }
+	.subtitle-online__error { color: #f3b6b7; }
+	.subtitle-online__results { display: grid; gap: 6px; max-height: 190px; overflow: auto; }
+	.subtitle-online__results > div { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 8px; border: 1px solid rgba(255,255,255,0.08); border-radius: 9px; background: rgba(255,255,255,0.035); }
+	.subtitle-online__results span { display: grid; gap: 3px; min-width: 0; }
+	.subtitle-online__results strong { overflow: hidden; color: #f0f3f5; font-size: 0.64rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+	.subtitle-online__results small { color: rgba(235,240,244,0.48); font-size: 0.58rem; }
+	.subtitle-online__results button { min-width: 42px; height: 28px; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #f3f6f7; background: rgba(255,255,255,0.08); cursor: pointer; font-size: 0.63rem; }
+	.subtitle-online__results button:disabled { opacity: 0.5; cursor: wait; }
+	.subtitle-online__account { color: rgba(235,240,244,0.54); font-size: 0.61rem; text-decoration: underline; text-underline-offset: 2px; }
+	.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
 
 	@media (max-width: 760px) {
 		.player-topbar { padding: 14px 12px 70px; }
@@ -252,6 +636,7 @@
 		.player-chip span { display: none; }
 		.player-volume__range { width: 54px; }
 		.player-center-play { width: 66px; height: 66px; border-radius: 20px; }
+		.subtitle-panel { right: 12px; bottom: 118px; }
 	}
 
 	@media (max-width: 520px) {
@@ -274,5 +659,7 @@
 		.player-primary-button,
 		.player-center-play,
 		.player-range::-webkit-slider-thumb { transition: none; }
+		.player-loading__spinner { animation: none; }
+		.player-video { scroll-behavior: auto; }
 	}
 </style>

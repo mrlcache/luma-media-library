@@ -25,7 +25,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' customprotocol: asset:; img-src 'self' asset: http://asset.localhost https://images.unsplash.com https://image.tmdb.org data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      },
+      "csp": "default-src 'self' customprotocol: asset:; script-src 'self' https://www.youtube.com; img-src 'self' asset: http://asset.localhost https://images.unsplash.com https://image.tmdb.org https://static.tvmaze.com data:; media-src 'self' asset: http://asset.localhost; frame-src https://www.youtube-nocookie.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://api.tvmaze.com"
     }
   },
   "bundle": {

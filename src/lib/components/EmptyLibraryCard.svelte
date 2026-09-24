@@ -5,12 +5,14 @@
 		title: string;
 		description: string;
 		showSettingsLink?: boolean;
+		actionHref?: string;
+		actionLabel?: string;
 		role?: 'status';
 		fullHeight?: boolean;
 		centered?: boolean;
 	};
 
-	let { title, description, showSettingsLink = false, role, fullHeight = false, centered = false }: Props = $props();
+	let { title, description, showSettingsLink = false, actionHref, actionLabel, role, fullHeight = false, centered = false }: Props = $props();
 </script>
 
 <div class="empty-card-shell" class:empty-card-shell--full-height={fullHeight} class:empty-card-shell--centered={centered} {role}>
@@ -18,7 +20,11 @@
 		<Icon name="library" size={11} />
 		<h2>{title}</h2>
 		<p>{description}</p>
-		{#if showSettingsLink}<a class="empty-card__button" href="/settings">Open settings</a>{/if}
+		{#if actionHref && actionLabel}
+			<a class="empty-card__button" href={actionHref}>{actionLabel}</a>
+		{:else if showSettingsLink}
+			<a class="empty-card__button" href="/settings">Open settings</a>
+		{/if}
 	</div>
 </div>
 

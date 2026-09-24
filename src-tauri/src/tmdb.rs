@@ -27,6 +27,48 @@ pub struct TmdbSearchResult {
     pub backdrop_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TmdbTrailer {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+struct ImagesResponse {
+    #[serde(default)]
+    logos: Vec<RawLogo>,
+}
+
+#[derive(Deserialize)]
+struct RawLogo {
+    file_path: String,
+    iso_639_1: Option<String>,
+    #[serde(default)]
+    vote_average: f32,
+    #[serde(default)]
+    width: u32,
+}
+
+#[derive(Deserialize)]
+struct VideoResponse {
+    #[serde(default)]
+    results: Vec<RawVideo>,
+}
+
+#[derive(Deserialize)]
+struct RawVideo {
+    key: String,
+    name: String,
+    site: String,
+    #[serde(rename = "type")]
+    video_type: String,
+    #[serde(default)]
+    official: bool,
+    #[serde(default)]
+    size: u16,
+}
+
 #[derive(Deserialize)]
 struct SearchResponse {
     #[serde(default)]
@@ -113,6 +155,47 @@ impl TmdbState {
             .await
     }
 
+    pub async fn trailer_for_kind(&self, id: u64, kind: &str) -> Result<Option<TmdbTrailer>, String> {
+        let endpoint = match kind {
+            "movie" => "movie",
+            "series" => "tv",
+            _ => return Ok(None),
+        };
+        let token = self.read_token()?;
+        for language in ["en-US", "pt-BR"] {
+            let response = self.client
+                .get(format!("{API_BASE}/{endpoint}/{id}/videos"))
+                .bearer_auth(&token)
+                .query(&[("language", language)])
+                .send().await
+                .map_err(|_| "Could not reach TMDb for this title's trailer.".to_owned())?;
+            ensure_success(response.status())?;
+            let videos = response.json::<VideoResponse>().await
+                .map_err(|_| "TMDb returned unreadable trailer metadata.".to_owned())?;
+            if let Some(trailer) = choose_trailer(videos.results) {
+                return Ok(Some(trailer));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn logo_for_kind(&self, id: u64, kind: &str) -> Result<Option<String>, String> {
+        let endpoint = match kind {
+            "movie" => "movie",
+            "series" => "tv",
+            _ => return Ok(None),
+        };
+        let response = self.client
+            .get(format!("{API_BASE}/{endpoint}/{id}/images"))
+            .bearer_auth(self.read_token()?)
+            .send().await
+            .map_err(|_| "Could not reach TMDb for this title's logo.".to_owned())?;
+        ensure_success(response.status())?;
+        let images = response.json::<ImagesResponse>().await
+            .map_err(|_| "TMDb returned unreadable logo metadata.".to_owned())?;
+        Ok(choose_png_logo(images.logos))
+    }
+
     async fn search_endpoint(
         &self,
         query: &str,
@@ -176,8 +259,8 @@ impl TmdbState {
                     year,
                     overview: item.overview.unwrap_or_default(),
                     vote_average: item.vote_average,
-                    poster_url: image_url(item.poster_path.as_deref(), "w342"),
-                    backdrop_url: image_url(item.backdrop_path.as_deref(), "w780"),
+                    poster_url: image_url(item.poster_path.as_deref(), "w780"),
+                    backdrop_url: image_url(item.backdrop_path.as_deref(), "w1280"),
                 })
             })
             .take(MAX_RESULTS)
@@ -192,6 +275,37 @@ impl TmdbState {
             return Err("TMDb credentials are empty. Update the local app credential.".to_owned());
         }
         Ok(token.to_owned())
+    }
+}
+
+fn choose_trailer(videos: Vec<RawVideo>) -> Option<TmdbTrailer> {
+    videos.into_iter()
+        .filter(|video| video.site == "YouTube" && video.video_type == "Trailer"
+            && video.key.len() == 11
+            && video.key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'))
+        .max_by_key(|video| (video.official, video.size))
+        .map(|video| TmdbTrailer { key: video.key, name: video.name })
+}
+
+fn choose_png_logo(logos: Vec<RawLogo>) -> Option<String> {
+    logos.into_iter()
+        .filter(|logo| logo.file_path.to_ascii_lowercase().ends_with(".png"))
+        .filter_map(|logo| image_url(Some(&logo.file_path), "original").map(|url| (logo, url)))
+        .max_by(|(left, _), (right, _)| {
+            logo_language_rank(left.iso_639_1.as_deref())
+                .cmp(&logo_language_rank(right.iso_639_1.as_deref()))
+                .then_with(|| left.vote_average.total_cmp(&right.vote_average))
+                .then_with(|| left.width.cmp(&right.width))
+        })
+        .map(|(_, url)| url)
+}
+
+fn logo_language_rank(language: Option<&str>) -> u8 {
+    match language {
+        Some("en") => 3,
+        Some("pt") => 2,
+        None => 1,
+        _ => 0,
     }
 }
 
@@ -223,7 +337,37 @@ fn ensure_success(status: StatusCode) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::image_url;
+    use super::{choose_png_logo, choose_trailer, image_url, RawLogo, RawVideo};
+
+    #[test]
+    fn selects_a_png_logo_and_ignores_other_formats() {
+        let logo = |path: &str, language: Option<&str>, width| RawLogo {
+            file_path: path.to_owned(), iso_639_1: language.map(str::to_owned),
+            vote_average: 5.0, width,
+        };
+        let selected = choose_png_logo(vec![
+            logo("/large.svg", Some("en"), 4000),
+            logo("/portuguese.png", Some("pt"), 1200),
+            logo("/english.png", Some("en"), 900),
+        ]);
+        assert_eq!(selected.as_deref(), Some("https://image.tmdb.org/t/p/original/english.png"));
+        assert_eq!(choose_png_logo(vec![logo("/only.svg", Some("en"), 1000)]), None);
+    }
+
+    #[test]
+    fn picks_an_official_youtube_trailer_and_rejects_untrusted_keys() {
+        let video = |key: &str, site: &str, official: bool, size| RawVideo {
+            key: key.to_owned(), name: "Example".to_owned(), site: site.to_owned(),
+            video_type: "Trailer".to_owned(), official, size,
+        };
+        let selected = choose_trailer(vec![
+            video("abcdefghijk", "YouTube", false, 2160),
+            video("official123", "YouTube", true, 1080),
+            video("<bad-key?>", "YouTube", true, 4320),
+            video("abcdefghijk", "Other", true, 4320),
+        ]).expect("safe trailer");
+        assert_eq!(selected.key, "official123");
+    }
 
     #[test]
     fn image_paths_are_built_on_the_tmdb_image_host() {

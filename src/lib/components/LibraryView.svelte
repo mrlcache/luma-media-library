@@ -201,7 +201,6 @@
 					</article>
 				{/each}
 			</div>
-			<p class="tmdb-attribution">Metadata and artwork from <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer">TMDb</a>.</p>
 		{:else}
 			<div class="empty-state"><Icon name="search" size={21} /><h2>No titles found</h2><p>Try a different title.</p></div>
 		{/if}
@@ -223,7 +222,6 @@
 			<div aria-busy={catalogLoading}>
 				<LocalCatalogGrid items={catalogItems} />
 			</div>
-			<p class="tmdb-attribution">Metadata and artwork from <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer">TMDb</a>.</p>
 			{#if catalogItems.length < catalogTotal}
 				<div class="catalog-more"><button class="button button--secondary" type="button" disabled={catalogLoading} onclick={() => void requestCatalogPage(false)}>{catalogLoading ? 'Loading…' : 'Load more titles'}</button></div>
 			{/if}
@@ -273,8 +271,6 @@
 	.tmdb-result__meta { margin: 0 0 4px; color: var(--text-muted); font-size: 0.64rem; }
 	.tmdb-result__copy h2 { overflow: hidden; margin: 0; color: var(--text-soft); font-size: 0.82rem; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 	.tmdb-result__overview { display: -webkit-box; overflow: hidden; margin: 6px 0 0; color: var(--text-muted); font-size: 0.68rem; line-height: 1.5; line-clamp: 3; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-	.tmdb-attribution { margin: 8px 0 0; color: var(--text-dim); font-size: 0.62rem; }
-	.tmdb-attribution a { color: var(--text-muted); text-decoration: underline; text-underline-offset: 2px; }
 	.button { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 0 15px; border: 1px solid transparent; border-radius: 9px; font-size: 0.76rem; font-weight: 620; cursor: pointer; transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease; }
 	.button--secondary { border-color: var(--line-subtle); color: var(--text-soft); background: var(--surface-2); }
 	.button--secondary:hover { border-color: var(--line-strong); color: var(--text-strong); background: var(--surface-3); }

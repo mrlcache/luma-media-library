@@ -2,6 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { usePlayer } from '$lib/player-context';
 	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
+	import { rightEdgeHint } from '$lib/scroll/right-edge-hint';
 	import type { MediaItem } from '$lib/types';
 
 	type Props = { title: string; description?: string; items: MediaItem[]; showProgress?: boolean };
@@ -16,37 +17,41 @@
 			{#if description}<p>{description}</p>{/if}
 		</div>
 	</div>
-	<div class="media-row__track" role="list" use:smoothHorizontalScroll>
-		{#each items as media, index (media.id)}
-			<article class="landscape-card" role="listitem">
-				<div class="landscape-card__art" style="corner-shape: squircle">
-					<div class="landscape-card__selection-halo" style="corner-shape: squircle"></div>
-					<a class="landscape-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} style="corner-shape: squircle">
-						<img src={media.backdrop} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />
-						<div class="landscape-card__scrim"></div>
-						{#if showProgress && media.progress}
-							<div class="landscape-card__progress"><span style={`--progress: ${media.progress * 100}%`}></span></div>
-						{/if}
-					</a>
-					<button class="landscape-card__play" aria-label={`Play ${media.title}`} onclick={() => player.open(media)}><Icon name="play" size={14} weight="fill" /></button>
-				</div>
-				<a class="landscape-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`}>
-					<div class="landscape-card__copy">
-						<strong>{media.title}</strong>
-						<span>{media.progressLabel ?? `${media.year} · ${media.genres[0]}`}</span>
+	<div class="media-row__viewport" data-more-right="false">
+		<div class="media-row__track" role="list" use:smoothHorizontalScroll use:rightEdgeHint>
+			{#each items as media, index (media.id)}
+				<article class="landscape-card" role="listitem">
+					<div class="landscape-card__art" style="corner-shape: squircle">
+						<div class="landscape-card__selection-halo" style="corner-shape: squircle"></div>
+						<a class="landscape-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} style="corner-shape: squircle">
+							<img src={media.backdrop} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />
+							<div class="landscape-card__scrim"></div>
+							{#if showProgress && media.progress}
+								<div class="landscape-card__progress"><span style={`--progress: ${media.progress * 100}%`}></span></div>
+							{/if}
+						</a>
+						<button class="landscape-card__play" aria-label={`Play ${media.title}`} onclick={() => player.open(media)}><Icon name="play" size={14} weight="fill" /></button>
 					</div>
-				</a>
-			</article>
-		{/each}
+					<a class="landscape-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`}>
+						<div class="landscape-card__copy">
+							<strong>{media.title}</strong>
+							<span>{media.progressLabel ?? `${media.year} · ${media.genres[0]}`}</span>
+						</div>
+					</a>
+				</article>
+			{/each}
+		</div>
 	</div>
 </section>
 
 <style>
-	.media-row { display: grid; gap: 18px; }
+	.media-row { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 18px; }
 	.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
 	.section-heading h2 { margin: 0; color: var(--text-strong); font-family: var(--font-display); font-size: 1.08rem; font-weight: 690; letter-spacing: -0.034em; }
 	.section-heading p { margin: 4px 0 0; color: var(--text-muted); font-size: 0.73rem; }
-	.media-row__track { --hover-clearance: 14px; --hover-inline-clearance: 14px; display: grid; grid-auto-columns: clamp(250px, 24vw, 360px); grid-auto-flow: column; gap: 16px; overflow-x: auto; overflow-y: hidden; margin: calc(-1 * var(--hover-clearance)) calc(-1 * var(--hover-inline-clearance)); padding: calc(4px + var(--hover-clearance)) calc(3px + var(--hover-inline-clearance)) calc(16px + var(--hover-clearance)); scroll-padding-inline: calc(3px + var(--hover-inline-clearance)); scrollbar-width: none; overscroll-behavior-x: none; }
+	.media-row__viewport { --hover-clearance: 14px; --hover-inline-clearance: 14px; min-width: 0; margin: calc(-1 * var(--hover-clearance)) calc(-1 * var(--hover-inline-clearance)); }
+	.media-row__track { --hover-clearance: 14px; --hover-inline-clearance: 14px; display: grid; grid-auto-columns: clamp(250px, 24vw, 360px); grid-auto-flow: column; gap: 16px; overflow-x: auto; overflow-y: hidden; padding: calc(4px + var(--hover-clearance)) calc(3px + var(--hover-inline-clearance)) calc(16px + var(--hover-clearance)); scroll-padding-inline: calc(3px + var(--hover-inline-clearance)); scrollbar-width: none; overscroll-behavior-x: none; }
+	:global(.media-row__viewport[data-more-right="true"] .media-row__track) { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent calc(100% - 12px)); mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent calc(100% - 12px)); }
 	.media-row__track::-webkit-scrollbar { display: none; }
 	.landscape-card { --art-radius: 12px; position: relative; min-width: 0; transform-origin: center bottom; transition: transform 190ms cubic-bezier(0.2, 0.72, 0.2, 1); }
 	.landscape-card__link { display: block; color: inherit; text-decoration: none; }
@@ -68,6 +73,6 @@
 	.landscape-card:hover .landscape-card__art, .landscape-card:focus-within .landscape-card__art { box-shadow: 0 18px 38px rgba(0,0,0,0.34); }
 	.landscape-card:hover .landscape-card__selection-halo, .landscape-card:focus-within .landscape-card__selection-halo { border-color: rgba(255,255,255,0.48); opacity: 1; }
 	.landscape-card:hover .landscape-card__art img, .landscape-card:focus-within .landscape-card__art img { filter: brightness(1.06) saturate(1.03); transform: scale(1.012); }
-	@media (max-width: 680px) { .media-row { gap: 14px; } .section-heading h2 { font-size: 1.02rem; } .media-row__track { grid-auto-columns: 72vw; gap: 12px; margin-right: -18px; padding-right: 18px; } .landscape-card__play { display: none; } }
+	@media (max-width: 680px) { .media-row { gap: 14px; } .section-heading h2 { font-size: 1.02rem; } .media-row__viewport { margin-right: -18px; } .media-row__track { grid-auto-columns: 72vw; gap: 12px; padding-right: 18px; } .landscape-card__play { display: none; } }
 	@media (prefers-reduced-motion: reduce) { .landscape-card, .landscape-card__art img, .landscape-card__play { transition: none; } .landscape-card:hover, .landscape-card:focus-within { transform: none; } }
 </style>
