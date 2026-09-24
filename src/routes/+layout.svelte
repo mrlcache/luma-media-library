@@ -6,6 +6,7 @@
 	import PlayerHost from '$lib/components/PlayerHost.svelte';
 	import { PLAYER_CONTEXT } from '$lib/player-context';
 	import { isDesktopRuntime, readDesktopBootstrap } from '$lib/platform/desktop';
+	import { requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import { registerLenis } from '$lib/scroll/lenis';
 	import type Lenis from 'lenis';
 	import type { IconName } from '$lib/components/Icon.svelte';
@@ -94,6 +95,8 @@
 	onMount(() => {
 		let disposed = false;
 		let unlistenResize: (() => void) | undefined;
+		const acrylicRequester = Symbol('Application surface');
+		requestNativeAcrylic(acrylicRequester, true);
 
 		if (isDesktopRuntime()) {
 			desktopRuntime = true;
@@ -126,6 +129,7 @@
 		return () => {
 			disposed = true;
 			unlistenResize?.();
+			requestNativeAcrylic(acrylicRequester, false);
 		};
 	});
 

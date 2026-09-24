@@ -1,9 +1,13 @@
-use media_core::{CatalogPage, LibraryState, LibraryStatus, LibraryStore, ScanSummary};
+use media_core::{
+    CatalogPage, LibraryScanSummary, LibraryState, LibraryStatus, LibraryStore, ScanSummary,
+};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tauri::Manager;
 
 mod hss_backdrop;
+mod metadata;
+mod tmdb;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,16 +43,39 @@ fn get_library_status(state: tauri::State<'_, LibraryState>) -> Result<LibrarySt
 fn get_catalog_page(
     offset: u32,
     count: u32,
+    kind: Option<String>,
+    query: Option<String>,
+    sort: Option<String>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<CatalogPage, String> {
     let mut store = LibraryStore::open(&state.db_path)?;
-    store.catalog_page(offset, count)
+    store.catalog_filtered_page(
+        offset,
+        count,
+        kind.as_deref(),
+        query.as_deref(),
+        sort.as_deref(),
+    )
+}
+
+#[tauri::command]
+async fn test_tmdb_connection(state: tauri::State<'_, tmdb::TmdbState>) -> Result<(), String> {
+    state.test_connection().await
+}
+
+#[tauri::command]
+async fn search_tmdb(
+    query: String,
+    state: tauri::State<'_, tmdb::TmdbState>,
+) -> Result<Vec<tmdb::TmdbSearchResult>, String> {
+    state.search(&query).await
 }
 
 #[tauri::command]
 async fn scan_library(
     root_path: String,
     state: tauri::State<'_, LibraryState>,
+    tmdb: tauri::State<'_, tmdb::TmdbState>,
 ) -> Result<ScanSummary, String> {
     if state
         .scanning
@@ -58,15 +85,51 @@ async fn scan_library(
         return Err("A library scan is already in progress.".to_owned());
     }
 
+    let _scan_guard = ScanGuard(state.scanning.clone());
     let db_path = state.db_path.clone();
-    let scanning = state.scanning.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _scan_guard = ScanGuard(scanning);
-        let mut store = LibraryStore::open(&db_path)?;
+    let scan_path = db_path.clone();
+    let mut summary = tauri::async_runtime::spawn_blocking(move || {
+        let mut store = LibraryStore::open(&scan_path)?;
         store.scan_root(&root_path)
     })
     .await
-    .map_err(|error| format!("The library scan could not finish: {error}"))?
+    .map_err(|error| format!("The library scan could not finish: {error}"))??;
+    let report = metadata::enrich_library(&db_path, tmdb.inner()).await;
+    summary.matched_count = report.matched_count;
+    summary.unmatched_count = report.unmatched_count;
+    summary.pending_count = report.pending_count;
+    summary.metadata_error = report.error;
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn rescan_library(
+    state: tauri::State<'_, LibraryState>,
+    tmdb: tauri::State<'_, tmdb::TmdbState>,
+) -> Result<LibraryScanSummary, String> {
+    if state
+        .scanning
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return Err("A library scan is already in progress.".to_owned());
+    }
+
+    let _scan_guard = ScanGuard(state.scanning.clone());
+    let db_path = state.db_path.clone();
+    let scan_path = db_path.clone();
+    let mut summary = tauri::async_runtime::spawn_blocking(move || {
+        let mut store = LibraryStore::open(&scan_path)?;
+        store.rescan_roots()
+    })
+    .await
+    .map_err(|error| format!("The library refresh could not finish: {error}"))??;
+    let report = metadata::enrich_library(&db_path, tmdb.inner()).await;
+    summary.matched_count = report.matched_count;
+    summary.unmatched_count = report.unmatched_count;
+    summary.pending_count = report.pending_count;
+    summary.metadata_error = report.error;
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -127,6 +190,10 @@ pub fn run() {
                 db_path,
                 scanning: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
+            app.manage(
+                tmdb::TmdbState::new(app_data_dir.join("tmdb_read_access_token"))
+                    .map_err(std::io::Error::other)?,
+            );
             app.manage(hss_backdrop::BackdropState::default());
 
             let frame_state = NativeWindowFrameState::default();
@@ -147,7 +214,10 @@ pub fn run() {
             desktop_bootstrap,
             get_library_status,
             get_catalog_page,
+            test_tmdb_connection,
+            search_tmdb,
             scan_library,
+            rescan_library,
             set_hss_acrylic_enabled
         ])
         .run(tauri::generate_context!())

@@ -1,5 +1,30 @@
 export type MediaKind = 'movie' | 'series';
 
+export type TmdbSearchResult = {
+	id: number;
+	title: string;
+	kind: MediaKind;
+	year: number | null;
+	overview: string;
+	voteAverage: number | null;
+	posterUrl: string | null;
+	backdropUrl: string | null;
+};
+
+export type CatalogMedia = {
+	id: number;
+	title: string;
+	extension: string;
+	sizeBytes: number;
+	modifiedAt: number | null;
+	kind: MediaKind | null;
+	year: number | null;
+	overview: string | null;
+	voteAverage: number | null;
+	posterUrl: string | null;
+	backdropUrl: string | null;
+};
+
 export type Episode = {
 	id: string;
 	title: string;
