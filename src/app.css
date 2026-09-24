@@ -33,6 +33,15 @@
 	--material-control: rgba(38, 43, 50, 0.52);
 	--material-border: rgba(255, 255, 255, 0.1);
 	--material-highlight: rgba(255, 255, 255, 0.045);
+	--acrylic-content-tint:
+		radial-gradient(ellipse 52% 36% at 5% -6%, rgba(181, 216, 232, 0.21), transparent 72%),
+		radial-gradient(ellipse 48% 44% at 103% 16%, rgba(113, 154, 178, 0.16), transparent 70%),
+		radial-gradient(ellipse 60% 45% at 74% 105%, rgba(91, 125, 151, 0.13), transparent 74%),
+		linear-gradient(160deg, rgba(21, 27, 34, 0.84), rgba(11, 16, 22, 0.82) 50%, rgba(8, 12, 18, 0.84));
+	--acrylic-content-fallback:
+		radial-gradient(ellipse 52% 36% at 5% -6%, rgba(181, 216, 232, 0.16), transparent 72%),
+		radial-gradient(ellipse 48% 44% at 103% 16%, rgba(113, 154, 178, 0.11), transparent 70%),
+		linear-gradient(160deg, #171e25, #0c1117 50%, #080d13);
 	--success: var(--accent);
 	--warning: #aaa48d;
 	--danger: #b88984;

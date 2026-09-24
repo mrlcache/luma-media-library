@@ -1,8 +1,10 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import PosterCard from '$lib/components/PosterCard.svelte';
 	import { media } from '$lib/data';
 	import { usePlayer } from '$lib/player-context';
+	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -15,11 +17,19 @@
 	function playEpisode() {
 		player.open(data.item);
 	}
+
+	onMount(() => {
+		const acrylicRequester = Symbol('Details surface');
+		requestNativeAcrylic(acrylicRequester, true);
+		return () => requestNativeAcrylic(acrylicRequester, false);
+	});
 </script>
 
 <svelte:head><title>{data.item.title} · Media library</title></svelte:head>
 
-<div class="detail-page">
+
+<div class="detail-surface" data-native-backdrop={$nativeAcrylicStatus}>
+	<div class="detail-page">
 	<a class="back-link" href={data.item.kind === 'movie' ? '/library?type=movie' : '/library?type=series'}><Icon name="arrow-left" size={15} />Back to {data.item.kind === 'movie' ? 'movies' : 'series'}</a>
 
 	<section class="detail-hero" style={`--backdrop: url("${data.item.backdrop}")`}>
@@ -62,9 +72,13 @@
 		<div class="section-heading"><h2 id="related-heading">More like this</h2></div>
 		<div class="related-grid">{#each related as item (item.id)}<PosterCard media={item} variant="catalog" />{/each}</div>
 	</section>
+	</div>
 </div>
 
 <style>
+	.detail-surface { min-height: 100vh; background: #101419; }
+	:global(html[data-runtime='desktop']) .detail-surface { background: var(--acrylic-content-tint); }
+	:global(html[data-runtime='desktop'] .detail-surface[data-native-backdrop='unavailable']) { background: var(--acrylic-content-fallback); }
 	.detail-page { max-width: 1440px; margin: 0 auto; padding: 26px 42px 74px; }
 	.back-link { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 0.74rem; text-decoration: none; }
 	.back-link:hover { color: var(--text-strong); }
@@ -114,11 +128,11 @@
 	.detail-page { max-width: var(--content-width); margin: 0 auto; padding: 28px var(--content-gutter) 84px; }
 	.back-link { color: var(--text-muted); font-weight: 560; transition: color 140ms ease; }
 	.back-link:hover { color: var(--text-strong); }
-	.detail-hero { min-height: clamp(410px, 49svh, 530px); margin-top: 18px; border: 0; border-radius: 0; background: transparent; }
+	.detail-hero { min-height: clamp(410px, 49svh, 530px); margin-top: 18px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); border-radius: 28px; corner-shape: squircle; background: transparent; }
 	.detail-hero__backdrop { inset: 0; background-image: linear-gradient(90deg, rgba(5, 7, 10, 0.97) 0%, rgba(5, 7, 10, 0.82) 31%, rgba(5, 7, 10, 0.34) 66%, rgba(5, 7, 10, 0.14) 100%), linear-gradient(0deg, rgba(7, 9, 12, 0.98), rgba(7, 9, 12, 0.12) 64%), var(--backdrop); background-position: center; background-size: cover; filter: saturate(0.78) contrast(1.02); }
 	.detail-hero__veil { display: none; }
-	.detail-hero__content { align-items: end; max-width: var(--content-width); min-height: clamp(410px, 49svh, 530px); margin: 0 auto; padding: 62px var(--content-gutter) 58px; gap: 32px; }
-	.detail-poster { flex: 0 0 166px; width: 166px; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; box-shadow: 0 20px 42px rgba(0,0,0,0.34); }
+	.detail-hero__content { align-items: center; max-width: var(--content-width); min-height: clamp(410px, 49svh, 530px); margin: 0 auto; padding: 58px var(--content-gutter); gap: 32px; }
+	.detail-poster { flex: 0 0 166px; width: 166px; border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; corner-shape: squircle; box-shadow: 0 20px 42px rgba(0,0,0,0.34); }
 	.detail-copy { width: min(630px, 66%); }
 	.detail-kind { margin: 0 0 12px; color: var(--accent); font-size: 0.74rem; font-weight: 650; }
 	.detail-kind span { margin: 0 6px; color: var(--text-dim); }
@@ -167,5 +181,8 @@
 		.related-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 	}
 	@media (prefers-reduced-motion: reduce) { .button, .episode-play { transition: none; } .button:hover, .button:focus-visible { transform: none; } }
-	@media (prefers-reduced-transparency: reduce) { .button--ghost { background: var(--surface-3); backdrop-filter: none; } }
+	@media (prefers-reduced-transparency: reduce) {
+		.button--ghost { background: var(--surface-3); backdrop-filter: none; }
+		:global(html[data-runtime='desktop']) .detail-surface { background: #0c0f13; }
+	}
 </style>

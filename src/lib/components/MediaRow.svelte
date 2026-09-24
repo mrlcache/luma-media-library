@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import { usePlayer } from '$lib/player-context';
+	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
 	import type { MediaItem } from '$lib/types';
 
 	type Props = { title: string; description?: string; items: MediaItem[]; showProgress?: boolean };
@@ -15,26 +16,26 @@
 			{#if description}<p>{description}</p>{/if}
 		</div>
 	</div>
-	<div class="media-row__track" role="list">
+	<div class="media-row__track" role="list" use:smoothHorizontalScroll>
 		{#each items as media, index (media.id)}
 			<article class="landscape-card" role="listitem">
+				<div class="landscape-card__art" style="corner-shape: squircle">
+					<div class="landscape-card__selection-halo" style="corner-shape: squircle"></div>
+					<a class="landscape-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} style="corner-shape: squircle">
+						<img src={media.backdrop} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />
+						<div class="landscape-card__scrim"></div>
+						{#if showProgress && media.progress}
+							<div class="landscape-card__progress"><span style={`--progress: ${media.progress * 100}%`}></span></div>
+						{/if}
+					</a>
+					<button class="landscape-card__play" aria-label={`Play ${media.title}`} onclick={() => player.open(media)}><Icon name="play" size={14} weight="fill" /></button>
+				</div>
 				<a class="landscape-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`}>
-					<div class="landscape-card__art" style="corner-shape: squircle">
-						<div class="landscape-card__selection-halo" style="corner-shape: squircle"></div>
-					<div class="landscape-card__media" style="corner-shape: squircle">
-							<img src={media.backdrop} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />
-							<div class="landscape-card__scrim"></div>
-							{#if showProgress && media.progress}
-								<div class="landscape-card__progress"><span style={`--progress: ${media.progress * 100}%`}></span></div>
-							{/if}
-						</div>
-					</div>
 					<div class="landscape-card__copy">
 						<strong>{media.title}</strong>
 						<span>{media.progressLabel ?? `${media.year} · ${media.genres[0]}`}</span>
 					</div>
 				</a>
-				<button class="landscape-card__play" aria-label={`Play ${media.title}`} onclick={() => player.open(media)}><Icon name="play" size={14} weight="fill" /></button>
 			</article>
 		{/each}
 	</div>
@@ -51,7 +52,7 @@
 	.landscape-card__link { display: block; color: inherit; text-decoration: none; }
 	.landscape-card__art { position: relative; isolation: isolate; aspect-ratio: 16 / 9; border-radius: var(--art-radius); background: transparent; transition: box-shadow 180ms ease; }
 	.landscape-card__selection-halo { position: absolute; z-index: 2; inset: -2px; box-sizing: border-box; border: 2px solid transparent; border-radius: calc(var(--art-radius) + 2px); pointer-events: none; opacity: 0; transition: border-color 180ms ease, opacity 180ms ease; }
-	.landscape-card__media { position: absolute; z-index: 1; inset: 0; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); }
+	.landscape-card__media { position: absolute; z-index: 1; inset: 0; display: block; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); color: inherit; text-decoration: none; }
 	.landscape-card__art img,
 	.landscape-card__scrim { display: block; width: 100%; height: 100%; border-radius: var(--art-radius); }
 	.landscape-card__art img { object-fit: cover; transition: filter 180ms ease, transform 260ms ease; }
@@ -61,7 +62,7 @@
 	.landscape-card__copy { display: grid; gap: 3px; padding: 10px 2px 0; }
 	.landscape-card__copy strong { overflow: hidden; color: var(--text-soft); font-size: 0.8rem; font-weight: 650; letter-spacing: -0.018em; text-overflow: ellipsis; white-space: nowrap; }
 	.landscape-card__copy span { overflow: hidden; color: var(--text-muted); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
-	.landscape-card__play { position: absolute; right: 10px; bottom: 44px; display: grid; place-items: center; width: 35px; height: 35px; padding: 0; border: 1px solid rgba(255,255,255,0.8); border-radius: 50%; color: var(--surface-0); background: rgba(247,249,250,0.94); box-shadow: 0 8px 22px rgba(0,0,0,0.34); cursor: pointer; opacity: 0; transform: translateY(5px) scale(0.94); transition: opacity 160ms ease, transform 180ms ease; }
+	.landscape-card__play { position: absolute; z-index: 3; right: 12px; bottom: 12px; display: grid; place-items: center; width: 35px; height: 35px; padding: 0; border: 1px solid rgba(255,255,255,0.8); border-radius: 50%; color: var(--surface-0); background: rgba(247,249,250,0.94); box-shadow: 0 8px 22px rgba(0,0,0,0.34); cursor: pointer; opacity: 0; transform: translateY(5px) scale(0.94); transition: opacity 160ms ease, transform 180ms ease; }
 	.landscape-card:hover .landscape-card__play, .landscape-card:focus-within .landscape-card__play { opacity: 1; transform: translateY(0); }
 	.landscape-card:hover, .landscape-card:focus-within { transform: translateY(-3px) scale(1.018); }
 	.landscape-card:hover .landscape-card__art, .landscape-card:focus-within .landscape-card__art { box-shadow: 0 18px 38px rgba(0,0,0,0.34); }

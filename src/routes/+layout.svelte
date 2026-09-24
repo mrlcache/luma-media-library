@@ -6,6 +6,8 @@
 	import PlayerHost from '$lib/components/PlayerHost.svelte';
 	import { PLAYER_CONTEXT } from '$lib/player-context';
 	import { isDesktopRuntime, readDesktopBootstrap } from '$lib/platform/desktop';
+	import { registerLenis } from '$lib/scroll/lenis';
+	import type Lenis from 'lenis';
 	import type { IconName } from '$lib/components/Icon.svelte';
 	import type { MediaItem } from '$lib/types';
 	import '../app.css';
@@ -15,9 +17,11 @@
 	let desktopRuntime = $state(false);
 	let windowMaximized = $state(false);
 	let contentArea: HTMLElement;
+	let desktopScroll: Lenis | undefined;
 
 	afterNavigate(() => {
-		contentArea?.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+		if (desktopScroll) desktopScroll.scrollTo(0, { immediate: true });
+		else contentArea?.scrollTo({ top: 0, left: 0, behavior: 'instant' });
 	});
 
 	function scrollContentFromChrome(event: WheelEvent) {
@@ -27,7 +31,9 @@
 			: event.deltaMode === WheelEvent.DOM_DELTA_PAGE
 				? contentArea.clientHeight
 				: 1;
-		contentArea.scrollBy({ top: event.deltaY * unit, behavior: 'smooth' });
+		const delta = event.deltaY * unit;
+		if (desktopScroll) desktopScroll.scrollTo(desktopScroll.targetScroll + delta);
+		else contentArea.scrollBy({ top: delta, behavior: 'smooth' });
 	}
 
 	function openPlayer(media: MediaItem) {
@@ -110,7 +116,10 @@
 				if (!bootstrap) return;
 				document.documentElement.dataset.runtime = bootstrap.platform;
 				document.documentElement.dataset.appVersion = bootstrap.version;
-				document.documentElement.dataset.nativeFrame = bootstrap.nativeWindowFrame ? 'dwm' : 'css';
+				const nativeFrame = typeof bootstrap.nativeWindowFrame === 'boolean'
+					? bootstrap.nativeWindowFrame
+					: bootstrap.windowShape === 'css-squircle';
+				document.documentElement.dataset.nativeFrame = nativeFrame ? 'dwm' : 'css';
 			})
 			.catch((error) => console.warn('Desktop bootstrap unavailable', error));
 
@@ -123,26 +132,36 @@
 	onMount(() => {
 		if (!isDesktopRuntime() || !contentArea) return;
 		const scroller = contentArea;
-		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-		const onWheel = (event: WheelEvent) => {
-			if (reducedMotion.matches || event.ctrlKey || event.shiftKey || event.deltaY === 0) return;
-			if (Math.abs(event.deltaX) > Math.abs(event.deltaY) * 0.5) return;
-
-			// Only replace coarse mouse-wheel steps. Keep precise touchpad input native.
-			const coarseStep = event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
-				(Math.abs(event.deltaY) >= 80 && Number.isInteger(event.deltaY) && event.deltaY % 10 === 0);
-			if (!coarseStep) return;
-
-			event.preventDefault();
-			const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
-				? 24
-				: event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-					? scroller.clientHeight
-					: 1;
-			scroller.scrollBy({ top: event.deltaY * unit, behavior: 'smooth' });
+		const content = scroller.firstElementChild;
+		if (!(content instanceof HTMLElement)) return;
+		let disposed = false;
+		let releaseScroll: (() => void) | undefined;
+		void import('lenis')
+			.then(({ default: Lenis }) => {
+				if (disposed) return;
+				desktopScroll = new Lenis({
+					wrapper: scroller,
+					content,
+					eventsTarget: scroller,
+					autoRaf: false,
+					smoothWheel: true,
+					lerp: 0.13,
+					syncTouch: false,
+					overscroll: false,
+					// Keep horizontal rows native; smooth every vertical wheel gesture consistently.
+					virtualScroll: ({ event, deltaX, deltaY }) => {
+						if (!(event instanceof WheelEvent) || event.ctrlKey || event.shiftKey) return false;
+						return deltaY !== 0 && Math.abs(deltaY) >= Math.abs(deltaX);
+					}
+				});
+				releaseScroll = registerLenis(desktopScroll);
+			})
+			.catch((error) => console.warn('Smooth scrolling unavailable', error));
+		return () => {
+			disposed = true;
+			releaseScroll?.();
+			desktopScroll = undefined;
 		};
-		scroller.addEventListener('wheel', onWheel, { capture: true, passive: false });
-		return () => scroller.removeEventListener('wheel', onWheel, true);
 	});
 
 	async function runWindowAction(action: 'minimize' | 'toggle-maximize' | 'close') {
@@ -171,7 +190,10 @@
 </svelte:head>
 
 <div class="app-stage">
-	<div class="app-shell" class:window-restored={desktopRuntime && !windowMaximized}>
+	<div
+		class="app-shell"
+		class:window-restored={desktopRuntime && !windowMaximized}
+	>
 		<aside class="sidebar" aria-label="Application navigation" onwheel={scrollContentFromChrome}>
 			<div class="library-context">
 				<div class="library-mark" aria-hidden="true"><Icon name="play" size={13} weight="fill" /></div>
@@ -259,9 +281,9 @@
 					onclick={() => runWindowAction('toggle-maximize')}
 				>
 					{#if windowMaximized}
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V5h11v11h-3M5 8h11v11H5z" /></svg>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V5.5h10.5V16H16M5.5 8H16v10.5H5.5z" /></svg>
 					{:else}
-						<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="0.5" /></svg>
+						<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="5.5" width="13" height="13" rx="1.75" /></svg>
 					{/if}
 				</button>
 				<button class="window-control window-control--close" type="button" aria-label="Close window" title="Close" onclick={() => runWindowAction('close')}>
@@ -469,33 +491,49 @@
 		z-index: 80;
 		display: none;
 		grid-template-columns: minmax(0, 1fr) auto;
-		height: 36px;
+		height: 44px;
 		pointer-events: none;
 	}
 	.window-drag-region {
 		min-width: 0;
-		height: 36px;
+		height: 44px;
 		cursor: default;
 		pointer-events: auto;
 		user-select: none;
 		-webkit-app-region: drag;
 	}
-	.window-controls { display: flex; align-items: stretch; height: 36px; padding-right: 7px; pointer-events: auto; }
+	.window-controls {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		height: 36px;
+		margin: 7px 11px 0 0;
+		padding: 3px;
+		border: 1px solid rgba(237, 243, 247, 0.14);
+		border-radius: 12px;
+		background: rgba(16, 20, 25, 0.72);
+		box-shadow: inset 0 1px rgba(255, 255, 255, 0.075), 0 8px 24px rgba(0, 0, 0, 0.22);
+		-webkit-backdrop-filter: blur(18px) saturate(125%);
+		backdrop-filter: blur(18px) saturate(125%);
+		pointer-events: auto;
+	}
 	.window-control {
 		display: grid;
-		width: 44px;
+		width: 34px;
+		height: 28px;
 		place-items: center;
 		border: 0;
 		border-radius: 8px;
-		color: rgba(233, 237, 240, 0.76);
+		color: rgba(241, 245, 248, 0.78);
 		background: transparent;
 		cursor: pointer;
-		transition: background 130ms ease, color 130ms ease;
+		transition: background 130ms ease, color 130ms ease, transform 130ms ease;
 		-webkit-app-region: no-drag;
 	}
-	.window-control svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
-	.window-control:hover { color: var(--text-strong); background: rgba(255, 255, 255, 0.1); }
-	.window-control--close:hover { color: #fff; background: #c42b1c; }
+	.window-control svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+	.window-control:hover { color: #fff; background: rgba(240, 247, 250, 0.14); }
+	.window-control:active { transform: scale(0.94); }
+	.window-control--close:hover { color: #fff; background: rgba(184, 91, 94, 0.7); }
 
 	:global(html[data-runtime='desktop']) .window-chrome { display: grid; }
 

@@ -6,6 +6,8 @@
 	import { continueWatching, featured, recentlyAdded, media } from '$lib/data';
 	import { usePlayer } from '$lib/player-context';
 	import { isDesktopRuntime } from '$lib/platform/desktop';
+	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
+	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
 
 	const player = usePlayer();
 	const libraryPreview = [media[2], media[3], media[4], media[6], media[7], media[8]];
@@ -14,97 +16,28 @@
 	onMount(() => {
 		if (!isDesktopRuntime()) return;
 
-		let active = true;
-		const reduceTransparency = window.matchMedia('(prefers-reduced-transparency: reduce)');
-		let wantedEnabled = false;
-		let attemptedEnabled = false;
-		let hssIntersecting = false;
-		let setNativeEnabled: ((enabled: boolean) => Promise<void>) | undefined;
-		let loggedFailure = false;
-		let sending = false;
-
-		const flushState = async () => {
-			if (!setNativeEnabled || sending) return;
-			sending = true;
-			while (attemptedEnabled !== wantedEnabled) {
-				const nextEnabled = wantedEnabled;
-				try {
-					await setNativeEnabled(nextEnabled);
-					attemptedEnabled = nextEnabled;
-					if (homeContent?.isConnected) {
-						if (nextEnabled) homeContent.dataset.nativeBackdrop = 'ready';
-						else delete homeContent.dataset.nativeBackdrop;
-					}
-				} catch (error) {
-					attemptedEnabled = nextEnabled;
-					if (homeContent?.isConnected) homeContent.dataset.nativeBackdrop = 'unavailable';
-					if (!loggedFailure) {
-						console.warn('The native HSS Acrylic material could not be updated.', error);
-						loggedFailure = true;
-					}
-				}
-			}
-			sending = false;
-		};
-
-		const updateEnabledState = () => {
-			const shouldEnable =
-				active &&
-				document.visibilityState === 'visible' &&
-				!reduceTransparency.matches &&
-				homeContent.isConnected &&
-				hssIntersecting;
-
-			if (wantedEnabled !== shouldEnable) {
-				wantedEnabled = shouldEnable;
-				void flushState();
-			}
-		};
-
+		const acrylicRequester = Symbol('Home HSS');
 		const contentArea = homeContent.closest('.content-area');
 		const observer = new IntersectionObserver(
 			(entries) => {
 				const entry = entries[entries.length - 1];
 				if (!entry) return;
-				hssIntersecting =
+				requestNativeAcrylic(acrylicRequester,
 					entry.isIntersecting &&
 					entry.intersectionRect.width > 2 &&
-					entry.intersectionRect.height > 2;
-				updateEnabledState();
+					entry.intersectionRect.height > 2);
 			},
 			{
 				root: contentArea,
-				// Keep the native material out of the 36px window-controls overlay.
-				rootMargin: '-36px 0px 0px 0px',
+				// Keep the native material out of the 44px window-controls overlay.
+				rootMargin: '-44px 0px 0px 0px',
 				threshold: 0
 			}
 		);
 		observer.observe(homeContent);
-		window.addEventListener('resize', updateEnabledState);
-		document.addEventListener('visibilitychange', updateEnabledState);
-		reduceTransparency.addEventListener('change', updateEnabledState);
-
-		const initialize = async () => {
-			try {
-				const { invoke } = await import('@tauri-apps/api/core');
-				if (!active) return;
-				setNativeEnabled = (enabled) => invoke('set_hss_acrylic_enabled', { enabled });
-				void flushState();
-			} catch (error) {
-				if (homeContent?.isConnected) homeContent.dataset.nativeBackdrop = 'unavailable';
-				console.warn('The native HSS backdrop could not start.', error);
-			}
-		};
-
-		void initialize();
 		return () => {
-			active = false;
 			observer.disconnect();
-			window.removeEventListener('resize', updateEnabledState);
-			document.removeEventListener('visibilitychange', updateEnabledState);
-			reduceTransparency.removeEventListener('change', updateEnabledState);
-			wantedEnabled = false;
-			void flushState();
+			requestNativeAcrylic(acrylicRequester, false);
 		};
 	});
 
@@ -137,25 +70,27 @@
 		</div>
 	</section>
 
-	<div class="home-content" bind:this={homeContent} style="corner-shape: squircle">
-		<div class="home-section home-section--first">
-			<MediaRow title="Continue watching" items={continueWatching} showProgress />
-		</div>
-
-		<div class="home-section home-section--library">
-			<div class="section-heading">
-				<h2>Your library</h2>
-				<a href="/library" class="section-link">View all <Icon name="chevron-right" size={15} weight="bold" /></a>
+	<div class="home-content" bind:this={homeContent} data-native-backdrop={$nativeAcrylicStatus}>
+		<div class="home-content__inner">
+			<div class="home-section home-section--first">
+				<MediaRow title="Continue watching" items={continueWatching} showProgress />
 			</div>
-			<div class="poster-grid-preview">
-				{#each libraryPreview as item, index (item.id)}
-					<PosterCard media={item} priority={index < 2} variant="home" />
-				{/each}
-			</div>
-		</div>
 
-		<div class="home-section home-section--last">
-			<MediaRow title="Recently added" items={recentlyAdded} />
+			<div class="home-section home-section--library">
+				<div class="section-heading">
+					<h2>Your library</h2>
+					<a href="/library" class="section-link">View all <Icon name="chevron-right" size={15} weight="bold" /></a>
+				</div>
+				<div class="poster-grid-preview" use:smoothHorizontalScroll>
+					{#each libraryPreview as item, index (item.id)}
+						<PosterCard media={item} priority={index < 2} variant="home" />
+					{/each}
+				</div>
+			</div>
+
+			<div class="home-section home-section--last">
+				<MediaRow title="Recently added" items={recentlyAdded} />
+			</div>
 		</div>
 	</div>
 </div>
@@ -163,7 +98,7 @@
 <style>
 	.home-page {
 		--featured-content-bottom: 64px;
-		--home-content-overlap: 20px;
+		--featured-content-top: 44px;
 		min-height: 100%;
 		background: #080a0d;
 	}
@@ -196,7 +131,7 @@
 		min-height: 0;
 		max-width: var(--content-width);
 		margin: 0 auto;
-		padding: calc(var(--featured-content-bottom) - var(--home-content-overlap)) var(--content-gutter) var(--featured-content-bottom);
+		padding: var(--featured-content-top) var(--content-gutter) var(--featured-content-bottom);
 	}
 
 	.featured h1 {
@@ -278,30 +213,23 @@
 
 	.home-content {
 		position: relative;
-		max-width: var(--content-width);
-		margin: calc(-1 * var(--home-content-overlap)) auto 0;
-		padding: 40px var(--content-gutter) 92px;
-		border-top: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 22px 22px 0 0;
-		background: transparent;
-		box-shadow: none;
+		width: 100%;
+		background: #101419;
 		z-index: 2;
+	}
+	.home-content__inner {
+		max-width: var(--content-width);
+		margin: 0 auto;
+		padding: 40px var(--content-gutter) 92px;
 	}
 	/* DWM supplies desktop Acrylic; keep this tint translucent so it shows through. */
 	:global(html[data-runtime='desktop']) .home-content {
-		margin-top: 0;
-		border-top: 0;
-		background:
-			linear-gradient(116deg, rgba(255, 255, 255, 0.11) -12%, transparent 28%, transparent 68%, rgba(172, 206, 220, 0.035) 100%),
-			radial-gradient(ellipse 130% 48% at 8% -8%, rgba(181, 216, 232, 0.13), transparent 48%),
-			radial-gradient(ellipse 104% 38% at 86% 104%, rgba(91, 125, 151, 0.12), transparent 52%),
-			linear-gradient(158deg, rgba(18, 23, 29, 0.88) 0%, rgba(4, 6, 9, 0.84) 50%, rgba(9, 12, 16, 0.86) 100%);
-		box-shadow: inset 0 14px 28px -20px rgba(0, 0, 0, 0.72);
+		background: var(--acrylic-content-tint);
 		-webkit-backdrop-filter: none;
 		backdrop-filter: none;
 	}
 	:global(html[data-runtime='desktop'] .home-content[data-native-backdrop='unavailable']) {
-		background: linear-gradient(158deg, #12171d 0%, #090c10 100%);
+		background: var(--acrylic-content-fallback);
 		-webkit-backdrop-filter: none;
 		backdrop-filter: none;
 	}
@@ -341,7 +269,7 @@
 	}
 
 	@media (max-width: 760px) {
-		.home-page { --featured-content-bottom: 48px; --home-content-overlap: 18px; }
+		.home-page { --featured-content-bottom: 48px; --featured-content-top: 30px; }
 		.featured { min-height: 0; }
 		.featured__backdrop {
 			background-image:
@@ -350,7 +278,7 @@
 			background-position: 60% center;
 			filter: saturate(0.83) contrast(1.04);
 		}
-		.featured__content { min-height: 0; padding: calc(var(--featured-content-bottom) - var(--home-content-overlap)) 18px var(--featured-content-bottom); }
+		.featured__content { min-height: 0; padding: var(--featured-content-top) 18px var(--featured-content-bottom); }
 		.featured h1 { max-width: 94%; font-size: clamp(2.75rem, 12vw, 3.6rem); font-weight: 650; line-height: 0.94; }
 		.featured__meta { margin-top: 14px; font-size: 0.67rem; }
 		.featured__meta span:nth-child(4) { display: none; }
@@ -358,7 +286,7 @@
 		.featured__actions { margin-top: 18px; }
 		.button { min-height: 40px; padding: 0 15px; }
 		.button--secondary { backdrop-filter: blur(12px); }
-		.home-content { margin-top: -18px; padding: 31px 18px 80px; border-radius: 18px 18px 0 0; }
+		.home-content__inner { padding: 31px 18px 80px; }
 		.home-section + .home-section { margin-top: 43px; }
 		.home-section--last { margin-top: 48px; }
 		.section-heading { margin-bottom: 14px; }
@@ -378,7 +306,6 @@
 		.home-content { background: #0c0f13; }
 		:global(html[data-runtime='desktop']) .home-content {
 			background: #0c0f13;
-			box-shadow: none;
 			-webkit-backdrop-filter: none;
 			backdrop-filter: none;
 		}

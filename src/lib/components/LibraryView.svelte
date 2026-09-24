@@ -1,7 +1,9 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import PosterGrid from '$lib/components/PosterGrid.svelte';
 	import { media } from '$lib/data';
+	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import type { MediaKind } from '$lib/types';
 
 	type Props = { heading?: string; initialType?: 'all' | MediaKind; initialQuery?: string };
@@ -39,11 +41,18 @@
 		query = '';
 		selectedType = 'all';
 	}
+
+	onMount(() => {
+		const acrylicRequester = Symbol('Library surface');
+		requestNativeAcrylic(acrylicRequester, true);
+		return () => requestNativeAcrylic(acrylicRequester, false);
+	});
 </script>
 
 <svelte:head><title>{heading} · Media library</title></svelte:head>
 
-<div class="library-page">
+<div class="library-surface" data-native-backdrop={$nativeAcrylicStatus}>
+	<div class="library-page">
 	<header class="library-heading">
 		<h1>{heading}</h1>
 		<p class="library-heading__meta">{collectionCount} titles</p>
@@ -89,9 +98,13 @@
 			<button class="button button--secondary" type="button" onclick={resetFilters}>Reset filters</button>
 		</div>
 	{/if}
+	</div>
 </div>
 
 <style>
+	.library-surface { min-height: 100vh; background: #101419; }
+	:global(html[data-runtime='desktop']) .library-surface { background: var(--acrylic-content-tint); }
+	:global(html[data-runtime='desktop'] .library-surface[data-native-backdrop='unavailable']) { background: var(--acrylic-content-fallback); }
 	.library-page { max-width: var(--content-width); margin: 0 auto; padding: 42px var(--content-gutter) 76px; }
 	.library-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; }
 	.library-heading h1 { margin: 0; color: var(--text-strong); font-family: var(--font-display); font-size: clamp(2.35rem, 4vw, 3.7rem); font-weight: 650; letter-spacing: -0.065em; line-height: 0.98; }
@@ -123,4 +136,7 @@
 	@media (max-width: 880px) { .library-page { padding-right: 28px; padding-left: 28px; } .library-heading { align-items: start; flex-direction: column; gap: 9px; } .library-controls { align-items: stretch; flex-direction: column; gap: 17px; } .library-search { max-width: none; } .library-controls__right { justify-content: space-between; } }
 	@media (max-width: 560px) { .library-page { padding: 32px 18px 48px; } .library-heading__meta { margin: 0; } .library-controls { margin-top: 26px; padding-top: 13px; } .library-controls__right { align-items: stretch; flex-direction: column; gap: 14px; } .filter-group { justify-content: space-between; gap: 15px; } .filter-group button { flex: 1; } .sort-control { justify-content: space-between; } }
 	@media (prefers-reduced-motion: reduce) { .filter-group button, .button { transition: none; } }
+	@media (prefers-reduced-transparency: reduce) {
+		:global(html[data-runtime='desktop']) .library-surface { background: #0c0f13; }
+	}
 </style>

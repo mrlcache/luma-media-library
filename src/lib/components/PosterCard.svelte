@@ -9,35 +9,35 @@
 </script>
 
 <article class:poster-card--home={variant === 'home'} class:poster-card--catalog={variant === 'catalog'} class="poster-card">
+	<div class="poster-card__art" style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
+		{#if variant === 'home'}<div class="poster-card__selection-halo" style="corner-shape: squircle"></div>{/if}
+		<a class="poster-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}, ${media.year}`} style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
+			<img
+				src={media.poster}
+				alt={`Poster for ${media.title}`}
+				width="520"
+				height="780"
+				loading={priority ? 'eager' : 'lazy'}
+				decoding="async"
+			/>
+			<div class="poster-card__scrim"></div>
+			{#if media.progress}
+				<div class="poster-card__progress" aria-label={`${Math.round(media.progress * 100)} percent watched`}>
+					<span style={`--progress: ${media.progress * 100}%`}></span>
+				</div>
+			{/if}
+			<span class="poster-card__kind">{media.kind === 'series' ? 'Series' : 'Movie'}</span>
+		</a>
+		<button class="poster-card__play" aria-label={`Play ${media.title}`} title={`Play ${media.title}`} onclick={() => player.open(media)}>
+			<Icon name="play" size={15} weight="fill" />
+		</button>
+	</div>
 	<a class="poster-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}, ${media.year}`}>
-		<div class="poster-card__art" style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
-			{#if variant === 'home'}<div class="poster-card__selection-halo" style="corner-shape: squircle"></div>{/if}
-			<div class="poster-card__media" style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
-				<img
-					src={media.poster}
-					alt={`Poster for ${media.title}`}
-					width="520"
-					height="780"
-					loading={priority ? 'eager' : 'lazy'}
-					decoding="async"
-				/>
-				<div class="poster-card__scrim"></div>
-				{#if media.progress}
-					<div class="poster-card__progress" aria-label={`${Math.round(media.progress * 100)} percent watched`}>
-						<span style={`--progress: ${media.progress * 100}%`}></span>
-					</div>
-				{/if}
-				<span class="poster-card__kind">{media.kind === 'series' ? 'Series' : 'Movie'}</span>
-			</div>
-		</div>
 		<div class="poster-card__copy">
 			<strong>{media.title}</strong>
 			<span>{media.year} <i aria-hidden="true">·</i> {media.genres[0]}</span>
 		</div>
 	</a>
-	<button class="poster-card__play" aria-label={`Play ${media.title}`} title={`Play ${media.title}`} onclick={() => player.open(media)}>
-		<Icon name="play" size={15} weight="fill" />
-	</button>
 </article>
 
 <style>
@@ -45,7 +45,7 @@
 	.poster-card__link { display: block; color: inherit; text-decoration: none; }
 	.poster-card__art { position: relative; isolation: isolate; aspect-ratio: 2 / 3; border-radius: var(--art-radius); background: var(--surface-2); box-shadow: 0 12px 24px rgba(0, 0, 0, 0.14); }
 	.poster-card__selection-halo { position: absolute; z-index: 2; inset: -2px; box-sizing: border-box; border: 2px solid transparent; border-radius: calc(var(--art-radius) + 2px); pointer-events: none; transition: border-color 180ms ease; }
-	.poster-card__media { position: absolute; z-index: 1; inset: 0; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); }
+	.poster-card__media { position: absolute; z-index: 1; inset: 0; display: block; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); color: inherit; text-decoration: none; }
 	.poster-card__art img,
 	.poster-card__scrim { border-radius: var(--art-radius); }
 	.poster-card__art img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform 260ms ease, filter 260ms ease; }
@@ -57,7 +57,7 @@
 	.poster-card__copy i { color: var(--text-dim); font-style: normal; }
 	.poster-card__progress { position: absolute; right: 10px; bottom: 10px; left: 10px; height: 3px; overflow: hidden; border-radius: 2px; background: rgba(255, 255, 255, 0.24); }
 	.poster-card__progress span { display: block; width: var(--progress); height: 100%; background: var(--accent); }
-	.poster-card__play { position: absolute; right: 10px; bottom: 58px; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 50%; color: var(--surface-0); background: var(--accent-soft); cursor: pointer; opacity: 0; transform: translateY(5px); transition: opacity 180ms ease, transform 180ms ease, background-color 180ms ease; }
+	.poster-card__play { position: absolute; z-index: 3; right: 12px; bottom: 12px; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 50%; color: var(--surface-0); background: var(--accent-soft); cursor: pointer; opacity: 0; transform: translateY(5px); transition: opacity 180ms ease, transform 180ms ease, background-color 180ms ease; }
 	.poster-card:hover .poster-card__play, .poster-card:focus-within .poster-card__play { opacity: 1; transform: translateY(0); }
 	.poster-card:hover .poster-card__art img, .poster-card:focus-within .poster-card__art img { filter: saturate(1.05); transform: scale(1.035); }
 	.poster-card:hover .poster-card__scrim, .poster-card:focus-within .poster-card__scrim { opacity: 0.94; }
@@ -69,7 +69,7 @@
 	.poster-card--home .poster-card__copy { padding: 10px 2px 0; }
 	.poster-card--home .poster-card__copy strong { color: var(--text-soft); font-size: 0.81rem; font-weight: 610; }
 	.poster-card--home .poster-card__copy span { font-size: 0.69rem; }
-	.poster-card--home .poster-card__play { right: 10px; bottom: 50px; border: 0; border-radius: 50%; color: var(--surface-0); background: var(--text-strong); transition-duration: 150ms; }
+	.poster-card--home .poster-card__play { border: 0; border-radius: 50%; color: var(--surface-0); background: var(--text-strong); transition-duration: 150ms; }
 	.poster-card--home:hover, .poster-card--home:focus-within { transform: translateY(-3px) scale(1.022); }
 	.poster-card--home:hover .poster-card__art, .poster-card--home:focus-within .poster-card__art { box-shadow: 0 18px 36px rgba(0,0,0,0.34); }
 	.poster-card--home .poster-card__selection-halo { opacity: 0; transition: border-color 180ms ease, opacity 180ms ease; }
@@ -81,7 +81,7 @@
 	.poster-card--catalog .poster-card__scrim, .poster-card--catalog .poster-card__kind { display: none; }
 	.poster-card--catalog .poster-card__copy { padding: 10px 2px 0; }
 	.poster-card--catalog .poster-card__copy strong { font-size: 0.81rem; font-weight: 610; }
-	.poster-card--catalog .poster-card__play { right: 10px; bottom: 50px; border: 0; border-radius: 50%; color: var(--surface-0); background: var(--text-strong); transition-duration: 150ms; }
+	.poster-card--catalog .poster-card__play { border: 0; border-radius: 50%; color: var(--surface-0); background: var(--text-strong); transition-duration: 150ms; }
 	.poster-card--catalog:hover, .poster-card--catalog:focus-within { transform: translateY(-3px) scale(1.018); }
 	.poster-card--catalog:hover .poster-card__art, .poster-card--catalog:focus-within .poster-card__art { border-color: rgba(255,255,255,0.34); box-shadow: 0 0 0 2px rgba(255,255,255,0.34), 0 18px 36px rgba(0,0,0,0.34); }
 	.poster-card--catalog:hover .poster-card__art img, .poster-card--catalog:focus-within .poster-card__art img { filter: brightness(1.05) saturate(1.03); transform: scale(1.012); }

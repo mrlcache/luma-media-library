@@ -3,6 +3,7 @@ export type DesktopBootstrap = {
 	platform: string;
 	mediaCoreStatus: 'library-index-ready';
 	nativeWindowFrame: boolean;
+	windowShape?: 'css-squircle' | 'system';
 };
 
 export type LibraryStatus = {

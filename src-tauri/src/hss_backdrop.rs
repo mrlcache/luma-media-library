@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use std::sync::{Arc, Mutex};
 
-/// Tracks whether the Home surface currently needs the system Acrylic material.
+/// Tracks whether a content surface currently needs the system Acrylic material.
 /// The material is supplied by DWM on the existing app HWND; no helper window is created.
 #[cfg(windows)]
 #[derive(Clone, Default)]
@@ -25,12 +25,11 @@ mod windows {
 
     const DWMSBT_NONE: u32 = 1;
     const DWMSBT_TRANSIENTWINDOW: u32 = 3;
-    // COLORREF is 0x00BBGGRR. DWM does not accept alpha for frame colors, so this
-    // low-contrast cool gray approximates the requested translucent outline.
-    const FRAME_BORDER_COLOR: u32 = 0x003c3631;
+    // COLORREF is 0x00BBGGRR. DWM does not accept alpha for frame colors.
+    // A slightly brighter neutral gray keeps the native outline visible but quiet.
+    const FRAME_BORDER_COLOR: u32 = 0x006a6159;
 
-    /// Ask DWM to own the restored-window corners and border. Unlike a WebView
-    /// overlay, this frame tracks the actual HWND bounds throughout native resizing.
+    /// Let DWM own the outer contour and border throughout native resizing.
     pub fn set_native_window_frame(main_hwnd: usize) -> Result<(), String> {
         let hwnd = main_hwnd as HWND;
         if hwnd.is_null() {
@@ -63,10 +62,7 @@ mod windows {
         Ok(())
     }
 
-    /// Enables Desktop Acrylic on the app's one existing window while the HSS is visible.
-    /// The caller enables it only while HSS is visible: DWM's supported Win32 API applies Acrylic
-    /// to the whole HWND. Transparent webview pixels reveal it; opaque UI (such as the sidebar)
-    /// masks it. This avoids the unsynchronized second HWND used by the previous implementation.
+    /// Desktop Acrylic lives on the one existing app window, with no helper HWND.
     pub fn set_enabled(
         state: &BackdropState,
         main_hwnd: usize,

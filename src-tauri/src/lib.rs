@@ -12,6 +12,7 @@ struct DesktopBootstrap {
     platform: &'static str,
     media_core_status: &'static str,
     native_window_frame: bool,
+    window_shape: &'static str,
 }
 
 #[tauri::command]
@@ -21,6 +22,7 @@ fn desktop_bootstrap(frame_state: tauri::State<'_, NativeWindowFrameState>) -> D
         platform: "desktop",
         media_core_status: "library-index-ready",
         native_window_frame: frame_state.0.load(Ordering::Relaxed),
+        window_shape: "system",
     }
 }
 
