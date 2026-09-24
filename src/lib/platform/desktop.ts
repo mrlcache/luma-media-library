@@ -18,6 +18,20 @@ export type ScanSummary = {
 	fileCount: number;
 };
 
+export type CatalogMedia = {
+	id: number;
+	title: string;
+	extension: string;
+	sizeBytes: number;
+	modifiedAt: number | null;
+};
+
+export type CatalogPage = {
+	items: CatalogMedia[];
+	total: number;
+	offset: number;
+};
+
 export function isDesktopRuntime(): boolean {
 	return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
@@ -34,6 +48,13 @@ export async function readLibraryStatus(): Promise<LibraryStatus | null> {
 
 	const { invoke } = await import('@tauri-apps/api/core');
 	return invoke<LibraryStatus>('get_library_status');
+}
+
+export async function readCatalogPage(offset = 0, count = 50): Promise<CatalogPage | null> {
+	if (!isDesktopRuntime()) return null;
+
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<CatalogPage>('get_catalog_page', { offset, count });
 }
 
 export async function chooseMediaFolder(): Promise<string | null> {

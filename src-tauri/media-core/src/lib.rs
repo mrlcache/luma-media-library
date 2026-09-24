@@ -1,3 +1,5 @@
 mod library;
 
-pub use library::{LibraryState, LibraryStatus, LibraryStore, ScanSummary};
+pub use library::{
+    CatalogMedia, CatalogPage, LibraryState, LibraryStatus, LibraryStore, ScanSummary,
+};

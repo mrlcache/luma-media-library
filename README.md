@@ -19,7 +19,7 @@ The broader technical plan and autonomous execution protocol live in:
 C:\Users\muris\OneDrive\Imagens\Documentos\ChatGPT\Bountys
 ```
 
-The first local media slice is in progress: the desktop Settings page can select a folder and index recognized video files into a local SQLite database. This does not yet probe codecs, populate the catalog, expose a network server or play those files. The browser preview cannot select local folders.
+The first local media slice is in progress: desktop Settings can select a folder and index recognized video files into a local SQLite database. The Rust core now keeps stable file identities and serves paginated catalog records through a narrow Tauri command. The visual catalog is still fixture-backed. Codec probing, playback and UPnP/DLNA sharing are not implemented yet. The browser preview cannot select local folders. ADR-013 records UPnP/DLNA as the primary LAN delivery target, with automatic transcoding when needed.
 
 ## Development
 

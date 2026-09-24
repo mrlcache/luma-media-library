@@ -1,4 +1,4 @@
-use media_core::{LibraryState, LibraryStatus, LibraryStore, ScanSummary};
+use media_core::{CatalogPage, LibraryState, LibraryStatus, LibraryStore, ScanSummary};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tauri::Manager;
@@ -33,6 +33,16 @@ struct NativeWindowFrameState(std::sync::atomic::AtomicBool);
 fn get_library_status(state: tauri::State<'_, LibraryState>) -> Result<LibraryStatus, String> {
     let store = LibraryStore::open(&state.db_path)?;
     store.status(state.scanning.load(Ordering::Relaxed))
+}
+
+#[tauri::command]
+fn get_catalog_page(
+    offset: u32,
+    count: u32,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<CatalogPage, String> {
+    let mut store = LibraryStore::open(&state.db_path)?;
+    store.catalog_page(offset, count)
 }
 
 #[tauri::command]
@@ -136,6 +146,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop_bootstrap,
             get_library_status,
+            get_catalog_page,
             scan_library,
             set_hss_acrylic_enabled
         ])

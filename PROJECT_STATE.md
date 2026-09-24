@@ -2,18 +2,22 @@
 
 Current phase: Local library foundation
 
-Current milestone: Desktop folder selection and SQLite indexing
+Current milestone: Shared catalog identity for the local app and planned UPnP/DLNA service
 
-Status: Tauri dev app compiled and opened; visual parity and folder scanning in the live app still need validation
+Status: Catalog core tests pass; the current native app revision has not been rebuilt or opened for visual review
 Branch: `codex/desktop-shell`
 
 The current Svelte UI and CSS are preserved. SvelteKit now produces a local static SPA for Tauri 2/WebView2, including dynamic title routes through a fallback page. The Windows shell is a transparent Tauri window with a 12px drag region and automatic window-state persistence. HSS has a DWM Desktop Acrylic candidate on the main HWND (ADR-012); unsupported systems use an opaque HSS fallback. Neither path has been visually validated in the live window yet.
 
-Settings can choose a local folder through Tauri's native dialog. The isolated `media-core` crate canonicalizes the selected directory, rejects a symlink root, walks without following symlinks, limits depth and file count, and indexes known video extensions into SQLite in the app-data directory. New scan generations remain hidden until a complete scan commits, preserving the previous index on failure. Settings reports real root/file counts and last-scan time. This is an index only: no ffprobe metadata, actual catalog items, media server or playback transport exists yet.
+Settings can choose a local folder through Tauri's native dialog. The isolated `media-core` crate canonicalizes the selected directory, rejects a symlink root, walks without following symlinks, limits depth and file count, and indexes known video extensions into SQLite in the app-data directory. New scan generations remain hidden until a complete scan commits, preserving the previous index on failure. Settings reports real root/file counts and last-scan time. A paginated catalog read now assigns stable IDs across rescans and resolves active media paths within the chosen root. It is not wired to the visual catalog yet; ffprobe metadata, artwork, UPnP/DLNA discovery, HTTP delivery and transcoding remain unimplemented.
 
-Visual authority: the last original web commit is `master` at `cd3d4c7`. The desktop conversion preserves its UI; Home now additionally owns a native-material visibility bridge and opaque unsupported-system fallback without changing the active Acrylic visual style. The requested removal of the outer shell outline and visible scrollbars is currently uncommitted. Archived `.artifacts` images are not evidence of the running desktop app.
+ADR-013 records the user's delivery priority: UPnP AV/DLNA for compatible devices on the local network, with direct delivery or automatic transcoding behind the same transport. Local desktop playback uses the same library. LAN sharing will be opt-in and independently controlled; no Tailscale dependency or automatic router port mapping is planned. The future Settings control must reflect real service state, so no placeholder switch was added to the UI.
 
-Next: when the user says the screen is available, inspect the HSS Acrylic candidate without forcing the app forward; verify isolation, opacity, and move/resize/maximize/focus behavior. Then compare the real Tauri routes with the original web state and exercise folder selection/persisted scan state. After that, add bounded ffprobe metadata. Browser-first rollout and the Qwik comparison are deferred by ADR-010.
+The isolated `media-core` tests pass for stable catalog IDs across rescans, removal from the active catalog and migration from the pre-catalog SQLite schema. `cargo fmt --all` was applied. The full Tauri app was not compiled or opened for this milestone at the user's request; native command registration and the UI bridge are source changes awaiting integration validation.
+
+Visual authority: the last original web commit is `master` at `cd3d4c7`. The desktop conversion preserves its UI; Home now additionally owns a native-material visibility bridge and opaque unsupported-system fallback without changing the active Acrylic visual style. The current desktop UI checkpoint is committed as `d2f450b`. Archived `.artifacts` images are not evidence of the running desktop app.
+
+Next backend steps: add bounded ffprobe metadata, bind real indexed items to the Library, implement direct file delivery with seeking, then add the opt-in UPnP AV/DLNA discovery and browse service on the same catalog. Add supervised transcoding behind the delivery planner after device-format evidence. The HSS/window visual review remains separate and should wait until the user wants the app opened. Browser-first rollout and the Qwik comparison are deferred by ADR-010.
 
 WebView2, MSVC and Rust are installed. With more free memory and `CARGO_BUILD_JOBS=1`, `npm run desktop:dev` compiled in 3m 34s and launched `media-platform-desktop.exe`; Windows reported a `Media Library` main window with a nonzero handle. The first launch logged `window.start_dragging not allowed`; the required capability was added and Tauri rebuilt/relaunched successfully. Startup, DWM Acrylic, dragging behavior and idle RAM remain unmeasured. The catalog and Player remain fixture-backed visual prototypes.
 
