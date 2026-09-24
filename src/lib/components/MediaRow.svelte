@@ -21,7 +21,7 @@
 				<a class="landscape-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`}>
 					<div class="landscape-card__art" style="corner-shape: squircle">
 						<div class="landscape-card__selection-halo" style="corner-shape: squircle"></div>
-						<div class="landscape-card__media" style="corner-shape: squircle; clip-path: none">
+					<div class="landscape-card__media" style="corner-shape: squircle">
 							<img src={media.backdrop} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />
 							<div class="landscape-card__scrim"></div>
 							{#if showProgress && media.progress}
@@ -45,13 +45,13 @@
 	.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
 	.section-heading h2 { margin: 0; color: var(--text-strong); font-family: var(--font-display); font-size: 1.08rem; font-weight: 690; letter-spacing: -0.034em; }
 	.section-heading p { margin: 4px 0 0; color: var(--text-muted); font-size: 0.73rem; }
-	.media-row__track { --hover-clearance: 14px; --hover-inline-clearance: 14px; display: grid; grid-auto-columns: clamp(250px, 24vw, 360px); grid-auto-flow: column; gap: 16px; overflow-x: auto; margin: calc(-1 * var(--hover-clearance)) calc(-1 * var(--hover-inline-clearance)); padding: calc(4px + var(--hover-clearance)) calc(3px + var(--hover-inline-clearance)) calc(16px + var(--hover-clearance)); scroll-padding-inline: calc(3px + var(--hover-inline-clearance)); scrollbar-width: none; scroll-snap-type: x proximity; }
+	.media-row__track { --hover-clearance: 14px; --hover-inline-clearance: 14px; display: grid; grid-auto-columns: clamp(250px, 24vw, 360px); grid-auto-flow: column; gap: 16px; overflow-x: auto; overflow-y: hidden; margin: calc(-1 * var(--hover-clearance)) calc(-1 * var(--hover-inline-clearance)); padding: calc(4px + var(--hover-clearance)) calc(3px + var(--hover-inline-clearance)) calc(16px + var(--hover-clearance)); scroll-padding-inline: calc(3px + var(--hover-inline-clearance)); scrollbar-width: none; overscroll-behavior-x: none; }
 	.media-row__track::-webkit-scrollbar { display: none; }
-	.landscape-card { --art-radius: 12px; position: relative; min-width: 0; scroll-snap-align: start; transform-origin: center bottom; transition: transform 190ms cubic-bezier(0.2, 0.72, 0.2, 1); }
+	.landscape-card { --art-radius: 12px; position: relative; min-width: 0; transform-origin: center bottom; transition: transform 190ms cubic-bezier(0.2, 0.72, 0.2, 1); }
 	.landscape-card__link { display: block; color: inherit; text-decoration: none; }
 	.landscape-card__art { position: relative; isolation: isolate; aspect-ratio: 16 / 9; border-radius: var(--art-radius); background: transparent; transition: box-shadow 180ms ease; }
 	.landscape-card__selection-halo { position: absolute; z-index: 2; inset: -2px; box-sizing: border-box; border: 2px solid transparent; border-radius: calc(var(--art-radius) + 2px); pointer-events: none; opacity: 0; transition: border-color 180ms ease, opacity 180ms ease; }
-	.landscape-card__media { position: absolute; z-index: 1; inset: 0; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); clip-path: inset(0 round var(--art-radius)); transform: translateZ(0); }
+	.landscape-card__media { position: absolute; z-index: 1; inset: 0; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); }
 	.landscape-card__art img,
 	.landscape-card__scrim { display: block; width: 100%; height: 100%; border-radius: var(--art-radius); }
 	.landscape-card__art img { object-fit: cover; transition: filter 180ms ease, transform 260ms ease; }

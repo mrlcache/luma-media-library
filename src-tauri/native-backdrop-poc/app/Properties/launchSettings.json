@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "HssBackdropPoc (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "HssBackdropPoc (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

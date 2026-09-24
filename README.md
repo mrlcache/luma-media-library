@@ -19,6 +19,8 @@ The broader technical plan and autonomous execution protocol live in:
 C:\Users\muris\OneDrive\Imagens\Documentos\ChatGPT\Bountys
 ```
 
+The first local media slice is in progress: the desktop Settings page can select a folder and index recognized video files into a local SQLite database. This does not yet probe codecs, populate the catalog, expose a network server or play those files. The browser preview cannot select local folders.
+
 ## Development
 
 ```sh

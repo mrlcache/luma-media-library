@@ -44,12 +44,17 @@
 	--shadow-soft: 0 18px 60px rgba(0, 0, 0, 0.32);
 }
 
-* { box-sizing: border-box; }
+* {
+	box-sizing: border-box;
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
 
 html {
 	min-width: 320px;
 	background: var(--surface-0);
 	text-rendering: optimizeLegibility;
+	overscroll-behavior: none;
 }
 
 body {
@@ -63,7 +68,21 @@ body {
 	letter-spacing: -0.012em;
 	line-height: 1.5;
 	overflow-x: hidden;
+	overscroll-behavior: none;
 	font-variant-numeric: tabular-nums;
+}
+
+html[data-runtime='desktop'] {
+	height: 100%;
+	overflow: hidden;
+	background: transparent;
+}
+
+html[data-runtime='desktop'] body {
+	height: 100%;
+	min-height: 0;
+	overflow: hidden;
+	background: transparent;
 }
 
 button,
@@ -87,10 +106,25 @@ select:focus-visible {
 
 ::selection { color: var(--surface-0); background: var(--accent-soft); }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: var(--surface-0); }
-::-webkit-scrollbar-thumb { border: 3px solid var(--surface-0); border-radius: 4px; background: var(--surface-3); }
-::-webkit-scrollbar-thumb:hover { background: #2b333a; }
+/* CSS window-shape fallback for systems where DWM's native frame is unavailable. */
+html[data-runtime='desktop'][data-native-frame='css'] .app-shell.window-restored {
+	corner-shape: squircle;
+}
+
+html[data-runtime='desktop'][data-native-frame='css'] .app-shell.window-restored::after {
+	position: absolute;
+	inset: 0;
+	z-index: 120;
+	box-sizing: border-box;
+	border: 2px solid rgba(235, 241, 246, 0.14);
+	border-radius: inherit;
+	corner-shape: squircle;
+	content: '';
+	pointer-events: none;
+}
+
+/* Keep every scroller within its content bounds while retaining normal in-range scroll. */
+*::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
 
 .sr-only {
 	position: absolute;

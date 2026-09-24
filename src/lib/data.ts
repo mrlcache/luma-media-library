@@ -3,9 +3,6 @@ import type { MediaItem } from '$lib/types';
 const image = (id: string, width: number, height: number) =>
 	`https://images.unsplash.com/${id}?auto=format&fit=crop&crop=faces,center&q=82&w=${width}&h=${height}`;
 
-const ambientImage = (id: string) =>
-	`https://images.unsplash.com/${id}?auto=format&fit=crop&crop=center&q=44&w=960&h=960&blur=42`;
-
 export const media: MediaItem[] = [
 	{
 		id: 'the-last-signal',
@@ -197,7 +194,6 @@ export const media: MediaItem[] = [
 ];
 
 export const featured = media[0];
-export const featuredAmbient = ambientImage('photo-1446776811953-b23d57bd21aa');
 export const continueWatching = [media[0], media[1], media[3], media[5]];
 export const recentlyAdded = [media[2], media[6], media[8], media[10]];
 

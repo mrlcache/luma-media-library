@@ -1,17 +1,34 @@
 <script lang="ts">
 	import { onMount, setContext } from 'svelte';
+	import { afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import PlayerHost from '$lib/components/PlayerHost.svelte';
-	import { featuredAmbient } from '$lib/data';
 	import { PLAYER_CONTEXT } from '$lib/player-context';
-	import { readDesktopBootstrap } from '$lib/platform/desktop';
+	import { isDesktopRuntime, readDesktopBootstrap } from '$lib/platform/desktop';
 	import type { IconName } from '$lib/components/Icon.svelte';
 	import type { MediaItem } from '$lib/types';
 	import '../app.css';
 
 	let { children } = $props();
 	let activeMedia = $state<MediaItem | null>(null);
+	let desktopRuntime = $state(false);
+	let windowMaximized = $state(false);
+	let contentArea: HTMLElement;
+
+	afterNavigate(() => {
+		contentArea?.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+	});
+
+	function scrollContentFromChrome(event: WheelEvent) {
+		if (!contentArea || event.deltaY === 0) return;
+		const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+			? 24
+			: event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+				? contentArea.clientHeight
+				: 1;
+		contentArea.scrollBy({ top: event.deltaY * unit, behavior: 'smooth' });
+	}
 
 	function openPlayer(media: MediaItem) {
 		activeMedia = media;
@@ -69,14 +86,82 @@
 	const mobileNavItems = [...navItems, searchItem];
 
 	onMount(() => {
+		let disposed = false;
+		let unlistenResize: (() => void) | undefined;
+
+		if (isDesktopRuntime()) {
+			desktopRuntime = true;
+			document.documentElement.dataset.runtime = 'desktop';
+			void import('@tauri-apps/api/window')
+				.then(async ({ getCurrentWindow }) => {
+					const appWindow = getCurrentWindow();
+					windowMaximized = await appWindow.isMaximized();
+					const stopListening = await appWindow.onResized(async () => {
+						windowMaximized = await appWindow.isMaximized();
+					});
+					if (disposed) stopListening();
+					else unlistenResize = stopListening;
+				})
+				.catch((error) => console.warn('Window controls unavailable', error));
+		}
+
 		void readDesktopBootstrap()
 			.then((bootstrap) => {
 				if (!bootstrap) return;
 				document.documentElement.dataset.runtime = bootstrap.platform;
 				document.documentElement.dataset.appVersion = bootstrap.version;
+				document.documentElement.dataset.nativeFrame = bootstrap.nativeWindowFrame ? 'dwm' : 'css';
 			})
 			.catch((error) => console.warn('Desktop bootstrap unavailable', error));
+
+		return () => {
+			disposed = true;
+			unlistenResize?.();
+		};
 	});
+
+	onMount(() => {
+		if (!isDesktopRuntime() || !contentArea) return;
+		const scroller = contentArea;
+		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const onWheel = (event: WheelEvent) => {
+			if (reducedMotion.matches || event.ctrlKey || event.shiftKey || event.deltaY === 0) return;
+			if (Math.abs(event.deltaX) > Math.abs(event.deltaY) * 0.5) return;
+
+			// Only replace coarse mouse-wheel steps. Keep precise touchpad input native.
+			const coarseStep = event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
+				(Math.abs(event.deltaY) >= 80 && Number.isInteger(event.deltaY) && event.deltaY % 10 === 0);
+			if (!coarseStep) return;
+
+			event.preventDefault();
+			const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+				? 24
+				: event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+					? scroller.clientHeight
+					: 1;
+			scroller.scrollBy({ top: event.deltaY * unit, behavior: 'smooth' });
+		};
+		scroller.addEventListener('wheel', onWheel, { capture: true, passive: false });
+		return () => scroller.removeEventListener('wheel', onWheel, true);
+	});
+
+	async function runWindowAction(action: 'minimize' | 'toggle-maximize' | 'close') {
+		if (!isDesktopRuntime()) return;
+
+		try {
+			const { getCurrentWindow } = await import('@tauri-apps/api/window');
+			const appWindow = getCurrentWindow();
+
+			if (action === 'minimize') await appWindow.minimize();
+			if (action === 'toggle-maximize') {
+				await appWindow.toggleMaximize();
+				windowMaximized = await appWindow.isMaximized();
+			}
+			if (action === 'close') await appWindow.close();
+		} catch (error) {
+			console.warn(`Could not ${action} the app window`, error);
+		}
+	}
 
 </script>
 
@@ -85,9 +170,9 @@
 	<meta name="description" content="A focused media library for browsing and playback." />
 </svelte:head>
 
-<div class="app-stage" data-tauri-drag-region style={`--shell-backdrop: url("${featuredAmbient}")`}>
-	<div class="app-shell">
-		<aside class="sidebar" aria-label="Application navigation">
+<div class="app-stage">
+	<div class="app-shell" class:window-restored={desktopRuntime && !windowMaximized}>
+		<aside class="sidebar" aria-label="Application navigation" onwheel={scrollContentFromChrome}>
 			<div class="library-context">
 				<div class="library-mark" aria-hidden="true"><Icon name="play" size={13} weight="fill" /></div>
 				<div>
@@ -142,7 +227,7 @@
 		</aside>
 
 		<div class="workspace">
-			<main class="content-area"><div class="route-content">{@render children()}</div></main>
+			<main class="content-area" bind:this={contentArea}><div class="route-content">{@render children()}</div></main>
 		</div>
 
 		<nav class="mobile-nav" aria-label="Primary navigation">
@@ -159,6 +244,31 @@
 				</a>
 			{/each}
 		</nav>
+
+		<div class="window-chrome">
+			<div class="window-drag-region" data-tauri-drag-region aria-hidden="true" onwheel={scrollContentFromChrome}></div>
+			<div class="window-controls" role="group" aria-label="Window controls">
+				<button class="window-control" type="button" aria-label="Minimize window" title="Minimize" onclick={() => runWindowAction('minimize')}>
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
+				</button>
+				<button
+					class="window-control"
+					type="button"
+					aria-label={windowMaximized ? 'Restore window' : 'Maximize window'}
+					title={windowMaximized ? 'Restore' : 'Maximize'}
+					onclick={() => runWindowAction('toggle-maximize')}
+				>
+					{#if windowMaximized}
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V5h11v11h-3M5 8h11v11H5z" /></svg>
+					{:else}
+						<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="0.5" /></svg>
+					{/if}
+				</button>
+				<button class="window-control window-control--close" type="button" aria-label="Close window" title="Close" onclick={() => runWindowAction('close')}>
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+				</button>
+			</div>
+		</div>
 	</div>
 </div>
 
@@ -169,26 +279,32 @@
 <style>
 	.app-stage {
 		min-height: 100vh;
-		padding: 12px;
-		background-image:
-			linear-gradient(135deg, rgba(18, 26, 35, 0.3), rgba(3, 5, 8, 0.72)),
-			var(--shell-backdrop);
-		background-position: center;
-		background-size: cover;
-		background-attachment: fixed;
+		padding: 0;
 	}
 
+	:global(html[data-runtime='desktop']) .app-stage { height: 100%; min-height: 0; overflow: hidden; }
+	:global(html[data-runtime='desktop']) .app-stage { background: transparent; }
+
 	.app-shell {
+		position: relative;
 		display: grid;
 		grid-template-columns: 224px minmax(0, 1fr);
-		height: calc(100vh - 24px);
+		height: 100vh;
 		overflow: hidden;
-		border: 1px solid rgba(255, 255, 255, 0.17);
-		border-radius: 20px;
-		background: rgba(7, 9, 12, 0.48);
-		box-shadow:
-			inset 0 1px rgba(255, 255, 255, 0.1),
-			0 28px 90px rgba(0, 0, 0, 0.58);
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		box-shadow: none;
+	}
+
+	:global(html[data-runtime='desktop']) .app-shell { height: 100%; min-height: 0; }
+	:global(html[data-runtime='desktop'][data-native-frame='css']) .app-shell.window-restored {
+		border: 0;
+		border-radius: 32px;
+	}
+
+	:global(html[data-runtime='desktop']) .app-shell {
+		background: transparent;
 	}
 
 	.sidebar {
@@ -203,13 +319,11 @@
 		background:
 			radial-gradient(ellipse 130% 48% at 8% -8%, rgba(181, 216, 232, 0.13), transparent 48%),
 			radial-gradient(ellipse 104% 38% at 86% 104%, rgba(91, 125, 151, 0.12), transparent 52%),
-			linear-gradient(158deg, rgba(18, 23, 29, 0.98) 0%, rgba(4, 6, 9, 0.985) 50%, rgba(9, 12, 16, 0.99) 100%);
+			linear-gradient(158deg, #12171d 0%, #040609 50%, #090c10 100%);
 		box-shadow:
 			inset -1px 0 rgba(0, 0, 0, 0.44),
 			inset 1px 0 rgba(255, 255, 255, 0.06),
 			inset 0 1px rgba(255, 255, 255, 0.09);
-		-webkit-backdrop-filter: blur(44px) saturate(135%);
-		backdrop-filter: blur(44px) saturate(135%);
 	}
 
 	.sidebar::before {
@@ -331,6 +445,7 @@
 	.profile-row > :global(svg) { color: var(--text-dim); }
 
 	.workspace {
+		position: relative;
 		display: grid;
 		grid-template-rows: minmax(0, 1fr);
 		min-width: 0;
@@ -340,7 +455,60 @@
 		backdrop-filter: blur(20px) saturate(125%);
 	}
 
-	.content-area { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; }
+	:global(html[data-runtime='desktop']) .workspace {
+		background: transparent;
+		-webkit-backdrop-filter: none;
+		backdrop-filter: none;
+	}
+
+	.window-chrome {
+		position: absolute;
+		top: 0;
+		right: 0;
+		left: 0;
+		z-index: 80;
+		display: none;
+		grid-template-columns: minmax(0, 1fr) auto;
+		height: 36px;
+		pointer-events: none;
+	}
+	.window-drag-region {
+		min-width: 0;
+		height: 36px;
+		cursor: default;
+		pointer-events: auto;
+		user-select: none;
+		-webkit-app-region: drag;
+	}
+	.window-controls { display: flex; align-items: stretch; height: 36px; padding-right: 7px; pointer-events: auto; }
+	.window-control {
+		display: grid;
+		width: 44px;
+		place-items: center;
+		border: 0;
+		border-radius: 8px;
+		color: rgba(233, 237, 240, 0.76);
+		background: transparent;
+		cursor: pointer;
+		transition: background 130ms ease, color 130ms ease;
+		-webkit-app-region: no-drag;
+	}
+	.window-control svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+	.window-control:hover { color: var(--text-strong); background: rgba(255, 255, 255, 0.1); }
+	.window-control--close:hover { color: #fff; background: #c42b1c; }
+
+	:global(html[data-runtime='desktop']) .window-chrome { display: grid; }
+
+	.content-area {
+		min-width: 0;
+		min-height: 0;
+		overflow-x: hidden;
+		overflow-y: auto;
+		scrollbar-width: none;
+		-ms-overflow-style: none;
+		overscroll-behavior: none;
+	}
+	.content-area::-webkit-scrollbar { display: none; width: 0; }
 	.route-content { min-height: 100%; }
 	.mobile-nav { display: none; }
 
@@ -373,7 +541,8 @@
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.sidebar-link { transition: none; }
+		.sidebar-link,
+		.window-control { transition: none; }
 	}
 
 	@media (prefers-reduced-transparency: reduce) {

@@ -1,9 +1,65 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import {
+		chooseMediaFolder,
+		isDesktopRuntime,
+		scanLibrary,
+		readLibraryStatus,
+		type LibraryStatus
+	} from '$lib/platform/desktop';
 
 	let reduceTransparency = $state(false);
 	let reduceMotion = $state(false);
 	let autoplay = $state(true);
+	let desktopAvailable = $state(false);
+	let libraryStatus = $state<LibraryStatus | null>(null);
+	let loadingLibrary = $state(true);
+	let scanning = $state(false);
+	let libraryFeedback = $state('');
+
+	onMount(() => {
+		void refreshLibraryStatus();
+	});
+
+	async function refreshLibraryStatus() {
+		loadingLibrary = true;
+		desktopAvailable = isDesktopRuntime();
+		try {
+			libraryStatus = await readLibraryStatus();
+			desktopAvailable = libraryStatus !== null;
+			scanning = libraryStatus?.isScanning ?? false;
+		} catch {
+			libraryStatus = null;
+			libraryFeedback = 'The local library could not be reached.';
+		} finally {
+			loadingLibrary = false;
+		}
+	}
+
+	async function addOrScanFolder() {
+		libraryFeedback = '';
+		try {
+			const folder = await chooseMediaFolder();
+			if (!folder) return;
+
+			scanning = true;
+			const result = await scanLibrary(folder);
+			libraryFeedback = `${result.fileCount} video files found in ${result.rootName}.`;
+			libraryStatus = await readLibraryStatus();
+		} catch (error) {
+			libraryFeedback = error instanceof Error ? error.message : 'The library scan could not finish.';
+		} finally {
+			scanning = false;
+		}
+	}
+
+	function formatScanTime(timestamp: number | null | undefined): string {
+		if (!timestamp) return 'Not yet scanned';
+		return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
+			new Date(timestamp * 1000)
+		);
+	}
 </script>
 
 <svelte:head><title>Settings · Media library</title></svelte:head>
@@ -25,7 +81,7 @@
 					<input class="toggle" type="checkbox" bind:checked={autoplay} />
 				</label>
 				<div class="setting-row setting-row--static">
-					<span class="setting-copy"><strong>Default quality</strong><small>The server will choose the best compatible stream.</small></span>
+					<span class="setting-copy"><strong>Default quality</strong><small>Use the best compatible stream when available.</small></span>
 					<span class="setting-value">Auto</span>
 				</div>
 				<div class="setting-row setting-row--static">
@@ -52,20 +108,26 @@
 			</div>
 		</section>
 
-		<section class="settings-section" aria-labelledby="server-heading">
+		<section class="settings-section" aria-labelledby="library-heading">
 			<div class="settings-section__heading">
-				<h2 id="server-heading">Local library</h2>
+				<h2 id="library-heading">Local library</h2>
 				<p>Information about this local collection.</p>
 			</div>
 			<div class="settings-list settings-list--server">
 				<div class="server-summary">
 					<Icon name="library" size={18} />
-					<div><strong>Local server</strong><span>Available on this device and local network.</span></div>
+					<div>
+						<strong>Local library</strong>
+						<span>{libraryStatus?.rootCount ? `${libraryStatus.fileCount} video files on this device.` : desktopAvailable ? 'Choose a folder to index your videos.' : 'Available in the desktop app.'}</span>
+					</div>
 				</div>
-				<div class="setting-row setting-row--meta"><span>Library roots</span><strong>1 connected</strong></div>
-				<div class="setting-row setting-row--meta"><span>Last scan</span><strong>Today, 09:42</strong></div>
+				<div class="setting-row setting-row--meta"><span>Library roots</span><strong>{loadingLibrary ? '—' : `${libraryStatus?.rootCount ?? 0} connected`}</strong></div>
+				<div class="setting-row setting-row--meta"><span>Last scan</span><strong>{formatScanTime(libraryStatus?.lastScanAt)}</strong></div>
 				<div class="server-action-row">
-					<button class="settings-action" type="button"><Icon name="refresh" size={15} />Run library scan</button>
+					<button class="settings-action" type="button" disabled={!desktopAvailable || loadingLibrary || scanning} onclick={addOrScanFolder}>
+						<Icon name="refresh" size={15} />{scanning ? 'Scanning folder…' : 'Run library scan'}
+					</button>
+					{#if libraryFeedback}<p class="library-feedback" role="status" aria-live="polite">{libraryFeedback}</p>{/if}
 				</div>
 			</div>
 		</section>
@@ -101,6 +163,8 @@
 	.server-action-row { padding-top: 17px; }
 	.settings-action { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 35px; padding: 0 13px; border: 1px solid var(--line-subtle); border-radius: var(--radius-sm); color: var(--text-soft); background: transparent; font-size: 0.7rem; cursor: pointer; transition: border-color 160ms ease, color 160ms ease, background 160ms ease; }
 	.settings-action:hover { border-color: var(--line-strong); color: var(--text-strong); background: var(--material-highlight); }
+	.settings-action:disabled { color: var(--text-dim); cursor: not-allowed; opacity: 0.6; }
+	.library-feedback { margin: 10px 0 0; color: var(--text-muted); font-size: 0.68rem; line-height: 1.5; }
 	@media (max-width: 760px) {
 		.settings-page { padding: 42px 18px 70px; }
 		.settings-heading h1 { font-size: 2rem; }

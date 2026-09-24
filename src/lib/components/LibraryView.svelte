@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
-	import VirtualPosterGrid from '$lib/components/VirtualPosterGrid.svelte';
+	import PosterGrid from '$lib/components/PosterGrid.svelte';
 	import { media } from '$lib/data';
 	import type { MediaKind } from '$lib/types';
 
@@ -80,7 +80,7 @@
 	</div>
 
 	{#if filteredMedia.length > 0}
-		<VirtualPosterGrid items={filteredMedia} />
+		<PosterGrid items={filteredMedia} />
 	{:else}
 		<div class="empty-state">
 			<Icon name="search" size={21} />

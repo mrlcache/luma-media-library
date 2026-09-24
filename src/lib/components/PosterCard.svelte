@@ -12,7 +12,7 @@
 	<a class="poster-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}, ${media.year}`}>
 		<div class="poster-card__art" style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
 			{#if variant === 'home'}<div class="poster-card__selection-halo" style="corner-shape: squircle"></div>{/if}
-			<div class="poster-card__media" style={variant === 'home' ? 'corner-shape: squircle; clip-path: none' : undefined}>
+			<div class="poster-card__media" style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
 				<img
 					src={media.poster}
 					alt={`Poster for ${media.title}`}
@@ -45,7 +45,7 @@
 	.poster-card__link { display: block; color: inherit; text-decoration: none; }
 	.poster-card__art { position: relative; isolation: isolate; aspect-ratio: 2 / 3; border-radius: var(--art-radius); background: var(--surface-2); box-shadow: 0 12px 24px rgba(0, 0, 0, 0.14); }
 	.poster-card__selection-halo { position: absolute; z-index: 2; inset: -2px; box-sizing: border-box; border: 2px solid transparent; border-radius: calc(var(--art-radius) + 2px); pointer-events: none; transition: border-color 180ms ease; }
-	.poster-card__media { position: absolute; z-index: 1; inset: 0; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); clip-path: inset(0 round var(--art-radius)); transform: translateZ(0); }
+	.poster-card__media { position: absolute; z-index: 1; inset: 0; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); }
 	.poster-card__art img,
 	.poster-card__scrim { border-radius: var(--art-radius); }
 	.poster-card__art img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform 260ms ease, filter 260ms ease; }

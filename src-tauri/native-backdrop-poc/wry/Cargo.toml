@@ -1,0 +1,17 @@
+[package]
+name = "hss-wry-composition-poc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+tao = "=0.35.3"
+wry = { version = "=0.55.1", features = ["transparent"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+] }
