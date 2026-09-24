@@ -1,25 +1,36 @@
 # Project State
 
-Current phase: Local library foundation
+Updated: 2026-09-24
+Current phase: Windows-first desktop implementation
+Current milestone: Validate local catalog, details and playback end to end; then implement UPnP AV/DLNA
 
-Current milestone: One-click refresh for all registered local library folders
+Latest implementation checkpoint: `53f4b16` (`Add local media playback and catalog features`)
 
-Status: Rescan command, media-core tests, serial Tauri cargo check, and Svelte check pass; the native app has not been rebuilt or opened for visual review
 Branch: `codex/desktop-shell`
 
-The current Svelte UI and CSS are preserved. SvelteKit now produces a local static SPA for Tauri 2/WebView2, including dynamic title routes through a fallback page. The Windows shell is a transparent Tauri window with a 12px drag region and automatic window-state persistence. HSS has a DWM Desktop Acrylic candidate on the main HWND (ADR-012); unsupported systems use an opaque HSS fallback. Neither path has been visually validated in the live window yet.
+## Current state
 
-Settings can choose or add a local folder through Tauri's native dialog and refresh every registered folder with one action. The database remains an internal app-data implementation detail; no database or provider configuration is exposed to users. The isolated `media-core` crate canonicalizes selected directories, rejects symlink roots, walks without following symlinks, limits depth and file count, and indexes known video extensions in SQLite. New scan generations remain hidden until each folder scan completes, preserving that folder's previous index on failure. Catalog IDs remain stable across rescans and paths resolve only through the active index. External title matching, metadata and artwork lookup are not implemented yet; a provider still needs to be selected and its application-level credential supplied without asking end users to configure it. The real index is not yet wired to the visual catalog.
+The Windows desktop app keeps the existing Svelte 5/SvelteKit UI inside Tauri 2 and WebView2. The installed frontend is bundled locally, so opening the shell does not require a hosted site or internet access. Local catalog and playback flows are intended to work offline. TMDb metadata/artwork, YouTube trailers and OpenSubtitles lookup require a connection when used.
 
-ADR-013 records the user's delivery priority: UPnP AV/DLNA for compatible devices on the local network, with direct delivery or automatic transcoding behind the same transport. Local desktop playback uses the same library. LAN sharing will be opt-in and independently controlled; no Tailscale dependency or automatic router port mapping is planned. The future Settings control must reflect real service state, so no placeholder switch was added to the UI.
+The local SQLite catalog is connected to the desktop UI. TMDb metadata, posters, Home hero PNG logos with title-text fallback, trailer lookup, title details, episode artwork selection, local player controls and subtitle integrations are present in the implementation. Local playback and subtitle flows still need full end-to-end validation on the target PC. The selected UPnP AV/DLNA delivery path and supervised transcoding are not operational yet; LAN sharing remains opt-in and must use the same local library. Tailscale and automatic router port mapping are not prerequisites.
 
-The isolated `media-core` tests pass for stable catalog IDs across rescans, removal from the active catalog and migration from the pre-catalog SQLite schema. `cargo fmt --all` was applied. The full Tauri app was not compiled or opened for this milestone at the user's request; native command registration and the UI bridge are source changes awaiting integration validation.
+Latest validation: `npm run check` reports 0 errors and two existing `corner-shape` warnings in Details; `npm run build` succeeds; the focused Rust PNG-logo selection test passes. A separate preview window showed a TMDb PNG logo in the Home hero. The final 17 px spacing change was committed after that visual check and has not been visually rechecked.
 
-Visual authority: the last original web commit is `master` at `cd3d4c7`. The desktop conversion preserves its UI; Home now additionally owns a native-material visibility bridge and opaque unsupported-system fallback without changing the active Acrylic visual style. The current desktop UI checkpoint is committed as `d2f450b`. Archived `.artifacts` images are not evidence of the running desktop app.
+The Home hero's vertical spacing is now 17 px between title/logo, metadata, synopsis and actions on desktop and narrow layouts. Existing design and UI decisions remain in `DESIGN_SYSTEM.md` and `DECISIONS.md`.
 
-Next backend steps: add a metadata-provider/cache layer and bounded ffprobe metadata, bind real indexed items to the Library, implement direct file delivery with seeking, then add the opt-in UPnP AV/DLNA discovery and browse service on the same catalog. Add supervised transcoding behind the delivery planner after device-format evidence. The HSS/window visual review remains separate and should wait until the user wants the app opened. Browser-first rollout and the Qwik comparison are deferred by ADR-010.
+## Goals
 
-WebView2, MSVC and Rust are installed. With more free memory and `CARGO_BUILD_JOBS=1`, `npm run desktop:dev` compiled in 3m 34s and launched `media-platform-desktop.exe`; Windows reported a `Media Library` main window with a nonzero handle. The first launch logged `window.start_dragging not allowed`; the required capability was added and Tauri rebuilt/relaunched successfully. Startup, DWM Acrylic, dragging behavior and idle RAM remain unmeasured. The catalog and Player remain fixture-backed visual prototypes.
+- Before product completion, intercept reload shortcuts such as F5, Ctrl+R and Ctrl+Shift+R in the installed app.
+- Normal use must not require manual refresh. Show contextual retry only for recoverable errors; handle a fully stalled WebView through the native Tauri shell.
+
+## Next milestones
+
+1. Validate catalog, title details and local playback end to end on the target PC.
+2. Implement opt-in UPnP AV/DLNA delivery from the existing local library.
+3. Add supervised transcoding only when a receiving device cannot use the original media.
+4. Complete the reload-shortcut and recovery goals before calling the desktop app finished.
+
+The older dated sections below are historical implementation records; this summary is the current state. The matching second-brain page is `C:\Users\muris\OneDrive\Imagens\Documentos\ChatGPT\Bountys\PROJECT_STATE.md`.
 
 ## Browser prototype record (2026-09-20)
 
