@@ -278,7 +278,10 @@ mod tests {
     #[test]
     fn extracts_episode_position_from_filename_or_season_folder() {
         assert_eq!(
-            episode_position("Reacher.S02E04.Winter.Break.mkv", "Reacher/Season 2/Reacher.S02E04.mkv"),
+            episode_position(
+                "Reacher.S02E04.Winter.Break.mkv",
+                "Reacher/Season 2/Reacher.S02E04.mkv"
+            ),
             (Some(2), Some(4))
         );
         assert_eq!(

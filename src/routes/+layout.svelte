@@ -4,7 +4,7 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import PlayerHost from '$lib/components/PlayerHost.svelte';
-	import { PLAYER_CONTEXT } from '$lib/player-context';
+	import { PLAYER_CONTEXT, PLAYBACK_HISTORY_UPDATED_EVENT } from '$lib/player-context';
 	import { isDesktopRuntime, readDesktopBootstrap } from '$lib/platform/desktop';
 	import { requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import { registerLenis } from '$lib/scroll/lenis';
@@ -43,6 +43,7 @@
 
 	function closePlayer() {
 		activeMedia = null;
+		window.dispatchEvent(new Event(PLAYBACK_HISTORY_UPDATED_EVENT));
 	}
 
 	setContext(PLAYER_CONTEXT, { open: openPlayer, close: closePlayer });
@@ -73,7 +74,8 @@
 			href: '/library?type=series',
 			icon: 'tv',
 			isActive: (url) => url.pathname === '/library' && url.searchParams.get('type') === 'series'
-		}
+		},
+		{ label: 'Torrents', href: '/torrents', icon: 'download', isActive: (url) => url.pathname === '/torrents' }
 	];
 
 	const searchItem: NavItem = {
@@ -310,6 +312,7 @@
 
 	:global(html[data-runtime='desktop']) .app-stage { height: 100%; min-height: 0; overflow: hidden; }
 	:global(html[data-runtime='desktop']) .app-stage { background: transparent; }
+	:global(html[data-native-player]) .app-stage { opacity: 0; pointer-events: none; }
 
 	.app-shell {
 		position: relative;

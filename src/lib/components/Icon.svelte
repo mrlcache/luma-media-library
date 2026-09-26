@@ -21,6 +21,7 @@
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
 	import SlidersHorizontalIcon from 'phosphor-svelte/lib/SlidersHorizontalIcon';
 	import ArrowClockwiseIcon from 'phosphor-svelte/lib/ArrowClockwiseIcon';
+	import DownloadSimpleIcon from 'phosphor-svelte/lib/DownloadSimpleIcon';
 
 	export type IconName =
 		| 'home'
@@ -44,7 +45,8 @@
 		| 'audio'
 		| 'info'
 		| 'sliders'
-		| 'refresh';
+		| 'refresh'
+		| 'download';
 
 	type IconWeight = 'thin' | 'light' | 'regular' | 'bold' | 'fill' | 'duotone';
 	type Props = { name: IconName; size?: number; weight?: IconWeight; mirrored?: boolean };
@@ -73,7 +75,8 @@
 		audio: WaveformIcon,
 		info: InfoIcon,
 		sliders: SlidersHorizontalIcon,
-		refresh: ArrowClockwiseIcon
+		refresh: ArrowClockwiseIcon,
+		download: DownloadSimpleIcon
 	};
 
 	let Glyph = $derived(icons[name]);

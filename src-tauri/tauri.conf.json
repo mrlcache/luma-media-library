@@ -35,6 +35,9 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": {
+      "../native/libtorrent-bridge/build/Release/media_libtorrent_bridge.dll": "torrent-engine/media_libtorrent_bridge.dll"
+    },
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "windows": {
       "webviewInstallMode": {

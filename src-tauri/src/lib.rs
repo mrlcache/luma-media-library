@@ -1,6 +1,6 @@
 use media_core::{
     CatalogPage, ContinueWatchingItem, LibraryScanSummary, LibraryState, LibraryStatus,
-    LibraryStore, LocalTitleDetail, ScanSummary,
+    LibraryStore, LocalTitleDetail, PlaybackHistoryItem, ScanSummary,
 };
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -8,8 +8,14 @@ use tauri::Manager;
 
 mod hss_backdrop;
 mod metadata;
+#[cfg(windows)]
+mod native_player;
+#[cfg(not(windows))]
+#[path = "native_player_stub.rs"]
+mod native_player;
 mod opensubtitles;
 mod tmdb;
+mod torrent_engine;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,52 +192,127 @@ fn save_playback_progress(
 }
 
 #[tauri::command]
-fn open_media_in_system_player(
+fn record_playback_activity(
     media_id: i64,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<(), String> {
-    let store = LibraryStore::open(&state.db_path)?;
+    LibraryStore::open(&state.db_path)?.record_playback_activity(media_id)
+}
+
+#[tauri::command]
+fn get_playback_history(
+    count: u32,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Vec<PlaybackHistoryItem>, String> {
+    LibraryStore::open(&state.db_path)?.playback_history(count)
+}
+
+fn desktop_player_executables(player: &str) -> Result<&'static [&'static str], &'static str> {
+    match player {
+        "mpc-hc-madvr" => Ok(&["mpc-hc64.exe", "mpc-hc.exe"]),
+        "vlc" => Ok(&["vlc.exe"]),
+        _ => Err("Choose MPC-HC with madVR or VLC."),
+    }
+}
+
+#[cfg(windows)]
+fn find_windows_player_executable(player: &str) -> Result<std::path::PathBuf, String> {
+    let executables = desktop_player_executables(player).map_err(str::to_owned)?;
+    let install_dirs: &[&str] = match player {
+        "mpc-hc-madvr" => &[
+            "MPC-HC",
+            "K-Lite Codec Pack\\MPC-HC64",
+            "K-Lite Codec Pack\\MPC-HC",
+            "K-Lite Codec Pack\\Media Player Classic",
+        ],
+        "vlc" => &["VideoLAN\\VLC"],
+        _ => return Err("Choose MPC-HC with madVR or VLC.".to_owned()),
+    };
+    let mut roots = Vec::new();
+    for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Some(root) = std::env::var_os(variable).map(std::path::PathBuf::from) {
+            roots.push(root.clone());
+            if variable == "LOCALAPPDATA" {
+                roots.push(root.join("Programs"));
+            }
+        }
+    }
+
+    for root in roots {
+        for install_dir in install_dirs {
+            for executable in executables {
+                let candidate = root.join(install_dir).join(executable);
+                if candidate.is_file() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
+    let label = if player == "mpc-hc-madvr" {
+        "MPC-HC"
+    } else {
+        "VLC"
+    };
+    Err(format!("{label} was not found in its usual installation folders. Install it in Program Files or choose another player."))
+}
+
+#[tauri::command]
+fn open_media_in_desktop_player(
+    media_id: i64,
+    player: String,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    let mut store = LibraryStore::open(&state.db_path)?;
     let path = store
         .resolve_media_path(media_id)?
         .ok_or_else(|| "This media file is no longer in the library.".to_owned())?;
 
+    desktop_player_executables(&player).map_err(str::to_owned)?;
+
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
-        let operation: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
-        let file: Vec<u16> = path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let result = unsafe {
-            windows_sys::Win32::UI::Shell::ShellExecuteW(
-                std::ptr::null_mut(),
-                operation.as_ptr(),
-                file.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
-            )
-        };
-        if (result as isize) <= 32 {
-            return Err(
-                "Windows could not open this file in the configured desktop player.".to_owned(),
-            );
-        }
+        let executable = find_windows_player_executable(&player)?;
+        std::process::Command::new(executable)
+            .arg(&path)
+            .spawn()
+            .map_err(|_| {
+                format!(
+                    "Could not start {}.",
+                    if player == "mpc-hc-madvr" {
+                        "MPC-HC"
+                    } else {
+                        "VLC"
+                    }
+                )
+            })?;
+        store.record_playback_activity(media_id)?;
     }
 
     #[cfg(target_os = "macos")]
-    std::process::Command::new("open")
-        .arg(&path)
-        .spawn()
-        .map_err(|_| "Could not open the file in the configured desktop player.".to_owned())?;
+    {
+        if player == "mpc-hc-madvr" {
+            return Err("MPC-HC with madVR is available only on Windows.".to_owned());
+        }
+        std::process::Command::new("open")
+            .args(["-a", "VLC", "--args"])
+            .arg(&path)
+            .spawn()
+            .map_err(|_| "VLC was not found. Confirm it is installed.".to_owned())?;
+        store.record_playback_activity(media_id)?;
+    }
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    std::process::Command::new("xdg-open")
-        .arg(&path)
-        .spawn()
-        .map_err(|_| "Could not open the file in the configured desktop player.".to_owned())?;
+    {
+        if player == "mpc-hc-madvr" {
+            return Err("MPC-HC with madVR is available only on Windows.".to_owned());
+        }
+        std::process::Command::new("vlc")
+            .arg(&path)
+            .spawn()
+            .map_err(|_| "VLC was not found. Confirm it is installed.".to_owned())?;
+        store.record_playback_activity(media_id)?;
+    }
 
     Ok(())
 }
@@ -302,10 +383,14 @@ async fn get_title_trailer(
     tmdb: tauri::State<'_, tmdb::TmdbState>,
 ) -> Result<Option<tmdb::TmdbTrailer>, String> {
     let path = library.db_path.clone();
-    let target = tauri::async_runtime::spawn_blocking(move ||
+    let target = tauri::async_runtime::spawn_blocking(move || {
         LibraryStore::open(&path)?.tmdb_target(media_id)
-    ).await.map_err(|_| "Could not read the local title metadata.".to_owned())??;
-    let Some((id, kind)) = target else { return Ok(None) };
+    })
+    .await
+    .map_err(|_| "Could not read the local title metadata.".to_owned())??;
+    let Some((id, kind)) = target else {
+        return Ok(None);
+    };
     tmdb.trailer_for_kind(id, &kind).await
 }
 
@@ -316,10 +401,14 @@ async fn get_title_logo(
     tmdb: tauri::State<'_, tmdb::TmdbState>,
 ) -> Result<Option<String>, String> {
     let path = library.db_path.clone();
-    let target = tauri::async_runtime::spawn_blocking(move ||
+    let target = tauri::async_runtime::spawn_blocking(move || {
         LibraryStore::open(&path)?.tmdb_target(media_id)
-    ).await.map_err(|_| "Could not read the local title metadata.".to_owned())??;
-    let Some((id, kind)) = target else { return Ok(None) };
+    })
+    .await
+    .map_err(|_| "Could not read the local title metadata.".to_owned())??;
+    let Some((id, kind)) = target else {
+        return Ok(None);
+    };
     tmdb.logo_for_kind(id, &kind).await
 }
 
@@ -453,6 +542,11 @@ pub fn run() {
                     .map_err(std::io::Error::other)?,
             );
             app.manage(hss_backdrop::BackdropState::default());
+            app.manage(native_player::NativePlayerState::default());
+            let resource_dir = app.path().resource_dir().unwrap_or_else(|_| app_data_dir.clone());
+            let torrent_state = torrent_engine::TorrentState::new(&app_data_dir, &resource_dir);
+            torrent_state.start_save_worker();
+            app.manage(torrent_state);
 
             let frame_state = NativeWindowFrameState::default();
             #[cfg(windows)]
@@ -475,8 +569,15 @@ pub fn run() {
             get_local_title_detail,
             resolve_media_file,
             save_playback_progress,
-            open_media_in_system_player,
+            record_playback_activity,
+            open_media_in_desktop_player,
+            native_player::start_native_player,
+            native_player::native_player_status,
+            native_player::native_player_action,
+            native_player::resize_native_player,
+            native_player::stop_native_player,
             get_continue_watching,
+            get_playback_history,
             set_opensubtitles_api_key,
             login_opensubtitles,
             search_opensubtitles,
@@ -487,7 +588,14 @@ pub fn run() {
             get_title_logo,
             scan_library,
             rescan_library,
-            set_hss_acrylic_enabled
+            set_hss_acrylic_enabled,
+            torrent_engine::torrent_snapshot,
+            torrent_engine::torrent_add_magnet,
+            torrent_engine::torrent_add_file,
+            torrent_engine::torrent_set_paused,
+            torrent_engine::torrent_move_queue,
+            torrent_engine::torrent_set_limits,
+            torrent_engine::torrent_remove,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run desktop application");
@@ -495,7 +603,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod player_tests {
-    use super::srt_to_webvtt;
+    use super::{desktop_player_executables, srt_to_webvtt};
 
     #[test]
     fn converts_srt_timestamps_without_changing_dialogue_punctuation() {
@@ -504,5 +612,18 @@ mod player_tests {
             converted,
             "WEBVTT\n\n1\n00:00:01.250 --> 00:00:02.500\nHello, friend.\n"
         );
+    }
+
+    #[test]
+    fn desktop_player_choice_maps_only_to_supported_players() {
+        assert_eq!(
+            desktop_player_executables("mpc-hc-madvr"),
+            Ok(["mpc-hc64.exe", "mpc-hc.exe"].as_slice())
+        );
+        assert_eq!(
+            desktop_player_executables("vlc"),
+            Ok(["vlc.exe"].as_slice())
+        );
+        assert!(desktop_player_executables("unknown").is_err());
     }
 }

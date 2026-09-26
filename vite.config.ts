@@ -19,7 +19,7 @@ export default defineConfig({
 		port: 1420,
 		strictPort: true,
 		watch: {
-			ignored: ['**/.artifacts/**', '**/src-tauri/**']
+			ignored: ['**/.artifacts/**', '**/src-tauri/**', '**/native/libtorrent-bridge/build/**']
 		}
 	}
 });

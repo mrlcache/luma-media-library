@@ -1,16 +1,26 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import { suspendNativeAcrylicForPlayback } from '$lib/platform/native-acrylic';
 	import {
 		downloadOpenSubtitle,
 		isDesktopRuntime,
 		localMediaUrl,
 		loginOpenSubtitles,
-		openMediaInSystemPlayer,
+		nativePlayerAction,
+		nativePlayerStatus,
+		readPreferredDesktopPlayer,
+		recordPlaybackActivity,
 		resolveMediaFile,
+		resizeNativePlayer,
+		savePreferredDesktopPlayer,
 		setOpenSubtitlesApiKey,
 		savePlaybackProgress,
-		searchOpenSubtitles
+		searchOpenSubtitles,
+		startNativePlayer,
+		stopNativePlayer,
+		type NativePlaybackSnapshot,
+		type DesktopPlayer
 	} from '$lib/platform/desktop';
 import type { MediaItem } from '$lib/types';
 import type { OpenSubtitleSearchResult } from '$lib/types';
@@ -30,8 +40,15 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	let isMuted = $state(false);
 	let isLoading = $state(true);
 	let playbackError = $state('');
+	let playerMenuOpen = $state(false);
+	let desktopPlayerBusy = $state(false);
+	let selectedDesktopPlayer = $state<DesktopPlayer>('mpv');
+	let activeEngine = $state<DesktopPlayer | null>(null);
+	let nativePoll: ReturnType<typeof setInterval> | undefined;
+	let pendingNativeResume = 0;
 	let resumePosition = 0;
 	let lastSavedPosition = -1;
+	let playbackActivityPromise: Promise<void> | null = null;
 	let subtitleTracks = $state<{ label: string; language: string; url: string }[]>([]);
 	let activeSubtitle = $state(-1);
 	let subtitlePanelOpen = $state(false);
@@ -68,15 +85,80 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 			: `${remainingMinutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 	}
 
+	function desktopPlayerLabel(player = selectedDesktopPlayer): string {
+		return player === 'mpv' ? 'mpv' : 'VLC';
+	}
+
+	function setDesktopPlayer(event: Event) {
+		selectedDesktopPlayer = (event.currentTarget as HTMLSelectElement).value as DesktopPlayer;
+		savePreferredDesktopPlayer(selectedDesktopPlayer);
+	}
+
+	function applyNativeSnapshot(snapshot: NativePlaybackSnapshot) {
+		activeEngine = snapshot.engine;
+		isPlaying = snapshot.playing;
+		currentTime = snapshot.positionSeconds;
+		duration = snapshot.durationSeconds;
+		volume = Math.round(snapshot.volume);
+		isMuted = snapshot.muted;
+		if (snapshot.rate > 0) playbackRate = snapshot.rate;
+		if (duration > 0) {
+			mediaReady = true;
+			isLoading = false;
+		}
+		if (Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
+	}
+
+	async function startSelectedEngine(position = resumePosition) {
+		const mediaId = Number(media.id);
+		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) return;
+		desktopPlayerBusy = true;
+		isLoading = true;
+		playbackError = '';
+		if (nativePoll) clearInterval(nativePoll);
+		try {
+			const snapshot = await startNativePlayer(mediaId, selectedDesktopPlayer);
+			applyNativeSnapshot(snapshot);
+			pendingNativeResume = position > 15 ? position : 0;
+			document.documentElement.dataset.nativePlayer = 'true';
+			if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
+			nativePoll = setInterval(() => {
+				void nativePlayerStatus().then(async (state) => {
+					applyNativeSnapshot(state);
+					if (pendingNativeResume > 0 && state.durationSeconds > pendingNativeResume + 10) {
+						const seekTo = pendingNativeResume;
+						pendingNativeResume = 0;
+						applyNativeSnapshot(await nativePlayerAction('seek', seekTo));
+					}
+				}).catch((error) => console.warn('Native player status unavailable', error));
+			}, 500);
+			window.setTimeout(() => { if (activeEngine && isLoading) isLoading = false; }, 5000);
+		} catch (error) {
+			activeEngine = null;
+			isPlaying = false;
+			isLoading = false;
+			delete document.documentElement.dataset.nativePlayer;
+			playbackError = error instanceof Error ? error.message : `Could not start ${desktopPlayerLabel()}.`;
+		} finally {
+			desktopPlayerBusy = false;
+		}
+	}
+
 	function revealControls() {
 		controlsVisible = true;
 		if (timeoutId) clearTimeout(timeoutId);
 		timeoutId = setTimeout(() => {
-			if (isPlaying && !subtitlePanelOpen) controlsVisible = false;
+			if (isPlaying && !subtitlePanelOpen && !playerMenuOpen) controlsVisible = false;
 		}, 2400);
 	}
 
 	async function togglePlayback() {
+		if (activeEngine) {
+			try { applyNativeSnapshot(await nativePlayerAction(isPlaying ? 'pause' : 'play')); }
+			catch (error) { playbackError = error instanceof Error ? error.message : 'Playback could not start.'; }
+			revealControls();
+			return;
+		}
 		if (!video || playbackError) return;
 		if (video.paused) {
 			try { await video.play(); }
@@ -86,30 +168,44 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	}
 
 	function seekBy(amount: number) {
+		if (activeEngine) {
+			void nativePlayerAction('seek', Math.min(duration || Number.MAX_SAFE_INTEGER, Math.max(0, currentTime + amount))).then(applyNativeSnapshot).catch(console.warn);
+			revealControls();
+			return;
+		}
 		if (video && Number.isFinite(video.duration)) video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + amount));
 		revealControls();
 	}
 
 	function toggleMuted() {
 		isMuted = !isMuted;
+		if (activeEngine) void nativePlayerAction('mute', isMuted ? 1 : 0).then(applyNativeSnapshot).catch(console.warn);
 		if (video) video.muted = isMuted;
 		revealControls();
 	}
 
 	function setVolume(event: Event) {
 		volume = Number((event.currentTarget as HTMLInputElement).value);
+		if (activeEngine) void nativePlayerAction('volume', volume).then(applyNativeSnapshot).catch(console.warn);
 		if (video) { video.volume = volume / 100; video.muted = volume === 0; isMuted = video.muted; }
 		revealControls();
 	}
 
 	function setPlaybackRate(event: Event) {
 		playbackRate = Number((event.currentTarget as HTMLSelectElement).value);
+		if (activeEngine) void nativePlayerAction('rate', playbackRate).then(applyNativeSnapshot).catch(console.warn);
 		if (video) video.playbackRate = playbackRate;
 		revealControls();
 	}
 
 	function seekToPercent(event: Event) {
-		if (!video || duration <= 0) return;
+		if (duration <= 0) return;
+		if (activeEngine) {
+			void nativePlayerAction('seek', duration * Number((event.currentTarget as HTMLInputElement).value) / 100).then(applyNativeSnapshot).catch(console.warn);
+			revealControls();
+			return;
+		}
+		if (!video) return;
 		video.currentTime = duration * Number((event.currentTarget as HTMLInputElement).value) / 100;
 		revealControls();
 	}
@@ -123,10 +219,21 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 
 	async function persistProgress() {
 		const mediaId = Number(media.id);
-		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || !video || !Number.isFinite(video.duration) || video.duration <= 0) return;
-		lastSavedPosition = video.currentTime;
-		try { await savePlaybackProgress(mediaId, video.currentTime, video.duration); }
+		const position = activeEngine ? currentTime : video?.currentTime;
+		const length = activeEngine ? duration : video?.duration;
+		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || !Number.isFinite(position) || !Number.isFinite(length) || !length || length <= 0) return;
+		lastSavedPosition = position!;
+		try { await savePlaybackProgress(mediaId, position!, length); }
 		catch (error) { console.warn('Playback progress could not be saved', error); }
+	}
+
+	function recordPlaybackStarted() {
+		const mediaId = Number(media.id);
+		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || playbackActivityPromise) return;
+		playbackActivityPromise = recordPlaybackActivity(mediaId).catch((error) => {
+			playbackActivityPromise = null;
+			console.warn('Playback history could not be saved', error);
+		});
 	}
 
 	function onLoadedMetadata() {
@@ -264,6 +371,7 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 		const isRange = target instanceof HTMLInputElement && target.type === 'range';
 
 		if (event.key === 'Escape' && subtitlePanelOpen) { subtitlePanelOpen = false; return; }
+		if (event.key === 'Escape' && playerMenuOpen) { playerMenuOpen = false; return; }
 		if (event.key === 'Escape' && !document.fullscreenElement) void closePlayer();
 		if (event.code === 'Space' && !isRange) {
 			event.preventDefault();
@@ -274,7 +382,14 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 		if (event.key.toLowerCase() === 'm' && !isRange) toggleMuted();
 	}
 
+	function handlePlayerPointerDown(event: PointerEvent) {
+		if (playerMenuOpen && !(event.target instanceof Element && event.target.closest('.player-options-anchor'))) {
+			playerMenuOpen = false;
+		}
+	}
+
 	function onPlaybackError() {
+		if (activeEngine) return;
 		if (!video?.error) return;
 		playbackError = video.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
 			? 'This file or its video codec is not supported by the built-in Windows player. Try an MP4 or WebM file, or open it in your configured desktop player.'
@@ -287,36 +402,44 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 			try { await document.exitFullscreen(); } catch { /* The stage is removed immediately after closing. */ }
 		}
 		await persistProgress();
+		await playbackActivityPromise;
+		if (nativePoll) clearInterval(nativePoll);
+		if (activeEngine) await stopNativePlayer().catch((error) => console.warn('Native player could not stop', error));
+		delete document.documentElement.dataset.nativePlayer;
+		suspendNativeAcrylicForPlayback(false);
 		for (const track of subtitleTracks) if (track.url.startsWith('blob:')) URL.revokeObjectURL(track.url);
 		onClose();
 	}
 
-	async function openInSystemPlayer() {
-		const mediaId = Number(media.id);
-		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) return;
-		try { await openMediaInSystemPlayer(mediaId); }
-		catch (error) { playbackError = error instanceof Error ? error.message : 'Could not open the desktop player.'; return; }
-		await closePlayer();
+	async function switchEngine() {
+		playerMenuOpen = false;
+		await persistProgress();
+		await startSelectedEngine(currentTime);
 	}
 
 	onMount(() => {
+		suspendNativeAcrylicForPlayback(true);
+		selectedDesktopPlayer = readPreferredDesktopPlayer();
 		const handleFullscreenChange = () => {
 			controlsVisible = true;
 			revealControls();
+			if (activeEngine) void resizeNativePlayer().catch(console.warn);
 		};
+		const handleResize = () => { if (activeEngine) void resizeNativePlayer().catch(console.warn); };
 		document.addEventListener('fullscreenchange', handleFullscreenChange);
+		window.addEventListener('resize', handleResize);
 		overlay.focus();
 		revealControls();
 		if (!isDesktopRuntime()) {
 			isLoading = false;
 			playbackError = 'Local playback is available in the desktop app.';
-			return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+			return () => { document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
 		}
 		const mediaId = Number(media.id);
 		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) {
 			isLoading = false;
 			playbackError = 'This item is not connected to a local media file.';
-			return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+			return () => { document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
 		}
 		void resolveMediaFile(mediaId)
 			.then(async (source) => {
@@ -330,8 +453,7 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 				})));
 				subtitleTracks = tracks;
 				await tick();
-				video.src = await localMediaUrl(source.path);
-				video.load();
+				await startSelectedEngine();
 			})
 			.catch((error) => {
 				isLoading = false;
@@ -339,8 +461,13 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 			});
 		return () => {
 			document.removeEventListener('fullscreenchange', handleFullscreenChange);
+			window.removeEventListener('resize', handleResize);
 			if (timeoutId) clearTimeout(timeoutId);
+			if (nativePoll) clearInterval(nativePoll);
 			void persistProgress();
+			if (activeEngine) void stopNativePlayer();
+			delete document.documentElement.dataset.nativePlayer;
+			suspendNativeAcrylicForPlayback(false);
 			for (const track of subtitleTracks) if (track.url.startsWith('blob:')) URL.revokeObjectURL(track.url);
 		};
 	});
@@ -350,20 +477,22 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 
 <div
 	class="player-overlay"
+	class:player-overlay--native={activeEngine !== null}
 	bind:this={overlay}
 	role="dialog"
 	aria-modal="true"
 	aria-label={`Player for ${media.title}`}
 	tabindex="-1"
 	onpointermove={revealControls}
+	onpointerdown={handlePlayerPointerDown}
 >
-	<div class="player-stage" class:player-stage--media-ready={mediaReady} bind:this={playerStage} style={`--backdrop: url("${media.backdrop}")`}>
+	<div class="player-stage" class:player-stage--media-ready={mediaReady} class:player-stage--native={activeEngine !== null} bind:this={playerStage} style={`--backdrop: url("${media.backdrop}")`}>
 		<div class="player-stage__image" aria-label={`Preview frame for ${media.title}`} role="img"></div>
 		<div class="player-stage__ambient"></div>
 		<div class="player-stage__vignette"></div>
 		<video
 			class="player-video"
-			class:player-video--hidden={playbackError}
+			class:player-video--hidden={playbackError || activeEngine !== null}
 			bind:this={video}
 			playsinline
 			preload="metadata"
@@ -372,7 +501,7 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 			onloadedmetadata={onLoadedMetadata}
 			onloadeddata={() => (mediaReady = true)}
 			ontimeupdate={onTimeUpdate}
-			onplay={() => (isPlaying = true)}
+			onplay={() => { isPlaying = true; recordPlaybackStarted(); }}
 			onpause={() => { isPlaying = false; void persistProgress(); }}
 			onended={() => { isPlaying = false; currentTime = duration; void persistProgress(); }}
 			onerror={onPlaybackError}
@@ -385,7 +514,7 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 		{#if isLoading}
 			<div class="player-message" role="status"><span class="player-loading__spinner"></span><span>Opening media…</span></div>
 		{:else if playbackError}
-			<div class="player-message player-message--error" role="alert"><strong>Playback unavailable</strong><span>{playbackError}</span>{#if isDesktopRuntime()}<button type="button" onclick={openInSystemPlayer}>Open in desktop player</button>{/if}</div>
+			<div class="player-message player-message--error" role="alert"><strong>Playback unavailable</strong><span>{playbackError}</span><span>Choose another engine in the menu at the top right.</span></div>
 		{/if}
 
 		<div class:player-ui--hidden={!controlsVisible && isPlaying} class="player-ui">
@@ -399,9 +528,22 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 					<strong>{media.title}</strong>
 				</div>
 
-				<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="More playback options" title="More playback options">
-					<Icon name="more" size={20} />
-				</button>
+				<div class="player-options-anchor">
+					<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="More playback options" title="More playback options" aria-expanded={playerMenuOpen} aria-haspopup="true" onclick={() => (playerMenuOpen = !playerMenuOpen)}>
+						<Icon name="more" size={20} />
+					</button>
+					{#if playerMenuOpen}
+						<div class="player-options" role="group" aria-label="Playback engine selection">
+							<label for="desktop-player-select">Playback engine</label>
+							<select id="desktop-player-select" value={selectedDesktopPlayer} onchange={setDesktopPlayer}>
+								<option value="mpv">libmpv</option>
+								<option value="vlc">libVLC</option>
+							</select>
+							<p>{selectedDesktopPlayer === 'mpv' ? 'Uses libmpv with its GPU video renderer.' : 'Uses libVLC inside this player.'}</p>
+							<button type="button" disabled={desktopPlayerBusy || selectedDesktopPlayer === activeEngine} onclick={switchEngine}>{desktopPlayerBusy ? 'Switching…' : `Use ${desktopPlayerLabel()}`}</button>
+						</div>
+					{/if}
+				</div>
 			</div>
 
 			<div class="player-control-deck" style="corner-shape: squircle">
@@ -504,8 +646,11 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 
 <style>
 	.player-overlay { position: fixed; inset: 0; z-index: 80; color: #f4f6f7; background: #020304; outline: none; }
+	.player-overlay--native { background: transparent; }
+	.player-stage--native .player-stage__image, .player-stage--native .player-stage__ambient, .player-stage--native .player-stage__vignette { display: none; }
 	.player-stage { position: relative; width: 100%; height: 100%; overflow: hidden; isolation: isolate; background: #000; }
 	.player-stage:fullscreen { width: 100vw; height: 100vh; background: #000; }
+	.player-stage.player-stage--native, .player-stage.player-stage--native:fullscreen { background: transparent; }
 	.player-stage__image { position: absolute; inset: -2.5%; background-image: var(--backdrop); background-position: center; background-size: cover; filter: saturate(0.8) contrast(1.06) brightness(0.74); transform: scale(1.025); z-index: -3; transition: opacity 320ms ease, visibility 0s; }
 	.player-stage__ambient { position: absolute; inset: 0; background: radial-gradient(circle at 70% 42%, rgba(151, 193, 211, 0.13), transparent 32%), radial-gradient(circle at 18% 78%, rgba(45, 65, 76, 0.24), transparent 34%); mix-blend-mode: screen; pointer-events: none; z-index: -2; transition: opacity 320ms ease, visibility 0s; }
 	.player-stage__vignette { position: absolute; inset: 0; background: radial-gradient(ellipse 82% 72% at 50% 48%, transparent 24%, rgba(2, 4, 6, 0.34) 72%, rgba(2, 4, 6, 0.78) 100%), linear-gradient(180deg, rgba(2,4,6,0.58), transparent 25%, transparent 57%, rgba(2,4,6,0.74)); pointer-events: none; z-index: -1; transition: opacity 320ms ease, visibility 0s; }
@@ -528,6 +673,14 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 
 	.player-topbar { position: absolute; top: 0; right: 0; left: 0; display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 86px; background: linear-gradient(180deg, rgba(2,4,6,0.68), transparent); }
 	.player-topbar > * { pointer-events: auto; }
+	.player-options-anchor { position: relative; z-index: 6; }
+	.player-options { position: absolute; top: 52px; right: 0; display: grid; gap: 9px; width: min(280px, calc(100vw - 36px)); padding: 15px; border: 1px solid rgba(255,255,255,0.14); border-radius: 16px; color: rgba(244,247,249,0.86); background: rgba(17,21,26,0.94); box-shadow: 0 18px 54px rgba(0,0,0,0.42); -webkit-backdrop-filter: blur(24px) saturate(140%); backdrop-filter: blur(24px) saturate(140%); }
+	.player-options label { color: rgba(244,247,249,0.58); font-size: 0.66rem; font-weight: 650; }
+	.player-options select { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; color: #f4f7f9; background: #20262d; font: inherit; font-size: 0.72rem; }
+	.player-options option { color: #f4f7f9; background: #161b21; }
+	.player-options p { margin: 0; color: rgba(244,247,249,0.56); font-size: 0.64rem; line-height: 1.45; }
+	.player-options > button { min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; color: #11161b; background: rgba(240,246,248,0.94); cursor: pointer; font: inherit; font-size: 0.7rem; font-weight: 650; }
+	.player-options > button:disabled { opacity: 0.55; cursor: progress; }
 	.player-now-playing { position: absolute; top: 23px; left: 50%; display: grid; gap: 3px; width: min(48vw, 520px); transform: translateX(-50%); text-align: center; text-shadow: 0 2px 16px rgba(0,0,0,0.52); }
 	.player-now-playing span { color: rgba(238,242,244,0.5); font-size: 0.61rem; font-weight: 620; letter-spacing: 0.055em; text-transform: uppercase; }
 	.player-now-playing strong { overflow: hidden; color: rgba(250,251,252,0.94); font-size: 0.82rem; font-weight: 650; letter-spacing: -0.018em; text-overflow: ellipsis; white-space: nowrap; }
@@ -629,6 +782,7 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 
 	@media (max-width: 760px) {
 		.player-topbar { padding: 14px 12px 70px; }
+		.player-options { top: 48px; right: 0; }
 		.player-now-playing { top: 16px; width: min(56vw, 300px); }
 		.player-glass-button { width: 40px; height: 40px; border-radius: 13px; }
 		.player-control-deck { right: 10px; bottom: max(10px, env(safe-area-inset-bottom)); left: 10px; padding: 12px; border-radius: 18px; }

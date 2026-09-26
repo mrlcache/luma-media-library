@@ -166,10 +166,26 @@ pub struct ContinueWatchingItem {
     pub title: String,
     pub kind: Option<String>,
     pub year: Option<u16>,
+    pub overview: Option<String>,
+    pub vote_average: Option<f32>,
     pub poster_url: Option<String>,
     pub backdrop_url: Option<String>,
     pub position_seconds: f64,
     pub duration_seconds: f64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackHistoryItem {
+    pub id: i64,
+    pub title: String,
+    pub kind: Option<String>,
+    pub year: Option<u16>,
+    pub overview: Option<String>,
+    pub vote_average: Option<f32>,
+    pub poster_url: Option<String>,
+    pub backdrop_url: Option<String>,
     pub updated_at: i64,
 }
 
@@ -330,7 +346,120 @@ impl LibraryStore {
                 .map_err(|error| format!("Could not prepare playback history: {error}"))?;
         }
 
+        let schema_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|error| format!("Could not read the local library schema: {error}"))?;
+        if schema_version < 6 {
+            connection
+                .execute_batch(
+                    "CREATE TABLE IF NOT EXISTS playback_activity (
+                        media_id INTEGER PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+                        updated_at INTEGER NOT NULL
+                     );
+                     CREATE INDEX IF NOT EXISTS playback_activity_updated
+                        ON playback_activity(updated_at DESC);
+                     PRAGMA user_version = 6;",
+                )
+                .map_err(|error| format!("Could not prepare the playback history: {error}"))?;
+        }
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO playback_activity(media_id, updated_at)
+                 SELECT media_id, updated_at FROM playback_progress",
+                [],
+            )
+            .map_err(|error| format!("Could not preserve existing playback history: {error}"))?;
+
         Ok(Self { connection })
+    }
+
+    pub fn record_playback_activity(&mut self, media_id: i64) -> Result<(), String> {
+        if media_id <= 0 {
+            return Err("Playback history item is invalid.".to_owned());
+        }
+        let exists: bool = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM media_items AS items
+                    JOIN media_files AS files
+                      ON files.root_id = items.root_id AND files.relative_path = items.relative_path
+                    JOIN library_roots AS roots
+                      ON roots.id = files.root_id AND roots.current_generation = files.generation
+                    WHERE items.id = ?1
+                 )",
+                [media_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not find the media item: {error}"))?;
+        if !exists {
+            return Err("This media item is no longer in the library.".to_owned());
+        }
+        self.connection
+            .execute(
+                "INSERT INTO playback_activity(media_id, updated_at)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(media_id) DO UPDATE SET updated_at = excluded.updated_at",
+                params![media_id, unix_time_millis()],
+            )
+            .map_err(|error| format!("Could not update playback history: {error}"))?;
+        Ok(())
+    }
+
+    pub fn playback_history(
+        &self,
+        requested_count: u32,
+    ) -> Result<Vec<PlaybackHistoryItem>, String> {
+        let count = requested_count.clamp(1, 48);
+        let mut statement = self
+            .connection
+            .prepare(
+                "WITH candidates AS (
+                    SELECT activity.media_id AS id,
+                           COALESCE(NULLIF(metadata.title, ''), items.local_title, files.display_name) AS title,
+                           COALESCE(metadata.kind, items.local_kind) AS kind,
+                           COALESCE(metadata.release_year, items.local_year) AS release_year,
+                           metadata.overview, metadata.vote_average,
+                           metadata.poster_url, metadata.backdrop_url, activity.updated_at,
+                           CASE WHEN metadata.tmdb_id IS NOT NULL
+                                THEN COALESCE(metadata.kind, '') || ':' || metadata.tmdb_id
+                                WHEN items.local_kind = 'series'
+                                THEN 'series:' || items.local_key || ':' || COALESCE(items.local_year, '')
+                                ELSE 'file:' || items.id END AS group_key
+                    FROM playback_activity AS activity
+                    JOIN media_items AS items ON items.id = activity.media_id
+                    JOIN media_files AS files
+                      ON files.root_id = items.root_id AND files.relative_path = items.relative_path
+                    JOIN library_roots AS roots
+                      ON roots.id = files.root_id AND roots.current_generation = files.generation
+                    LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
+                 ), ranked AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY group_key ORDER BY updated_at DESC) AS rank
+                    FROM candidates
+                 )
+                 SELECT id, title, kind, release_year, overview, vote_average,
+                        poster_url, backdrop_url, updated_at
+                 FROM ranked WHERE rank = 1 ORDER BY updated_at DESC LIMIT ?1",
+            )
+            .map_err(|error| format!("Could not prepare playback history: {error}"))?;
+        let rows = statement
+            .query_map([count], |row| {
+                let year: Option<i64> = row.get(3)?;
+                Ok(PlaybackHistoryItem {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    kind: row.get(2)?,
+                    year: year.and_then(|value| u16::try_from(value).ok()),
+                    overview: row.get(4)?,
+                    vote_average: row.get(5)?,
+                    poster_url: row.get(6)?,
+                    backdrop_url: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })
+            .map_err(|error| format!("Could not read playback history: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read a playback history item: {error}"))
     }
 
     pub fn save_playback_progress(
@@ -349,7 +478,10 @@ impl LibraryStore {
         }
         if position_seconds < 10.0 {
             self.connection
-                .execute("DELETE FROM playback_progress WHERE media_id = ?1", [media_id])
+                .execute(
+                    "DELETE FROM playback_progress WHERE media_id = ?1",
+                    [media_id],
+                )
                 .map_err(|error| format!("Could not clear playback progress: {error}"))?;
             return Ok(());
         }
@@ -357,7 +489,10 @@ impl LibraryStore {
             || position_seconds / duration_seconds >= 0.95
         {
             self.connection
-                .execute("DELETE FROM playback_progress WHERE media_id = ?1", [media_id])
+                .execute(
+                    "DELETE FROM playback_progress WHERE media_id = ?1",
+                    [media_id],
+                )
                 .map_err(|error| format!("Could not clear completed playback: {error}"))?;
             return Ok(());
         }
@@ -397,7 +532,10 @@ impl LibraryStore {
             .map_err(|error| format!("Could not read playback position: {error}"))
     }
 
-    pub fn continue_watching(&self, requested_count: u32) -> Result<Vec<ContinueWatchingItem>, String> {
+    pub fn continue_watching(
+        &self,
+        requested_count: u32,
+    ) -> Result<Vec<ContinueWatchingItem>, String> {
         let count = requested_count.clamp(1, 24);
         let mut statement = self
             .connection
@@ -406,6 +544,7 @@ impl LibraryStore {
                     SELECT items.id, COALESCE(NULLIF(metadata.title, ''), items.local_title, files.display_name) AS title,
                            COALESCE(metadata.kind, items.local_kind) AS kind,
                            COALESCE(metadata.release_year, items.local_year) AS release_year,
+                           metadata.overview, metadata.vote_average,
                            metadata.poster_url, metadata.backdrop_url,
                            progress.position_seconds, progress.duration_seconds,
                            progress.updated_at,
@@ -426,7 +565,8 @@ impl LibraryStore {
                     SELECT *, ROW_NUMBER() OVER (PARTITION BY group_key ORDER BY updated_at DESC) AS rank
                     FROM candidates
                  )
-                 SELECT id, title, kind, release_year, poster_url, backdrop_url,
+                 SELECT id, title, kind, release_year, overview, vote_average,
+                        poster_url, backdrop_url,
                         position_seconds, duration_seconds, updated_at
                  FROM ranked WHERE rank = 1 ORDER BY updated_at DESC LIMIT ?1",
             )
@@ -439,11 +579,13 @@ impl LibraryStore {
                     title: row.get(1)?,
                     kind: row.get(2)?,
                     year: year.and_then(|value| u16::try_from(value).ok()),
-                    poster_url: row.get(4)?,
-                    backdrop_url: row.get(5)?,
-                    position_seconds: row.get(6)?,
-                    duration_seconds: row.get(7)?,
-                    updated_at: row.get(8)?,
+                    overview: row.get(4)?,
+                    vote_average: row.get(5)?,
+                    poster_url: row.get(6)?,
+                    backdrop_url: row.get(7)?,
+                    position_seconds: row.get(8)?,
+                    duration_seconds: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             })
             .map_err(|error| format!("Could not read playback history: {error}"))?;
@@ -473,23 +615,37 @@ impl LibraryStore {
         let media_path = std::fs::canonicalize(root.join(relative_path))
             .map_err(|error| format!("Could not open the indexed media file: {error}"))?;
         if !media_path.starts_with(&root) || !media_path.is_file() {
-            return Err("The indexed media file is no longer inside its library folder.".to_owned());
+            return Err(
+                "The indexed media file is no longer inside its library folder.".to_owned(),
+            );
         }
-        let directory = media_path.parent().ok_or_else(|| "The media file has no parent folder.".to_owned())?;
-        let stem = media_path.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
+        let directory = media_path
+            .parent()
+            .ok_or_else(|| "The media file has no parent folder.".to_owned())?;
+        let stem = media_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
         let mut subtitles = Vec::new();
         let entries = std::fs::read_dir(directory)
             .map_err(|error| format!("Could not inspect nearby subtitle files: {error}"))?;
         for entry in entries.flatten() {
             let path = entry.path();
-            let Some(extension) = path.extension().and_then(|value| value.to_str()) else { continue };
-            if !matches!(extension.to_ascii_lowercase().as_str(), "srt" | "vtt") { continue; }
-            let Some(name) = path.file_name().and_then(|value| value.to_str()) else { continue };
+            let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !matches!(extension.to_ascii_lowercase().as_str(), "srt" | "vtt") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
             let candidate_stem = name.rsplit_once('.').map(|(base, _)| base).unwrap_or(name);
             if candidate_stem.eq_ignore_ascii_case(stem)
-                || candidate_stem
-                    .get(stem.len()..)
-                    .is_some_and(|suffix| candidate_stem[..stem.len()].eq_ignore_ascii_case(stem) && suffix.starts_with('.'))
+                || candidate_stem.get(stem.len()..).is_some_and(|suffix| {
+                    candidate_stem[..stem.len()].eq_ignore_ascii_case(stem)
+                        && suffix.starts_with('.')
+                })
             {
                 if let Ok(canonical) = std::fs::canonicalize(&path) {
                     if canonical.starts_with(&root) && canonical.is_file() {
@@ -620,7 +776,8 @@ impl LibraryStore {
             return Ok(None);
         };
 
-        let files_query = "SELECT items.id, files.display_name, roots.canonical_path, items.relative_path
+        let files_query =
+            "SELECT items.id, files.display_name, roots.canonical_path, items.relative_path
              FROM media_items AS items
              JOIN library_roots AS roots ON roots.id = items.root_id
              JOIN media_files AS files
@@ -674,8 +831,10 @@ impl LibraryStore {
     }
 
     pub fn tmdb_target(&self, media_id: i64) -> Result<Option<(u64, String)>, String> {
-        let target: Option<(i64, String)> = self.connection.query_row(
-            "SELECT metadata.tmdb_id, metadata.kind
+        let target: Option<(i64, String)> = self
+            .connection
+            .query_row(
+                "SELECT metadata.tmdb_id, metadata.kind
              FROM media_metadata AS metadata
              JOIN media_items AS items ON items.id = metadata.media_id
              JOIN media_files AS files ON files.root_id = items.root_id
@@ -683,9 +842,11 @@ impl LibraryStore {
              JOIN library_roots AS roots ON roots.id = files.root_id
              WHERE items.id = ?1 AND files.generation = roots.current_generation
                AND metadata.tmdb_id IS NOT NULL AND metadata.kind IN ('movie', 'series')",
-            [media_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional().map_err(|error| format!("Could not read this title's TMDb metadata: {error}"))?;
+                [media_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("Could not read this title's TMDb metadata: {error}"))?;
         Ok(target.and_then(|(id, kind)| u64::try_from(id).ok().map(|id| (id, kind))))
     }
 
@@ -808,7 +969,9 @@ impl LibraryStore {
                  WHERE tmdb_id IS NULL OR poster_url IS NULL",
                 [],
             )
-            .map_err(|error| format!("Could not queue incomplete artwork for metadata refresh: {error}"))?;
+            .map_err(|error| {
+                format!("Could not queue incomplete artwork for metadata refresh: {error}")
+            })?;
         Ok(())
     }
 
@@ -1576,8 +1739,14 @@ mod tests {
             .expect("series detail record");
         assert_eq!(detail.media.title, "Quiet Show");
         assert_eq!(detail.files.len(), 2);
-        assert_eq!((detail.files[0].season, detail.files[0].episode), (Some(1), Some(1)));
-        assert_eq!((detail.files[1].season, detail.files[1].episode), (Some(1), Some(2)));
+        assert_eq!(
+            (detail.files[0].season, detail.files[0].episode),
+            (Some(1), Some(1))
+        );
+        assert_eq!(
+            (detail.files[1].season, detail.files[1].episode),
+            (Some(1), Some(2))
+        );
         assert_eq!(
             catalog.items[0].poster_url.as_deref(),
             Some("https://image.tmdb.org/t/p/w342/show.jpg")
@@ -1666,20 +1835,71 @@ mod tests {
         let root = temporary.path().join("videos");
         std::fs::create_dir(&root).expect("media directory");
         std::fs::write(root.join("First Film (2024).mp4"), b"video").expect("video file");
-        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).expect("library");
-        store.scan_root(root.to_str().expect("root path")).expect("scan");
+        let mut store =
+            LibraryStore::open(&temporary.path().join("library.sqlite3")).expect("library");
+        store
+            .scan_root(root.to_str().expect("root path"))
+            .expect("scan");
         let media = store.catalog_page(0, 10).expect("catalog").items.remove(0);
 
-        store.save_playback_progress(media.id, 120.0, 600.0).expect("save progress");
-        assert_eq!(store.playback_position(media.id).expect("resume position"), Some(120.0));
+        store
+            .save_metadata_lookups(&[MetadataLookup {
+                media_ids: vec![media.id],
+                metadata: Some(MediaMetadata {
+                    tmdb_id: 987,
+                    kind: "movie".to_owned(),
+                    title: "First Film".to_owned(),
+                    year: Some(2024),
+                    overview: "A test synopsis.".to_owned(),
+                    vote_average: Some(7.8),
+                    poster_url: Some("https://image.tmdb.org/poster.jpg".to_owned()),
+                    backdrop_url: Some("https://image.tmdb.org/backdrop.jpg".to_owned()),
+                }),
+            }])
+            .expect("save playback metadata");
+
+        store
+            .record_playback_activity(media.id)
+            .expect("record playback");
+        let history = store.playback_history(12).expect("playback history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, media.id);
+        assert_eq!(history[0].title, "First Film");
+        assert_eq!(history[0].overview.as_deref(), Some("A test synopsis."));
+        assert_eq!(history[0].vote_average, Some(7.8));
+
+        store
+            .save_playback_progress(media.id, 120.0, 600.0)
+            .expect("save progress");
+        assert_eq!(
+            store.playback_position(media.id).expect("resume position"),
+            Some(120.0)
+        );
         let resume = store.continue_watching(12).expect("home resume list");
         assert_eq!(resume.len(), 1);
         assert_eq!(resume[0].id, media.id);
         assert_eq!(resume[0].position_seconds, 120.0);
         assert_eq!(resume[0].title, "First Film");
+        assert_eq!(resume[0].overview.as_deref(), Some("A test synopsis."));
+        assert_eq!(resume[0].vote_average, Some(7.8));
 
-        store.save_playback_progress(media.id, 590.0, 600.0).expect("complete playback");
-        assert!(store.continue_watching(12).expect("completed home list").is_empty());
-        assert_eq!(store.playback_position(media.id).expect("cleared resume"), None);
+        store
+            .save_playback_progress(media.id, 590.0, 600.0)
+            .expect("complete playback");
+        assert!(store
+            .continue_watching(12)
+            .expect("completed home list")
+            .is_empty());
+        assert_eq!(
+            store.playback_position(media.id).expect("cleared resume"),
+            None
+        );
+        assert_eq!(
+            store
+                .playback_history(12)
+                .expect("completed playback history")
+                .len(),
+            1
+        );
     }
 }

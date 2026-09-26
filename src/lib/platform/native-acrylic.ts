@@ -6,6 +6,7 @@ type AcrylicStatus = 'idle' | 'ready' | 'unavailable';
 export const nativeAcrylicStatus = writable<AcrylicStatus>('idle');
 
 const requesters = new Set<symbol>();
+let suspendedForPlayback = false;
 let applied = false;
 let updating = false;
 let listening = false;
@@ -13,6 +14,7 @@ let loggedFailure = false;
 
 function shouldEnable() {
 	return requesters.size > 0 &&
+		!suspendedForPlayback &&
 		document.visibilityState === 'visible' &&
 		!window.matchMedia('(prefers-reduced-transparency: reduce)').matches;
 }
@@ -61,5 +63,11 @@ export function requestNativeAcrylic(requester: symbol, enabled: boolean) {
 	listenForSystemChanges();
 	if (enabled) requesters.add(requester);
 	else requesters.delete(requester);
+	void updateNativeAcrylic();
+}
+
+export function suspendNativeAcrylicForPlayback(suspended: boolean) {
+	if (!isDesktopRuntime()) return;
+	suspendedForPlayback = suspended;
 	void updateNativeAcrylic();
 }

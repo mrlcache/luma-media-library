@@ -5,14 +5,14 @@
 	import EmptyLibraryCard from '$lib/components/EmptyLibraryCard.svelte';
 	import MediaRow from '$lib/components/MediaRow.svelte';
 	import PosterCard from '$lib/components/PosterCard.svelte';
-	import { isDesktopRuntime, readCatalogPage, readContinueWatching, readTitleLogo, readTitleTrailer } from '$lib/platform/desktop';
+	import { isDesktopRuntime, readCatalogPage, readContinueWatching, readPlaybackHistory, readTitleLogo, readTitleTrailer } from '$lib/platform/desktop';
 	import { tmdbImageSize } from '$lib/media/artwork';
 	import { loadYouTubeIframeApi, type YouTubePlayer } from '$lib/media/youtube-iframe';
-	import { usePlayer } from '$lib/player-context';
+	import { PLAYBACK_HISTORY_UPDATED_EVENT, usePlayer } from '$lib/player-context';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
 	import { rightEdgeHint } from '$lib/scroll/right-edge-hint';
-	import type { CatalogMedia, ContinueWatchingItem, MediaItem, TmdbTrailer } from '$lib/types';
+	import type { CatalogMedia, ContinueWatchingItem, MediaItem, PlaybackHistoryItem, TmdbTrailer } from '$lib/types';
 
 	const player = usePlayer();
 	let homeContent: HTMLDivElement;
@@ -21,19 +21,22 @@
 	let heroTrailer = $state<TmdbTrailer | null>(null);
 	let heroLogoUrl = $state<string | null>(null);
 	let heroLogoFailed = $state(false);
+	let heroLogoReady = $state(false);
+	let heroLogoResolved = $state(false);
 	let showHeroVideo = $state(false);
 	let heroVideoReady = $state(false);
 	let heroTrailerEnded = $state(false);
 	let heroTrailerExpanded = $state(false);
 	let heroVideoIframe = $state<HTMLIFrameElement>();
 	let backgroundPlayer: YouTubePlayer | null = null;
-	let desktopCatalog = $state(false);
+	let desktopCatalog = $state(isDesktopRuntime());
 	let catalogItems = $state<CatalogMedia[]>([]);
 	let resumeItems = $state<ContinueWatchingItem[]>([]);
+	let playbackHistoryItems = $state<PlaybackHistoryItem[]>([]);
 	let catalogLoading = $state(true);
 	let catalogError = $state('');
 
-	function toMediaItem(item: CatalogMedia | ContinueWatchingItem): MediaItem {
+	function toMediaItem(item: CatalogMedia | ContinueWatchingItem | PlaybackHistoryItem): MediaItem {
 		const kind = item.kind === 'series' ? 'series' : 'movie';
 		const rating = 'voteAverage' in item ? item.voteAverage : null;
 		const duration = 'durationSeconds' in item ? item.durationSeconds : 0;
@@ -82,8 +85,28 @@
 	}
 
 	let libraryItems = $derived(catalogItems.map(toMediaItem));
-	let continueWatchingItems = $derived(resumeItems.map(toMediaItem));
-	let featured = $derived(libraryItems.find((item) => item.backdrop || item.poster) ?? continueWatchingItems[0] ?? null);
+	let recentlyWatchedItems = $derived(playbackHistoryItems.map(toMediaItem));
+	let continueWatchingItems = $derived.by(() => {
+		const entries = new Map<string, { media: MediaItem; updatedAt: number }>();
+		const keyFor = (item: ContinueWatchingItem | PlaybackHistoryItem) =>
+			`${item.kind ?? 'movie'}:${item.year ?? 0}:${item.title.trim().toLowerCase()}`;
+
+		for (const item of playbackHistoryItems) {
+			entries.set(keyFor(item), { media: toMediaItem(item), updatedAt: item.updatedAt });
+		}
+		for (const item of resumeItems) {
+			const key = keyFor(item);
+			if (item.updatedAt >= (entries.get(key)?.updatedAt ?? 0)) {
+				entries.set(key, { media: toMediaItem(item), updatedAt: item.updatedAt });
+			}
+		}
+
+		return [...entries.values()]
+			.sort((a, b) => b.updatedAt - a.updatedAt)
+			.slice(0, 12)
+			.map(({ media }) => media);
+	});
+	let featured = $derived(recentlyWatchedItems[0] ?? continueWatchingItems[0] ?? libraryItems.find((item) => item.backdrop || item.poster) ?? null);
 	let libraryPreview = $derived(libraryItems.filter((item) => item.poster).slice(0, 8));
 	let recentlyAdded = $derived(libraryItems.slice(0, 8));
 
@@ -106,11 +129,22 @@
 		const id = Number(featured?.id);
 		heroLogoUrl = null;
 		heroLogoFailed = false;
-		if (!desktopCatalog || !Number.isSafeInteger(id) || id <= 0) return;
+		heroLogoReady = false;
+		heroLogoResolved = false;
+		if (!desktopCatalog || !Number.isSafeInteger(id) || id <= 0) {
+			heroLogoResolved = true;
+			return;
+		}
 		let cancelled = false;
 		void readTitleLogo(id).then((url) => {
-			if (!cancelled) heroLogoUrl = url;
-		}).catch(() => { if (!cancelled) heroLogoUrl = null; });
+			if (cancelled) return;
+			heroLogoUrl = url;
+			heroLogoResolved = true;
+		}).catch(() => {
+			if (cancelled) return;
+			heroLogoUrl = null;
+			heroLogoResolved = true;
+		});
 		return () => { cancelled = true; };
 	});
 
@@ -197,14 +231,25 @@
 
 	onMount(() => {
 		desktopCatalog = isDesktopRuntime();
+		const refreshPlaybackHistory = () => {
+			if (!desktopCatalog || document.visibilityState !== 'visible') return;
+			void Promise.all([readContinueWatching(12), readPlaybackHistory(12)])
+				.then(([resume, history]) => { resumeItems = resume; playbackHistoryItems = history; })
+				.catch((error) => console.warn('Playback history could not be refreshed', error));
+		};
+		window.addEventListener(PLAYBACK_HISTORY_UPDATED_EVENT, refreshPlaybackHistory);
+		window.addEventListener('focus', refreshPlaybackHistory);
+		document.addEventListener('visibilitychange', refreshPlaybackHistory);
 		if (desktopCatalog) {
 			void Promise.all([
 				readCatalogPage(0, 48, undefined, undefined, 'Recently added'),
-				readContinueWatching(12)
-			]).then(([page, resume]) => {
+				readContinueWatching(12),
+				readPlaybackHistory(12)
+			]).then(([page, resume, history]) => {
 				if (page) catalogItems = page.items;
 				else catalogError = 'The local library is only available in the desktop app.';
 				resumeItems = resume;
+				playbackHistoryItems = history;
 			}).catch((error) => {
 				catalogError = error instanceof Error ? error.message : 'The local library could not be read.';
 			}).finally(() => (catalogLoading = false));
@@ -212,7 +257,13 @@
 			catalogLoading = false;
 		}
 
-		if (!desktopCatalog) return;
+		if (!desktopCatalog) {
+			return () => {
+				window.removeEventListener(PLAYBACK_HISTORY_UPDATED_EVENT, refreshPlaybackHistory);
+				window.removeEventListener('focus', refreshPlaybackHistory);
+				document.removeEventListener('visibilitychange', refreshPlaybackHistory);
+			};
+		}
 
 		const acrylicRequester = Symbol('Home HSS');
 		const contentArea = homeContent.closest('.content-area');
@@ -235,6 +286,9 @@
 		observer.observe(homeContent);
 		return () => {
 			observer.disconnect();
+			window.removeEventListener(PLAYBACK_HISTORY_UPDATED_EVENT, refreshPlaybackHistory);
+			window.removeEventListener('focus', refreshPlaybackHistory);
+			document.removeEventListener('visibilitychange', refreshPlaybackHistory);
 			requestNativeAcrylic(acrylicRequester, false);
 		};
 	});
@@ -270,11 +324,21 @@
 			><span class="featured__trailer-play" aria-hidden="true"></span><span>Click to watch full trailer</span></button>
 		{/if}
 		<div class="featured__content">
-			<h1 id="featured-title">
+			<h1 id="featured-title" aria-label={featured.title}>
 				{#if heroLogoUrl && !heroLogoFailed}
-					<img class="featured__logo" src={heroLogoUrl} alt={featured.title} onerror={() => { heroLogoFailed = true; }} />
-				{:else}
+					<span class="featured__title-pending" aria-hidden="true">{featured.title}</span>
+					<img
+						class="featured__logo"
+						class:featured__logo--ready={heroLogoReady}
+						src={heroLogoUrl}
+						alt=""
+						onload={() => { heroLogoReady = true; }}
+						onerror={() => { heroLogoFailed = true; heroLogoUrl = null; heroLogoResolved = true; }}
+					/>
+				{:else if heroLogoResolved}
 					{featured.title}
+				{:else}
+					<span class="featured__title-pending" aria-hidden="true">{featured.title}</span>
 				{/if}
 			</h1>
 			<div class="featured__meta">
@@ -409,6 +473,7 @@
 	}
 
 	.featured h1 {
+		display: grid;
 		max-width: 760px;
 		margin: 0;
 		color: var(--text-strong);
@@ -420,7 +485,10 @@
 		text-wrap: balance;
 		text-shadow: 0 12px 42px rgba(0, 0, 0, 0.38);
 	}
-	.featured__logo { display: block; width: auto; height: auto; max-width: min(480px, 100%); max-height: 104px; object-fit: contain; object-position: left center; filter: drop-shadow(0 12px 38px rgba(0, 0, 0, 0.4)); }
+	.featured__title-pending, .featured__logo { grid-area: 1 / 1; }
+	.featured__title-pending { visibility: hidden; }
+	.featured__logo { display: block; width: auto; height: auto; max-width: min(480px, 100%); max-height: 104px; object-fit: contain; object-position: left center; filter: drop-shadow(0 12px 38px rgba(0, 0, 0, 0.4)); opacity: 0; transition: opacity 140ms ease; }
+	.featured__logo--ready { opacity: 1; }
 
 	.featured__meta {
 		display: flex;

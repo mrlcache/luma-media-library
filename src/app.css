@@ -87,6 +87,11 @@ html[data-runtime='desktop'] {
 	background: transparent;
 }
 
+html[data-native-player],
+html[data-native-player] body {
+	background: transparent !important;
+}
+
 html[data-runtime='desktop'] body {
 	height: 100%;
 	min-height: 0;

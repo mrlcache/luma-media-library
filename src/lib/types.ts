@@ -45,10 +45,24 @@ export type ContinueWatchingItem = {
 	title: string;
 	kind: MediaKind | null;
 	year: number | null;
+	overview: string | null;
+	voteAverage: number | null;
 	posterUrl: string | null;
 	backdropUrl: string | null;
 	positionSeconds: number;
 	durationSeconds: number;
+	updatedAt: number;
+};
+
+export type PlaybackHistoryItem = {
+	id: number;
+	title: string;
+	kind: 'movie' | 'series' | null;
+	year: number | null;
+	overview: string | null;
+	voteAverage: number | null;
+	posterUrl: string | null;
+	backdropUrl: string | null;
 	updatedAt: number;
 };
 
