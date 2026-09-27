@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 const API_BASE: &str = "https://api.opensubtitles.com/api/v1";
-const USER_AGENT: &str = concat!("Media Library v", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("Luma v", env!("CARGO_PKG_VERSION"));
 
 pub struct OpenSubtitlesState {
     data_dir: PathBuf,

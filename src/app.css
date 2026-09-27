@@ -57,6 +57,13 @@
 	box-sizing: border-box;
 	scrollbar-width: none;
 	-ms-overflow-style: none;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+input, textarea, select, [contenteditable='true'], [contenteditable=''] {
+	-webkit-user-select: text;
+	user-select: text;
 }
 
 html {
@@ -118,6 +125,10 @@ select:focus-visible {
 	outline-offset: 3px;
 }
 
+html[data-input-modality='pointer'] :focus-visible {
+	outline: none;
+}
+
 ::selection { color: var(--surface-0); background: var(--accent-soft); }
 
 /* CSS window-shape fallback for systems where DWM's native frame is unavailable. */
@@ -161,6 +172,15 @@ html[data-runtime='desktop'][data-native-frame='css'] .app-shell.window-restored
 	}
 }
 
+html[data-reduce-motion='true'] *,
+html[data-reduce-motion='true'] *::before,
+html[data-reduce-motion='true'] *::after {
+	scroll-behavior: auto !important;
+	transition-duration: 0.001ms !important;
+	animation-duration: 0.001ms !important;
+	animation-iteration-count: 1 !important;
+}
+
 @media (prefers-reduced-transparency: reduce) {
 	:root {
 		--surface-0: #08090b;
@@ -171,3 +191,36 @@ html[data-runtime='desktop'][data-native-frame='css'] .app-shell.window-restored
 		--material-control: #20242a;
 	}
 }
+
+html[data-reduce-transparency='true'] {
+	--material-window: #080a0d;
+	--material-content: #101419;
+	--material-chrome: #111419;
+	--material-control: #20242a;
+	--material-highlight: #252b31;
+	--acrylic-content-tint: linear-gradient(160deg, #171e25, #0c1117 50%, #080d13);
+	--acrylic-content-fallback: linear-gradient(160deg, #171e25, #0c1117 50%, #080d13);
+}
+
+html[data-reduce-transparency='true'] *,
+html[data-reduce-transparency='true'] *::before,
+html[data-reduce-transparency='true'] *::after {
+	-webkit-backdrop-filter: none !important;
+	backdrop-filter: none !important;
+}
+
+html[data-runtime='desktop'][data-reduce-transparency='true'] [data-native-backdrop] {
+	background: #101419 !important;
+	background-image: none !important;
+}
+
+html[data-runtime='desktop'][data-reduce-transparency='true'] .sidebar,
+html[data-runtime='desktop'][data-reduce-transparency='true'] .workspace,
+html[data-runtime='desktop'][data-reduce-transparency='true'] .window-controls {
+	background-color: #101419;
+}
+
+html[data-reduce-transparency='true'] .sidebar { background: #090c10; }
+html[data-reduce-transparency='true'] .workspace { background: #101419; }
+html[data-reduce-transparency='true'] .window-controls { background: #171c22; }
+html[data-reduce-transparency='true'] .mobile-nav { background: #22272d; }

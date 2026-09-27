@@ -27,6 +27,7 @@
 	let heroVideoReady = $state(false);
 	let heroTrailerEnded = $state(false);
 	let heroTrailerExpanded = $state(false);
+	let heroRestartOnReturn = false;
 	let heroVideoIframe = $state<HTMLIFrameElement>();
 	let backgroundPlayer: YouTubePlayer | null = null;
 	let desktopCatalog = $state(isDesktopRuntime());
@@ -35,6 +36,7 @@
 	let playbackHistoryItems = $state<PlaybackHistoryItem[]>([]);
 	let catalogLoading = $state(true);
 	let catalogError = $state('');
+	let reduceMotionEnabled = $state(false);
 
 	function toMediaItem(item: CatalogMedia | ContinueWatchingItem | PlaybackHistoryItem): MediaItem {
 		const kind = item.kind === 'series' ? 'series' : 'movie';
@@ -80,7 +82,7 @@
 
 	function syncBackgroundPlayback() {
 		if (!backgroundPlayer) return;
-		if (heroInView && !document.hidden && !heroTrailerExpanded && !heroTrailerEnded) backgroundPlayer.playVideo();
+		if (heroInView && !document.hidden && !heroTrailerExpanded && !heroTrailerEnded && !reduceMotionEnabled) backgroundPlayer.playVideo();
 		else backgroundPlayer.pauseVideo();
 	}
 
@@ -119,6 +121,7 @@
 		heroVideoReady = false;
 		heroTrailerEnded = false;
 		heroTrailerExpanded = false;
+		heroRestartOnReturn = false;
 		void readTitleTrailer(id).then((trailer) => {
 			if (!cancelled) heroTrailer = trailer;
 		}).catch(() => { if (!cancelled) heroTrailer = null; });
@@ -150,7 +153,7 @@
 
 	$effect(() => {
 		const trailer = heroTrailer;
-		if (!trailer || showHeroVideo || heroTrailerEnded || !heroInView || document.hidden || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+		if (!trailer || showHeroVideo || heroTrailerEnded || !heroInView || document.hidden || reduceMotionEnabled || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 		const timer = window.setTimeout(() => { showHeroVideo = true; }, 5000);
 		return () => window.clearTimeout(timer);
 	});
@@ -206,15 +209,23 @@
 	$effect(() => {
 		if (!heroElement) return;
 		const element = heroElement;
+		const updateHeroVisibility = (nextInView: boolean) => {
+			if (heroInView && !nextInView && showHeroVideo && !heroTrailerEnded) heroRestartOnReturn = true;
+			if (!heroInView && nextInView && heroRestartOnReturn && !heroTrailerEnded) {
+				heroRestartOnReturn = false;
+				backgroundPlayer?.seekTo(0, true);
+			}
+			heroInView = nextInView;
+		};
 		const heroObserver = new IntersectionObserver(([entry]) => {
-			heroInView = !!entry?.isIntersecting && entry.intersectionRatio > 0.4 && !document.hidden;
+			updateHeroVisibility(!!entry?.isIntersecting && entry.intersectionRatio > 0.4 && !document.hidden);
 		}, { root: element.closest('.content-area'), threshold: [0, 0.4] });
 		heroObserver.observe(element);
 		const onVisibilityChange = () => {
-			if (document.hidden) heroInView = false;
+			if (document.hidden) updateHeroVisibility(false);
 			else {
 				const bounds = element.getBoundingClientRect();
-				heroInView = bounds.bottom > 0 && bounds.top < window.innerHeight * 0.6;
+				updateHeroVisibility(bounds.bottom > 0 && bounds.top < window.innerHeight * 0.6);
 			}
 		};
 		document.addEventListener('visibilitychange', onVisibilityChange);
@@ -231,6 +242,15 @@
 
 	onMount(() => {
 		desktopCatalog = isDesktopRuntime();
+		const syncMotionPreference = () => {
+			reduceMotionEnabled = document.documentElement.dataset.reduceMotion === 'true';
+			if (reduceMotionEnabled) {
+				showHeroVideo = false;
+				heroVideoReady = false;
+			}
+		};
+		syncMotionPreference();
+		document.addEventListener('appearance-preferences-changed', syncMotionPreference);
 		const refreshPlaybackHistory = () => {
 			if (!desktopCatalog || document.visibilityState !== 'visible') return;
 			void Promise.all([readContinueWatching(12), readPlaybackHistory(12)])
@@ -259,6 +279,7 @@
 
 		if (!desktopCatalog) {
 			return () => {
+				document.removeEventListener('appearance-preferences-changed', syncMotionPreference);
 				window.removeEventListener(PLAYBACK_HISTORY_UPDATED_EVENT, refreshPlaybackHistory);
 				window.removeEventListener('focus', refreshPlaybackHistory);
 				document.removeEventListener('visibilitychange', refreshPlaybackHistory);
@@ -289,15 +310,16 @@
 			window.removeEventListener(PLAYBACK_HISTORY_UPDATED_EVENT, refreshPlaybackHistory);
 			window.removeEventListener('focus', refreshPlaybackHistory);
 			document.removeEventListener('visibilitychange', refreshPlaybackHistory);
+			document.removeEventListener('appearance-preferences-changed', syncMotionPreference);
 			requestNativeAcrylic(acrylicRequester, false);
 		};
 	});
 </script>
 
-<svelte:head><title>Home · Media library</title></svelte:head>
+<svelte:head><title>Home · Luma</title></svelte:head>
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape') closeHeroTrailer(); }} />
 
-<div class="home-page" style={featured ? `--backdrop: url("${tmdbImageSize(featured.backdrop, 'original')}")` : undefined}>
+<div class="home-page" class:home-page--empty={!featured && !catalogLoading && (!!catalogError || (!catalogItems.length && !continueWatchingItems.length))} style={featured ? `--backdrop: url("${tmdbImageSize(featured.backdrop, 'original')}")` : undefined}>
 	{#if featured}
 	<section
 		class="featured"
@@ -321,7 +343,7 @@
 				type="button"
 				aria-label="Open full-screen trailer"
 				onclick={openHeroTrailer}
-			><span class="featured__trailer-play" aria-hidden="true"></span><span>Click to watch full trailer</span></button>
+			><span class="featured__trailer-play" aria-hidden="true"></span><span>{heroTrailer.isTeaser ? 'Click to watch teaser' : 'Click to watch full trailer'}</span></button>
 		{/if}
 		<div class="featured__content">
 			<h1 id="featured-title" aria-label={featured.title}>
@@ -565,6 +587,10 @@
 		margin: 0 auto;
 		padding: 40px var(--content-gutter) 92px;
 	}
+	/* An empty Home must fill the viewport; percentage heights cannot resolve through min-height-only ancestors. */
+	.home-page--empty { display: grid; min-height: 100dvh; }
+	.home-page--empty .home-content { display: grid; }
+	.home-page--empty .home-content__inner { display: grid; width: 100%; padding: 32px var(--content-gutter); }
 	/* DWM supplies desktop Acrylic; keep this tint translucent so it shows through. */
 	:global(html[data-runtime='desktop']) .home-content {
 		background: var(--acrylic-content-tint);

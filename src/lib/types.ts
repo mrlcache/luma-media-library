@@ -11,7 +11,7 @@ export type TmdbSearchResult = {
 	backdropUrl: string | null;
 };
 
-export type TmdbTrailer = { key: string; name: string };
+export type TmdbTrailer = { key: string; name: string; isTeaser?: boolean };
 
 export type CatalogMedia = {
 	id: number;
@@ -104,4 +104,6 @@ export type MediaItem = {
 	progressLabel?: string;
 	seasons?: number;
 	episodes?: Episode[];
+	episodeLabel?: string;
+	nextEpisode?: MediaItem;
 };

@@ -1,13 +1,16 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import SteppedRange from '$lib/components/SteppedRange.svelte';
 	import { suspendNativeAcrylicForPlayback } from '$lib/platform/native-acrylic';
 	import {
 		downloadOpenSubtitle,
 		isDesktopRuntime,
 		localMediaUrl,
+		chooseSubtitleFile,
 		loginOpenSubtitles,
 		nativePlayerAction,
+		nativePlayerLoadSubtitle,
 		nativePlayerStatus,
 		readPreferredDesktopPlayer,
 		recordPlaybackActivity,
@@ -22,11 +25,13 @@
 		type NativePlaybackSnapshot,
 		type DesktopPlayer
 	} from '$lib/platform/desktop';
-import type { MediaItem } from '$lib/types';
-import type { OpenSubtitleSearchResult } from '$lib/types';
+	import type { MediaItem, OpenSubtitleSearchResult } from '$lib/types';
+	import { readPlaybackPreferences, updatePlaybackPreference, type SubtitleFont } from '$lib/platform/playback-preferences';
+	import { usePlayer } from '$lib/player-context';
 
 	type Props = { media: MediaItem; onClose: () => void };
 	let { media, onClose }: Props = $props();
+	const player = usePlayer();
 
 	let overlay: HTMLDivElement;
 	let playerStage: HTMLDivElement;
@@ -45,13 +50,17 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	let selectedDesktopPlayer = $state<DesktopPlayer>('mpv');
 	let activeEngine = $state<DesktopPlayer | null>(null);
 	let nativePoll: ReturnType<typeof setInterval> | undefined;
+	let pendingNativeSubtitlePath: string | null = null;
 	let pendingNativeResume = 0;
 	let resumePosition = 0;
 	let lastSavedPosition = -1;
 	let playbackActivityPromise: Promise<void> | null = null;
-	let subtitleTracks = $state<{ label: string; language: string; url: string }[]>([]);
+	let subtitleTracks = $state<{ label: string; language: string; url: string; path?: string }[]>([]);
+	let nativeSubtitleTracks = $state<{ id: number; label: string; language: string; selected: boolean }[]>([]);
+	let nativeAudioTracks = $state<{ id: number; label: string; language: string; selected: boolean }[]>([]);
 	let activeSubtitle = $state(-1);
 	let subtitlePanelOpen = $state(false);
+	let subtitleFont = $state<SubtitleFont>('Manrope');
 	let subtitleSize = $state(100);
 	let subtitleOffset = $state(0);
 	let subtitleQuery = $state('');
@@ -65,8 +74,11 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	let subtitleStatus = $state('');
 	let subtitleError = $state('');
 	let playbackRate = $state(1);
-	let audioTracks = $state<{ index: number; label: string; language: string }[]>([]);
+	let audioTracks = $state<{ index: number; nativeId?: number; label: string; language: string }[]>([]);
 	let activeAudio = $state(0);
+	let endedHandled = false;
+	let autoplayTransitioning = false;
+	let vlcSubtitleNote = $state(false);
 	let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
 	let progressPercent = $derived(duration > 0 ? currentTime / duration * 100 : 0);
@@ -95,6 +107,7 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	}
 
 	function applyNativeSnapshot(snapshot: NativePlaybackSnapshot) {
+		const ended = snapshot.ended;
 		activeEngine = snapshot.engine;
 		isPlaying = snapshot.playing;
 		currentTime = snapshot.positionSeconds;
@@ -102,29 +115,55 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 		volume = Math.round(snapshot.volume);
 		isMuted = snapshot.muted;
 		if (snapshot.rate > 0) playbackRate = snapshot.rate;
+		nativeAudioTracks = snapshot.audioTracks ?? [];
+		nativeSubtitleTracks = snapshot.subtitleTracks ?? [];
+		if (activeEngine) {
+			audioTracks = nativeAudioTracks.map((track, index) => ({ index, nativeId: track.id, label: track.label, language: track.language }));
+			activeAudio = Math.max(0, nativeAudioTracks.findIndex((track) => track.selected));
+			vlcSubtitleNote = snapshot.engine === 'vlc';
+		}
 		if (duration > 0) {
 			mediaReady = true;
 			isLoading = false;
 		}
 		if (Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
+		if (ended && !endedHandled) { endedHandled = true; void handlePlaybackEnded(); }
 	}
 
 	async function startSelectedEngine(position = resumePosition) {
 		const mediaId = Number(media.id);
 		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) return;
+		endedHandled = false;
 		desktopPlayerBusy = true;
 		isLoading = true;
 		playbackError = '';
 		if (nativePoll) clearInterval(nativePoll);
 		try {
-			const snapshot = await startNativePlayer(mediaId, selectedDesktopPlayer);
+			const preferences = readPlaybackPreferences();
+			const systemLanguage = navigator.language?.slice(0, 2).toLowerCase();
+			if (preferences.audioLanguage === 'system' && ['en', 'pt', 'ja'].includes(systemLanguage ?? '')) {
+				preferences.audioLanguage = systemLanguage as 'en' | 'pt' | 'ja';
+			}
+			if (preferences.subtitleLanguage === 'auto' && ['en', 'pt', 'ja'].includes(systemLanguage ?? '')) {
+				preferences.subtitleLanguage = systemLanguage as 'en' | 'pt' | 'ja';
+			}
+			const snapshot = await startNativePlayer(mediaId, selectedDesktopPlayer, preferences);
 			applyNativeSnapshot(snapshot);
+			pendingNativeSubtitlePath = activeSubtitle >= 0 ? subtitleTracks[activeSubtitle]?.path ?? null : null;
+			recordPlaybackStarted();
 			pendingNativeResume = position > 15 ? position : 0;
 			document.documentElement.dataset.nativePlayer = 'true';
 			if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
 			nativePoll = setInterval(() => {
 				void nativePlayerStatus().then(async (state) => {
 					applyNativeSnapshot(state);
+					if (pendingNativeSubtitlePath && state.durationSeconds > 0) {
+						const path = pendingNativeSubtitlePath;
+						pendingNativeSubtitlePath = null;
+						if (!state.subtitleTracks.some((track) => track.selected)) {
+							applyNativeSnapshot(await nativePlayerLoadSubtitle(path));
+						}
+					}
 					if (pendingNativeResume > 0 && state.durationSeconds > pendingNativeResume + 10) {
 						const seekTo = pendingNativeResume;
 						pendingNativeResume = 0;
@@ -254,14 +293,44 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 			language: list[index].language || ''
 		}));
 		activeAudio = Math.max(0, audioTracks.findIndex((track) => list[track.index].enabled));
+		const preference = readPlaybackPreferences().audioLanguage;
+		const desiredLanguage = preference === 'system' ? (navigator.language?.slice(0, 2) ?? '') : preference;
+		const preferredIndex = audioTracks.findIndex((track) => track.language.toLowerCase().startsWith(desiredLanguage.toLowerCase()));
+		if (preferredIndex >= 0) selectAudio(preferredIndex);
+	}
+
+	function preferredSubtitleIndex(tracks: { language: string }[]): number {
+		const preference = readPlaybackPreferences().subtitleLanguage;
+		if (preference === 'off') return -1;
+		const desiredLanguage = preference === 'auto' ? (navigator.language?.slice(0, 2) ?? '') : preference;
+		if (!desiredLanguage) return -1;
+		return tracks.findIndex((track) => track.language.toLowerCase().startsWith(desiredLanguage.toLowerCase()));
 	}
 
 	function selectAudio(index: number) {
+		if (activeEngine) {
+			const track = audioTracks[index];
+			if (track?.nativeId !== undefined) void nativePlayerAction('audio-track', track.nativeId).then(applyNativeSnapshot).catch((error) => { playbackError = error instanceof Error ? error.message : 'Audio track could not be selected.'; });
+			return;
+		}
 		const list = (video as HTMLVideoElement & { audioTracks?: { length: number; [index: number]: { enabled: boolean } } }).audioTracks;
 		if (list && list[index]) {
 			for (let trackIndex = 0; trackIndex < list.length; trackIndex += 1) list[trackIndex].enabled = trackIndex === index;
 			activeAudio = index;
 		}
+	}
+
+	function selectNativeSubtitle(id: number) {
+		void nativePlayerAction('subtitle-track', id).then(applyNativeSnapshot).catch((error) => { subtitleError = error instanceof Error ? error.message : 'Subtitle track could not be selected.'; });
+	}
+
+	async function selectNativeExternalSubtitle(track: { label: string; path?: string }) {
+		if (!track.path) return;
+		subtitleError = '';
+		try {
+			applyNativeSnapshot(await nativePlayerLoadSubtitle(track.path));
+			subtitleStatus = `${track.label} loaded and enabled.`;
+		} catch (error) { subtitleError = error instanceof Error ? error.message : 'Subtitle file could not be loaded.'; }
 	}
 
 	function selectSubtitle(index: number) {
@@ -281,13 +350,40 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	function setCueOffset(track: TextTrack) {
 		if (!track.cues) return;
 		for (const cue of Array.from(track.cues)) {
-			if (cue instanceof VTTCue) cue.line = subtitleOffset === 0 ? 'auto' : -subtitleOffset;
+			if (cue instanceof VTTCue) cue.line = subtitleOffset === 0 ? 'auto' : -(subtitleOffset * 1.5);
 		}
 	}
 
 	function changeSubtitleOffset(event: Event) {
 		subtitleOffset = Number((event.currentTarget as HTMLInputElement).value);
+		const position = subtitleOffset * 1.5;
+		updatePlaybackPreference('subtitlePosition', position);
+		if (activeEngine === 'mpv') void nativePlayerAction('subtitle-position', position).then(applyNativeSnapshot).catch(console.warn);
 		for (const track of Array.from(video.textTracks)) setCueOffset(track);
+	}
+
+	function changeSubtitleSize(event: Event) {
+		subtitleSize = Number((event.currentTarget as HTMLInputElement).value);
+		updatePlaybackPreference('subtitleSize', subtitleSize);
+		if (activeEngine === 'mpv') void nativePlayerAction('subtitle-size', subtitleSize).then(applyNativeSnapshot).catch(console.warn);
+	}
+
+	async function handlePlaybackEnded() {
+		if (autoplayTransitioning) return;
+		isPlaying = false;
+		currentTime = duration;
+		await persistProgress();
+		await playbackActivityPromise;
+		const preferences = readPlaybackPreferences();
+		if (!preferences.autoplayNextEpisode || !media.nextEpisode) return;
+		autoplayTransitioning = true;
+		if (nativePoll) clearInterval(nativePoll);
+		if (activeEngine) {
+			await stopNativePlayer().catch((error) => console.warn('Finished episode could not be closed', error));
+			activeEngine = null;
+		}
+		delete document.documentElement.dataset.nativePlayer;
+		player.open(media.nextEpisode);
 	}
 
 	async function signInToOpenSubtitles() {
@@ -330,6 +426,11 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 		subtitleStatus = '';
 		try {
 			const path = await downloadOpenSubtitle(mediaId, result.fileId);
+			if (activeEngine) {
+				applyNativeSnapshot(await nativePlayerLoadSubtitle(path));
+				subtitleStatus = 'Subtitle downloaded and enabled.';
+				return;
+			}
 			const url = await localMediaUrl(path);
 			const label = `${result.release} · ${result.language}`;
 			subtitleTracks = [...subtitleTracks, { label, language: result.language || subtitleLanguage, url }];
@@ -337,6 +438,18 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 			subtitleStatus = 'Subtitle downloaded and enabled.';
 		} catch (error) { subtitleError = error instanceof Error ? error.message : 'Subtitle download failed.'; }
 		finally { subtitleBusyFile = null; }
+	}
+
+	async function chooseSubtitle() {
+		if (activeEngine) {
+			subtitleError = '';
+			try {
+				const path = await chooseSubtitleFile();
+				if (path) { applyNativeSnapshot(await nativePlayerLoadSubtitle(path)); subtitleStatus = 'Subtitle loaded and enabled.'; }
+			} catch (error) { subtitleError = error instanceof Error ? error.message : 'Subtitle file could not be loaded.'; }
+			return;
+		}
+		document.getElementById('player-subtitle-file-input')?.click();
 	}
 
 	async function loadSubtitleFile(event: Event) {
@@ -420,6 +533,10 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	onMount(() => {
 		suspendNativeAcrylicForPlayback(true);
 		selectedDesktopPlayer = readPreferredDesktopPlayer();
+		const playbackPreferences = readPlaybackPreferences();
+		subtitleFont = playbackPreferences.subtitleFont;
+		subtitleSize = playbackPreferences.subtitleSize;
+		subtitleOffset = playbackPreferences.subtitlePosition / 1.5;
 		const handleFullscreenChange = () => {
 			controlsVisible = true;
 			revealControls();
@@ -449,9 +566,11 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 				const tracks = await Promise.all(source.subtitles.map(async (subtitle) => ({
 					label: subtitle.label.replace(/\.[^.]+$/, ''),
 					language: subtitle.label.match(/\.([a-z]{2,3}(?:-[A-Z]{2})?)\.(?:srt|vtt)$/i)?.[1] ?? 'und',
-					url: await localMediaUrl(subtitle.path)
+					url: await localMediaUrl(subtitle.path),
+					path: subtitle.path
 				})));
 				subtitleTracks = tracks;
+				activeSubtitle = preferredSubtitleIndex(tracks);
 				await tick();
 				await startSelectedEngine();
 			})
@@ -497,13 +616,13 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 			playsinline
 			preload="metadata"
 			aria-label={`${media.title} video`}
-			style={`--caption-size: ${subtitleSize}%;`}
+			style={`--caption-size: ${subtitleSize}%; --caption-font: '${subtitleFont}', sans-serif;`}
 			onloadedmetadata={onLoadedMetadata}
 			onloadeddata={() => (mediaReady = true)}
 			ontimeupdate={onTimeUpdate}
 			onplay={() => { isPlaying = true; recordPlaybackStarted(); }}
 			onpause={() => { isPlaying = false; void persistProgress(); }}
-			onended={() => { isPlaying = false; currentTime = duration; void persistProgress(); }}
+			onended={() => { void handlePlaybackEnded(); }}
 			onerror={onPlaybackError}
 		>
 			{#each subtitleTracks as track, index (track.url)}
@@ -525,7 +644,7 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 
 				<div class="player-now-playing">
 					<span>{media.kind === 'series' ? 'Series' : 'Movie'} · {media.year}</span>
-					<strong>{media.title}</strong>
+					<strong>{media.title}{media.episodeLabel ? ` · ${media.episodeLabel}` : ''}</strong>
 				</div>
 
 				<div class="player-options-anchor">
@@ -606,13 +725,20 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 			<section class="subtitle-panel" aria-label="Subtitle settings" style="corner-shape: squircle">
 				<header><strong>Subtitles</strong><button type="button" aria-label="Close subtitle settings" onclick={() => (subtitlePanelOpen = false)}><Icon name="close" size={16} /></button></header>
 				<div class="subtitle-panel__tracks">
-					<button type="button" class:active={activeSubtitle === -1} onclick={() => selectSubtitle(-1)}>Off</button>
-					{#each subtitleTracks as track, index}<button type="button" class:active={activeSubtitle === index} onclick={() => selectSubtitle(index)}>{track.label}</button>{/each}
+					{#if activeEngine}
+						<button type="button" class:active={!nativeSubtitleTracks.some((track) => track.selected)} onclick={() => selectNativeSubtitle(-1)}>Off</button>
+						{#each nativeSubtitleTracks as track (track.id)}<button type="button" class:active={track.selected} onclick={() => selectNativeSubtitle(track.id)}>{track.label}{track.language ? ` · ${track.language}` : ''}</button>{/each}
+						{#each subtitleTracks.filter((track) => track.path) as track (track.path)}<button type="button" onclick={() => selectNativeExternalSubtitle(track)}>{track.label}</button>{/each}
+					{:else}
+						<button type="button" class:active={activeSubtitle === -1} onclick={() => selectSubtitle(-1)}>Off</button>
+						{#each subtitleTracks as track, index}<button type="button" class:active={activeSubtitle === index} onclick={() => selectSubtitle(index)}>{track.label}</button>{/each}
+					{/if}
 				</div>
-				<label>Text size <input type="range" min="75" max="150" step="5" bind:value={subtitleSize} aria-label="Subtitle text size" /></label>
-				<label>Vertical position <input type="range" min="0" max="12" step="1" value={subtitleOffset} oninput={changeSubtitleOffset} aria-label="Subtitle vertical position" /></label>
+				<label>Text size <SteppedRange min={70} max={150} step={10} bind:value={subtitleSize} oninput={changeSubtitleSize} ariaLabel="Subtitle text size" disabled={activeEngine === 'vlc'} /></label>
+				<label>Vertical position <SteppedRange min={0} max={8} step={1} bind:value={subtitleOffset} oninput={changeSubtitleOffset} ariaLabel="Subtitle vertical position" disabled={activeEngine === 'vlc'} /></label>
+				{#if vlcSubtitleNote}<p class="subtitle-panel__note">VLC styling preferences apply on the next open; use libmpv for live size and position adjustments.</p>{/if}
 				<div class="subtitle-panel__actions">
-					<button type="button" onclick={() => document.getElementById('player-subtitle-file-input')?.click()}><Icon name="captions" size={15} /> Load subtitle file</button>
+					<button type="button" onclick={chooseSubtitle}><Icon name="captions" size={15} /> Load subtitle file</button>
 					<input id="player-subtitle-file-input" class="sr-only" type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" onchange={loadSubtitleFile} />
 				</div>
 				<details class="subtitle-online">
@@ -659,7 +785,7 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	.player-stage--media-ready .player-stage__vignette { visibility: hidden; opacity: 0; transition: opacity 320ms ease, visibility 0s linear 320ms; }
 	.player-video { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; background: #000; object-fit: contain; outline: none; }
 	.player-video--hidden { visibility: hidden; }
-	.player-video::cue { color: #fff; font-size: var(--caption-size, 100%); background: rgba(0,0,0,0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
+	.player-video::cue { color: #fff; font-family: var(--caption-font, Manrope, sans-serif); font-size: var(--caption-size, 100%); background: rgba(0,0,0,0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
 	.player-message { position: absolute; top: 50%; left: 50%; z-index: 2; display: grid; justify-items: center; gap: 12px; width: min(440px, calc(100% - 36px)); color: rgba(244,247,249,0.72); font-size: 0.78rem; text-align: center; transform: translate(-50%,-50%); }
 	.player-message--error { padding: 22px 24px; border: 1px solid rgba(255,255,255,0.15); border-radius: 18px; background: rgba(13,16,20,0.72); box-shadow: 0 24px 60px rgba(0,0,0,0.38); backdrop-filter: blur(24px) saturate(135%); }
 	.player-message--error strong { color: #fff; font-size: 0.95rem; font-weight: 650; }
@@ -745,8 +871,8 @@ import type { OpenSubtitleSearchResult } from '$lib/types';
 	.subtitle-panel__tracks button { overflow: hidden; min-height: 34px; padding: 0 10px; border: 1px solid transparent; border-radius: 9px; color: rgba(244,247,249,0.68); background: transparent; cursor: pointer; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 	.subtitle-panel__tracks button:hover { background: rgba(255,255,255,0.06); }
 	.subtitle-panel__tracks button.active { border-color: rgba(255,255,255,0.12); color: #fff; background: rgba(255,255,255,0.1); }
+	.subtitle-panel__note { margin: -5px 0 0; color: rgba(235,240,244,0.55); font-size: 0.62rem; line-height: 1.45; }
 	.subtitle-panel > label { display: grid; gap: 7px; font-size: 0.68rem; }
-	.subtitle-panel input[type='range'] { width: 100%; accent-color: #e8f3f5; }
 	.subtitle-panel__actions { display: grid; gap: 7px; padding-top: 5px; border-top: 1px solid rgba(255,255,255,0.1); }
 	.subtitle-panel__actions button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; color: #f1f5f6; background: rgba(255,255,255,0.06); cursor: pointer; font-size: 0.69rem; font-weight: 600; }
 	.subtitle-panel__actions button:hover:not(:disabled) { background: rgba(255,255,255,0.12); }

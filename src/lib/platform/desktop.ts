@@ -106,9 +106,13 @@ type CatalogPageCacheEntry = {
 
 const catalogPageCache = new Map<string, CatalogPageCacheEntry>();
 const catalogPageCacheLimit = 8;
+const titleDetailCache = new Map<number, Promise<LocalTitleDetail | null>>();
 
 export function invalidateCatalogPageCache() {
 	catalogPageCache.clear();
+	titleDetailCache.clear();
+	trailerCache.clear();
+	logoCache.clear();
 }
 
 export function isDesktopRuntime(): boolean {
@@ -173,8 +177,22 @@ export async function readCatalogPage(
 
 export async function readLocalTitleDetail(mediaId: number): Promise<LocalTitleDetail | null> {
 	if (!isDesktopRuntime()) return null;
-	const { invoke } = await import('@tauri-apps/api/core');
-	return invoke<LocalTitleDetail | null>('get_local_title_detail', { mediaId });
+	let pending = titleDetailCache.get(mediaId);
+	if (!pending) {
+		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
+			invoke<LocalTitleDetail | null>('get_local_title_detail', { mediaId })
+		).catch((error) => {
+			titleDetailCache.delete(mediaId);
+			throw error;
+		});
+		titleDetailCache.set(mediaId, pending);
+		while (titleDetailCache.size > 12) {
+			const oldest = titleDetailCache.keys().next().value;
+			if (oldest === undefined) break;
+			titleDetailCache.delete(oldest);
+		}
+	}
+	return pending;
 }
 
 const trailerCache = new Map<number, Promise<TmdbTrailer | null>>();
@@ -201,11 +219,20 @@ export async function readTitleTrailer(mediaId: number): Promise<TmdbTrailer | n
 	if (!pending) {
 		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
 			invoke<TmdbTrailer | null>('get_title_trailer', { mediaId })
-		).catch((error) => {
+		).then((trailer) => {
+			if (trailer) trailerCache.set(mediaId, Promise.resolve(trailer));
+			else trailerCache.delete(mediaId);
+			return trailer;
+		}).catch((error) => {
 			trailerCache.delete(mediaId);
 			throw error;
 		});
 		trailerCache.set(mediaId, pending);
+		while (trailerCache.size > 32) {
+			const oldest = trailerCache.keys().next().value;
+			if (oldest === undefined) break;
+			trailerCache.delete(oldest);
+		}
 	}
 	return pending;
 }
@@ -284,16 +311,19 @@ export async function openMediaInDesktopPlayer(mediaId: number, player: DesktopP
 export type NativePlaybackSnapshot = {
 	engine: DesktopPlayer;
 	playing: boolean;
+	ended: boolean;
 	positionSeconds: number;
 	durationSeconds: number;
 	volume: number;
 	muted: boolean;
 	rate: number;
+	audioTracks: { id: number; label: string; language: string; selected: boolean }[];
+	subtitleTracks: { id: number; label: string; language: string; selected: boolean }[];
 };
 
-export async function startNativePlayer(mediaId: number, engine: DesktopPlayer): Promise<NativePlaybackSnapshot> {
+export async function startNativePlayer(mediaId: number, engine: DesktopPlayer, preferences: import('./playback-preferences').PlaybackPreferences): Promise<NativePlaybackSnapshot> {
 	const { invoke } = await import('@tauri-apps/api/core');
-	return invoke<NativePlaybackSnapshot>('start_native_player', { mediaId, engine });
+	return invoke<NativePlaybackSnapshot>('start_native_player', { mediaId, engine, preferences });
 }
 
 export async function nativePlayerStatus(): Promise<NativePlaybackSnapshot> {
@@ -301,9 +331,21 @@ export async function nativePlayerStatus(): Promise<NativePlaybackSnapshot> {
 	return invoke<NativePlaybackSnapshot>('native_player_status');
 }
 
-export async function nativePlayerAction(action: 'play' | 'pause' | 'seek' | 'volume' | 'mute' | 'rate', value?: number): Promise<NativePlaybackSnapshot> {
+export async function nativePlayerAction(action: 'play' | 'pause' | 'seek' | 'volume' | 'mute' | 'rate' | 'audio-track' | 'subtitle-track' | 'subtitle-size' | 'subtitle-position' | 'subtitle-font', value?: number): Promise<NativePlaybackSnapshot> {
 	const { invoke } = await import('@tauri-apps/api/core');
 	return invoke<NativePlaybackSnapshot>('native_player_action', { action, value });
+}
+
+export async function nativePlayerLoadSubtitle(path: string): Promise<NativePlaybackSnapshot> {
+	const { invoke } = await import('@tauri-apps/api/core');
+	return invoke<NativePlaybackSnapshot>('native_player_load_subtitle', { path });
+}
+
+export async function chooseSubtitleFile(): Promise<string | null> {
+	if (!isDesktopRuntime()) return null;
+	const { open } = await import('@tauri-apps/plugin-dialog');
+	const selected = await open({ multiple: false, title: 'Choose a subtitle file', filters: [{ name: 'Subtitles', extensions: ['srt', 'vtt', 'ass', 'ssa', 'sub'] }] });
+	return typeof selected === 'string' ? selected : null;
 }
 
 export async function resizeNativePlayer(): Promise<void> {

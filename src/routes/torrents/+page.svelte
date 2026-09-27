@@ -111,7 +111,7 @@
 	}
 </script>
 
-<svelte:head><title>Torrents · Media Library</title></svelte:head>
+<svelte:head><title>Torrents · Luma</title></svelte:head>
 
 <div class="torrent-surface" data-native-backdrop={$nativeAcrylicStatus}>
 	<div class="torrent-page">

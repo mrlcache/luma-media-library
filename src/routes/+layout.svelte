@@ -7,6 +7,7 @@
 	import { PLAYER_CONTEXT, PLAYBACK_HISTORY_UPDATED_EVENT } from '$lib/player-context';
 	import { isDesktopRuntime, readDesktopBootstrap } from '$lib/platform/desktop';
 	import { requestNativeAcrylic } from '$lib/platform/native-acrylic';
+	import { applyAppearancePreferences } from '$lib/platform/appearance-preferences';
 	import { registerLenis } from '$lib/scroll/lenis';
 	import type Lenis from 'lenis';
 	import type { IconName } from '$lib/components/Icon.svelte';
@@ -44,6 +45,35 @@
 	function closePlayer() {
 		activeMedia = null;
 		window.dispatchEvent(new Event(PLAYBACK_HISTORY_UPDATED_EVENT));
+	}
+
+	function handleGlobalKeydown(event: KeyboardEvent) {
+		if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
+		const target = event.target;
+		if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+		event.preventDefault();
+	}
+
+	function blockDesktopBrowserShortcuts(event: KeyboardEvent) {
+		const key = event.key.toLowerCase();
+		const reload = key === 'f5' || (key === 'r' && (event.ctrlKey || event.metaKey));
+		const devtools = key === 'f12' || ((event.ctrlKey || event.metaKey) && event.shiftKey && ['i', 'j', 'c'].includes(key));
+		if (!reload && !devtools) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+	}
+
+	function blockDesktopContextMenu(event: MouseEvent) {
+		event.preventDefault();
+	}
+
+	function markPointerInput() {
+		document.documentElement.dataset.inputModality = 'pointer';
+	}
+
+	function markKeyboardInput(event: KeyboardEvent) {
+		if (['Alt', 'Control', 'Meta', 'Shift'].includes(event.key)) return;
+		document.documentElement.dataset.inputModality = 'keyboard';
 	}
 
 	setContext(PLAYER_CONTEXT, { open: openPlayer, close: closePlayer });
@@ -98,11 +128,16 @@
 		let disposed = false;
 		let unlistenResize: (() => void) | undefined;
 		const acrylicRequester = Symbol('Application surface');
+		applyAppearancePreferences();
 		requestNativeAcrylic(acrylicRequester, true);
+		window.addEventListener('pointerdown', markPointerInput, true);
+		window.addEventListener('keydown', markKeyboardInput, true);
 
 		if (isDesktopRuntime()) {
 			desktopRuntime = true;
 			document.documentElement.dataset.runtime = 'desktop';
+			window.addEventListener('keydown', blockDesktopBrowserShortcuts, true);
+			window.addEventListener('contextmenu', blockDesktopContextMenu, true);
 			void import('@tauri-apps/api/window')
 				.then(async ({ getCurrentWindow }) => {
 					const appWindow = getCurrentWindow();
@@ -130,6 +165,10 @@
 
 		return () => {
 			disposed = true;
+			window.removeEventListener('pointerdown', markPointerInput, true);
+			window.removeEventListener('keydown', markKeyboardInput, true);
+			window.removeEventListener('keydown', blockDesktopBrowserShortcuts, true);
+			window.removeEventListener('contextmenu', blockDesktopContextMenu, true);
 			unlistenResize?.();
 			requestNativeAcrylic(acrylicRequester, false);
 		};
@@ -191,22 +230,19 @@
 </script>
 
 <svelte:head>
-	<title>Media library</title>
-	<meta name="description" content="A focused media library for browsing and playback." />
+	<title>Luma</title>
+	<meta name="description" content="Your personal collection, with Luma." />
 </svelte:head>
 
 <div class="app-stage">
 	<div
 		class="app-shell"
 		class:window-restored={desktopRuntime && !windowMaximized}
+		data-sveltekit-preload-data="hover"
 	>
 		<aside class="sidebar" aria-label="Application navigation" onwheel={scrollContentFromChrome}>
-			<div class="library-context">
-				<div class="library-mark" aria-hidden="true"><Icon name="play" size={13} weight="fill" /></div>
-				<div>
-					<strong>Media Library</strong>
-					<span>Personal collection</span>
-				</div>
+			<div class="library-context" aria-label="Luma">
+				<img class="library-wordmark" src="/luma-wordmark.svg" alt="Luma" />
 			</div>
 
 			<a
@@ -301,8 +337,10 @@
 </div>
 
 {#if activeMedia}
-	<PlayerHost media={activeMedia} onClose={closePlayer} />
+	{#key activeMedia.id}<PlayerHost media={activeMedia} onClose={closePlayer} />{/key}
 {/if}
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <style>
 	.app-stage {
@@ -369,27 +407,11 @@
 	.library-context {
 		display: flex;
 		align-items: center;
-		gap: 11px;
 		min-height: 44px;
 		padding: 0 9px;
 	}
 
-	.library-mark {
-		display: grid;
-		width: 31px;
-		height: 31px;
-		place-items: center;
-		border: 1px solid rgba(255, 255, 255, 0.18);
-		border-radius: 9px;
-		color: #0a0c0f;
-		background: rgba(245, 247, 248, 0.92);
-		box-shadow: inset 0 1px rgba(255, 255, 255, 0.9), 0 7px 18px rgba(0, 0, 0, 0.19);
-	}
-
-	.library-context strong,
-	.library-context span { display: block; }
-	.library-context strong { color: var(--text-strong); font-size: 0.82rem; font-weight: 690; letter-spacing: -0.025em; }
-	.library-context span { margin-top: 1px; color: rgba(221, 226, 232, 0.54); font-size: 0.66rem; font-weight: 520; }
+	.library-wordmark { display: block; width: 72px; height: 24px; object-fit: contain; object-position: left center; }
 
 	.sidebar-search {
 		display: flex;

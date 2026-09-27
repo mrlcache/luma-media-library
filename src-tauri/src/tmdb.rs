@@ -32,6 +32,7 @@ pub struct TmdbSearchResult {
 pub struct TmdbTrailer {
     pub key: String,
     pub name: String,
+    pub is_teaser: bool,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +57,7 @@ struct VideoResponse {
     results: Vec<RawVideo>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct RawVideo {
     key: String,
     name: String,
@@ -109,7 +110,7 @@ impl TmdbState {
 
         let client = Client::builder()
             .timeout(Duration::from_secs(12))
-            .user_agent(concat!("Media Library/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Luma/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| "Could not initialize the TMDb connection.".to_owned())?;
 
@@ -166,23 +167,42 @@ impl TmdbState {
             _ => return Ok(None),
         };
         let token = self.read_token()?;
-        for language in ["en-US", "pt-BR"] {
-            let response = self
-                .client
-                .get(format!("{API_BASE}/{endpoint}/{id}/videos"))
-                .bearer_auth(&token)
-                .query(&[("language", language)])
-                .send()
-                .await
-                .map_err(|_| "Could not reach TMDb for this title's trailer.".to_owned())?;
+        let mut teasers = Vec::new();
+        for language in [Some("en-US"), Some("pt-BR"), None] {
+            let mut request = self.client.get(format!("{API_BASE}/{endpoint}/{id}/videos")).bearer_auth(&token);
+            if let Some(language) = language { request = request.query(&[("language", language)]); }
+            let response = request.send().await.map_err(|_| "Could not reach TMDb for this title's trailer.".to_owned())?;
             ensure_success(response.status())?;
-            let videos = response
-                .json::<VideoResponse>()
-                .await
-                .map_err(|_| "TMDb returned unreadable trailer metadata.".to_owned())?;
-            if let Some(trailer) = choose_trailer(videos.results) {
-                return Ok(Some(trailer));
+            let videos = response.json::<VideoResponse>().await.map_err(|_| "TMDb returned unreadable trailer metadata.".to_owned())?;
+            teasers.extend(videos.results.iter().filter(|video| video.video_type == "Teaser").cloned());
+            if let Some(trailer) = choose_trailer(videos.results) { return Ok(Some(trailer)); }
+        }
+        Ok(choose_video(teasers, true))
+    }
+
+    pub async fn trailer_for_title(&self, title: &str, year: Option<u16>, kind: &str) -> Result<Option<TmdbTrailer>, String> {
+        let query = clean_title_query(title);
+        let results = self.search_for_kind(&query, kind).await?;
+        let expected = normalize_title(&query);
+        let mut candidates = results.into_iter().collect::<Vec<_>>();
+        candidates.sort_by_key(|result| {
+            let actual = normalize_title(&result.title);
+            let exact = actual == expected;
+            let related = actual.len() >= 4 && (expected.starts_with(actual.as_str()) || actual.starts_with(expected.as_str()));
+            let year_distance = match (result.year, year) {
+                (Some(actual), Some(expected)) => actual.abs_diff(expected),
+                _ => u16::MAX,
+            };
+            (!exact, !related, year_distance)
+        });
+        for candidate in candidates {
+            let actual = normalize_title(&candidate.title);
+            let related = actual == expected || (actual.len() >= 4 && (expected.starts_with(actual.as_str()) || actual.starts_with(expected.as_str())));
+            if !related { continue; }
+            if let Some(expected_year) = year {
+                if candidate.year.is_some_and(|actual| actual.abs_diff(expected_year) > 1) { continue; }
             }
+            if let Some(trailer) = self.trailer_for_kind(candidate.id, kind).await? { return Ok(Some(trailer)); }
         }
         Ok(None)
     }
@@ -291,22 +311,48 @@ impl TmdbState {
 }
 
 fn choose_trailer(videos: Vec<RawVideo>) -> Option<TmdbTrailer> {
+    choose_video(videos.into_iter().filter(|video| video.video_type == "Trailer").collect(), false)
+}
+
+fn choose_video(videos: Vec<RawVideo>, is_teaser: bool) -> Option<TmdbTrailer> {
     videos
         .into_iter()
         .filter(|video| {
             video.site == "YouTube"
-                && video.video_type == "Trailer"
                 && video.key.len() == 11
-                && video
-                    .key
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                && video.key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
         })
         .max_by_key(|video| (video.official, video.size))
         .map(|video| TmdbTrailer {
             key: video.key,
             name: video.name,
+            is_teaser,
         })
+}
+
+fn normalize_title(title: &str) -> String {
+    title
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn clean_title_query(title: &str) -> String {
+    let mut words = Vec::new();
+    for raw in title.split(|character: char| character.is_whitespace() || matches!(character, '.' | '_' | '-' | '[' | ']' | '(' | ')')) {
+        let token = raw.trim();
+        if token.is_empty() { continue; }
+        let upper = token.to_ascii_uppercase();
+        let episode_marker = upper.len() >= 4 && (upper.starts_with('S') && upper.contains('E') || upper.contains('X'))
+            && upper.chars().any(|character| character.is_ascii_digit());
+        let technical = ["480P", "720P", "1080P", "2160P", "BLURAY", "WEBRIP", "WEB-DL", "WEB_DL", "HDTV", "X264", "X265", "H264", "H265", "HEVC", "AV1", "HDR", "AAC", "DTS", "MKV", "MP4"]
+            .iter().any(|marker| upper.contains(marker));
+        if episode_marker || technical { break; }
+        words.push(token);
+    }
+    let cleaned = words.join(" ");
+    if cleaned.chars().count() >= 2 { cleaned } else { title.trim().to_owned() }
 }
 
 fn choose_png_logo(logos: Vec<RawLogo>) -> Option<String> {

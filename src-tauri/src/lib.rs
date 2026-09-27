@@ -383,15 +383,25 @@ async fn get_title_trailer(
     tmdb: tauri::State<'_, tmdb::TmdbState>,
 ) -> Result<Option<tmdb::TmdbTrailer>, String> {
     let path = library.db_path.clone();
-    let target = tauri::async_runtime::spawn_blocking(move || {
-        LibraryStore::open(&path)?.tmdb_target(media_id)
+    let (target, local_title) = tauri::async_runtime::spawn_blocking(move || {
+        let store = LibraryStore::open(&path)?;
+        let target = store.tmdb_target(media_id)?;
+        let local_title = store.catalog_detail(media_id)?.map(|detail| {
+            let kind = detail.media.kind.unwrap_or_else(|| {
+                if detail.files.iter().any(|file| file.season.is_some() || file.episode.is_some()) { "series".to_owned() }
+                else { "movie".to_owned() }
+            });
+            (detail.media.title, detail.media.year, kind)
+        });
+        Ok::<_, String>((target, local_title))
     })
     .await
     .map_err(|_| "Could not read the local title metadata.".to_owned())??;
-    let Some((id, kind)) = target else {
-        return Ok(None);
-    };
-    tmdb.trailer_for_kind(id, &kind).await
+    if let Some((id, kind)) = target {
+        if let Some(trailer) = tmdb.trailer_for_kind(id, &kind).await? { return Ok(Some(trailer)); }
+    }
+    let Some((title, year, kind)) = local_title else { return Ok(None); };
+    tmdb.trailer_for_title(&title, year, &kind).await
 }
 
 #[tauri::command]
@@ -574,6 +584,7 @@ pub fn run() {
             native_player::start_native_player,
             native_player::native_player_status,
             native_player::native_player_action,
+            native_player::native_player_load_subtitle,
             native_player::resize_native_player,
             native_player::stop_native_player,
             get_continue_watching,

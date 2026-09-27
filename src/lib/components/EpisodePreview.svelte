@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { extractOpeningThumbnail } from '$lib/media/episode-thumbnails';
-	import { findTvMazeEpisodeImage } from '$lib/media/tvmaze-episodes';
+	import { findTvMazeEpisodeDetails } from '$lib/media/tvmaze-episodes';
 	import { localMediaUrl } from '$lib/platform/desktop';
 
 	type Props = {
@@ -51,10 +51,10 @@
 			if (started) return;
 			started = true;
 			try {
-				const remote = await findTvMazeEpisodeImage(showTitle, showYear || null, season, episode);
+				const remote = await findTvMazeEpisodeDetails(showTitle, showYear || null, season, episode);
 				if (cancelled) return;
-				if (remote) {
-					thumbnail = remote;
+				if (remote?.image) {
+					thumbnail = remote.image;
 					checked = true;
 					return;
 				}

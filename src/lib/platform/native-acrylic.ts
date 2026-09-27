@@ -16,6 +16,7 @@ function shouldEnable() {
 	return requesters.size > 0 &&
 		!suspendedForPlayback &&
 		document.visibilityState === 'visible' &&
+		document.documentElement.dataset.reduceTransparency !== 'true' &&
 		!window.matchMedia('(prefers-reduced-transparency: reduce)').matches;
 }
 
@@ -23,6 +24,7 @@ function listenForSystemChanges() {
 	if (listening) return;
 	listening = true;
 	document.addEventListener('visibilitychange', () => void updateNativeAcrylic());
+	document.addEventListener('appearance-preferences-changed', () => void updateNativeAcrylic());
 	window.matchMedia('(prefers-reduced-transparency: reduce)')
 		.addEventListener('change', () => void updateNativeAcrylic());
 }

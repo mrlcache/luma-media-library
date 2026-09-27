@@ -132,7 +132,7 @@
 	});
 </script>
 
-<svelte:head><title>{heading} · Media library</title></svelte:head>
+<svelte:head><title>{heading} · Luma</title></svelte:head>
 
 <div class="library-surface" data-native-backdrop={$nativeAcrylicStatus}>
 	<div class="library-page">
@@ -206,7 +206,7 @@
 		{/if}
 	{:else if desktopCatalog}
 		{#if catalogError && catalogItems.length === 0}
-			<div class="empty-state" role="status"><Icon name="library" size={21} /><h2>Library unavailable</h2><p>{catalogError}</p></div>
+			<EmptyLibraryCard title="Library unavailable" description={catalogError} role="status" centered />
 		{:else if catalogLoading && catalogItems.length === 0}
 			<CatalogSkeletonGrid count={12} label="Loading your library" />
 		{:else if catalogTotal === 0 && !query.trim()}
@@ -229,7 +229,7 @@
 			<div class="empty-state"><Icon name="search" size={21} /><h2>No titles found</h2><p>Try a different title, genre or year.</p><button class="button button--secondary" type="button" onclick={resetFilters}>Reset filters</button></div>
 		{/if}
 	{:else}
-		<div class="empty-state"><Icon name="library" size={21} /><h2>Local library is in the desktop app</h2><p>Open the desktop app to scan and browse your media folders.</p></div>
+		<EmptyLibraryCard title="Local library is in the desktop app" description="Open the desktop app to scan and browse your media folders." centered />
 	{/if}
 	</div>
 </div>
@@ -260,7 +260,7 @@
 	.result-line { display: flex; align-items: center; gap: 8px; min-height: 1em; margin: 19px 0 17px; color: var(--text-soft); font-size: 0.72rem; }
 	.result-line strong { color: var(--text-strong); font-weight: 620; }
 	.result-line__query { color: var(--accent-soft); }
-	.empty-state { display: grid; justify-items: center; gap: 8px; min-height: 360px; padding-top: 105px; color: var(--text-muted); text-align: center; }
+	.empty-state { display: grid; justify-items: center; align-content: center; gap: 8px; min-height: 360px; padding: 40px 24px; color: var(--text-muted); text-align: center; }
 	.empty-state h2 { margin: 2px 0 0; color: var(--text-strong); font-family: var(--font-display); font-size: 1.16rem; font-weight: 680; }
 	.empty-state p { margin: 0 0 12px; color: var(--text-muted); font-size: 0.78rem; }
 	.tmdb-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); gap: 22px 18px; margin: 0 -14px; padding: 0 14px 20px; }

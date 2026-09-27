@@ -7,12 +7,15 @@ type TvMazeEpisode = {
 	season: number;
 	number: number;
 	image: TvMazeImage;
+	summary?: string | null;
 };
+
+export type TvMazeEpisodeDetails = { image: string | null; summary: string | null };
 
 const API = 'https://api.tvmaze.com';
 const MAX_SHOWS = 32;
 const REQUEST_INTERVAL_MS = 550;
-const showEpisodes = new Map<string, Promise<Map<string, string>>>();
+const showEpisodes = new Map<string, Promise<Map<string, TvMazeEpisodeDetails>>>();
 let requestQueue: Promise<void> = Promise.resolve();
 let nextRequestAt = 0;
 
@@ -22,6 +25,15 @@ export function findTvMazeEpisodeImage(
 	season: number | null,
 	episode: number | null
 ): Promise<string | null> {
+	return findTvMazeEpisodeDetails(title, year, season, episode).then((details) => details?.image ?? null);
+}
+
+export function findTvMazeEpisodeDetails(
+	title: string,
+	year: number | null,
+	season: number | null,
+	episode: number | null
+): Promise<TvMazeEpisodeDetails | null> {
 	if (!title.trim() || season === null || episode === null) return Promise.resolve(null);
 	const cacheKey = `${normalize(title)}:${year ?? ''}`;
 	let pending = showEpisodes.get(cacheKey);
@@ -34,10 +46,10 @@ export function findTvMazeEpisodeImage(
 			showEpisodes.delete(oldest);
 		}
 	}
-	return pending.then((images) => images.get(`${season}:${episode}`) ?? null);
+	return pending.then((details) => details.get(`${season}:${episode}`) ?? null);
 }
 
-async function loadShowEpisodes(title: string, year: number | null): Promise<Map<string, string>> {
+async function loadShowEpisodes(title: string, year: number | null): Promise<Map<string, TvMazeEpisodeDetails>> {
 	try {
 		const results = await requestJson<TvMazeSearchResult[]>(`${API}/search/shows?q=${encodeURIComponent(title)}`);
 		if (!results?.length) return new Map();
@@ -58,17 +70,28 @@ async function loadShowEpisodes(title: string, year: number | null): Promise<Map
 		if (!match || (normalize(match.show.name) !== normalizedTitle && match.score < 0.72)) return new Map();
 
 		const episodes = await requestJson<TvMazeEpisode[]>(`${API}/shows/${match.show.id}/episodes`);
-		const images = new Map<string, string>();
+		const details = new Map<string, TvMazeEpisodeDetails>();
 		for (const item of episodes ?? []) {
 			const url = validImageUrl(item.image?.original ?? item.image?.medium);
-			if (url && Number.isInteger(item.season) && Number.isInteger(item.number)) {
-				images.set(`${item.season}:${item.number}`, url);
+			if (Number.isInteger(item.season) && Number.isInteger(item.number)) {
+				details.set(`${item.season}:${item.number}`, { image: url, summary: plainText(item.summary) });
 			}
 		}
-		return images;
+		return details;
 	} catch {
 		return new Map();
 	}
+}
+
+function plainText(value: string | null | undefined): string | null {
+	if (!value?.trim()) return null;
+	if (typeof DOMParser !== 'undefined') {
+		const parsed = new DOMParser().parseFromString(value, 'text/html');
+		const text = parsed.body.textContent?.replace(/\s+/g, ' ').trim();
+		return text || null;
+	}
+	const text = value.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'").replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/\s+/g, ' ').trim();
+	return text || null;
 }
 
 function requestJson<T>(url: string): Promise<T | null> {

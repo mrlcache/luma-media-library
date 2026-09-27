@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-	<rect width="32" height="32" rx="9" fill="#15191e"/>
-	<rect x="8" y="16" width="3" height="8" rx="1.5" fill="#c9ae7c" opacity=".62"/>
-	<rect x="14.5" y="11" width="3" height="13" rx="1.5" fill="#c9ae7c" opacity=".82"/>
-	<rect x="21" y="7" width="3" height="17" rx="1.5" fill="#e0c797"/>
+	<title>Luma</title>
+	<rect width="32" height="32" rx="9" fill="#111719" />
+	<path d="M5 26C8.5 20 12.5 16.5 17 14" fill="none" stroke="#EAF0F2" stroke-width="2.2" stroke-linecap="round" />
+	<path fill="#EAF0F2" d="M22 3.5C23.4 8.3 24.2 9.1 29 10.5C24.2 11.9 23.4 12.7 22 17.5C20.6 12.7 19.8 11.9 15 10.5C19.8 9.1 20.6 8.3 22 3.5Z" />
 </svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="15 10 311 103" role="img" aria-labelledby="title">
+	<title>Luma</title>
+	<g fill="none" stroke="#EAF0F2" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M22 17v84" />
+		<path d="M57 48v31c0 31 54 31 54 0V48" />
+		<path d="M146 101V49m0 22c0-31 42-31 42 0v30m0-30c0-31 42-31 42 0v30" />
+		<path d="M319 76c0-39-61-39-61 0s61 39 61 0Zm0-27v52" />
+	</g>
+</svg>

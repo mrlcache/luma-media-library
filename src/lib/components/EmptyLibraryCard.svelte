@@ -31,7 +31,7 @@
 <style>
 	.empty-card-shell { display: grid; place-items: center; min-height: 360px; padding: 24px; color: var(--text-muted); text-align: center; }
 	.empty-card-shell--full-height { min-height: 0; height: 100%; padding: 0; }
-	.empty-card-shell--centered { position: absolute; inset: 0; min-height: 0; padding: 0; pointer-events: none; }
+	.empty-card-shell--centered { position: absolute; inset: 0; min-height: 0; padding: 24px; pointer-events: none; }
 	.empty-card {
 		display: grid;
 		justify-items: center;
@@ -70,7 +70,7 @@
 	.empty-card__button:hover, .empty-card__button:focus-visible { transform: scale(1.025); background: rgba(70,77,86,0.61); }
 
 	@media (max-width: 760px) {
-		.empty-card-shell { min-height: 320px; padding: 20px 18px; }
+		.empty-card-shell:not(.empty-card-shell--full-height):not(.empty-card-shell--centered) { min-height: 320px; padding: 20px 18px; }
 		.empty-card { width: 100%; min-height: 240px; padding: 30px 22px; border-radius: 21px; }
 	}
 	@media (prefers-reduced-motion: reduce) { .empty-card__button { transition: none; } .empty-card__button:hover, .empty-card__button:focus-visible { transform: none; } }

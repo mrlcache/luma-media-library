@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Media Library",
+  "productName": "Luma",
   "version": "0.1.0",
   "identifier": "local.media.platform",
   "build": {
@@ -13,12 +13,13 @@
     "windows": [
       {
         "label": "main",
-        "title": "Media Library",
+        "title": "Luma",
         "width": 1440,
         "height": 900,
         "minWidth": 960,
         "minHeight": 640,
         "center": true,
+        "devtools": false,
         "decorations": false,
         "transparent": true,
         "shadow": false

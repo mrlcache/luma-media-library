@@ -4,8 +4,9 @@
 	import EpisodePreview from '$lib/components/EpisodePreview.svelte';
 	import PosterCard from '$lib/components/PosterCard.svelte';
 	import { media } from '$lib/data';
+	import { findTvMazeEpisodeDetails } from '$lib/media/tvmaze-episodes';
 	import { usePlayer } from '$lib/player-context';
-	import { readTitleTrailer } from '$lib/platform/desktop';
+	import { readTitleLogo, readTitleTrailer } from '$lib/platform/desktop';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import type { TmdbTrailer } from '$lib/types';
 	import type { PageData } from './$types';
@@ -16,6 +17,10 @@
 	let saved = $state(false);
 	let trailer = $state<TmdbTrailer | null>(null);
 	let trailerOpen = $state(false);
+	let titleLogo = $state<string | null>(null);
+	let titleLogoResolved = $state(false);
+	let titleLogoReady = $state(false);
+	let episodeSummaries = $state<Record<string, string>>({});
 	let episodes = $derived(data.item.episodes ?? []);
 	let localEpisodes = $derived([...(data.localDetail?.files ?? [])].sort((a, b) =>
 		(a.season ?? 1) - (b.season ?? 1) || (a.episode ?? Number.MAX_SAFE_INTEGER) - (b.episode ?? Number.MAX_SAFE_INTEGER) || a.fileName.localeCompare(b.fileName)
@@ -42,7 +47,19 @@
 	}
 
 	function playEpisode(mediaId?: number) {
-		player.open(mediaId === undefined ? data.item : { ...data.item, id: String(mediaId) });
+		if (mediaId === undefined || !data.localDetail) { player.open(data.item); return; }
+		const index = localEpisodes.findIndex((file) => file.mediaId === mediaId);
+		if (index < 0) { player.open({ ...data.item, id: String(mediaId) }); return; }
+		const queue = localEpisodes.slice(index).map((file, offset) => {
+			const queueIndex = index + offset;
+			return {
+				...data.item,
+				id: String(file.mediaId),
+				episodeLabel: `${localEpisodeLabel(file, queueIndex)} · ${localEpisodeTitle(file, queueIndex)}`
+			};
+		});
+		for (let queueIndex = 0; queueIndex < queue.length - 1; queueIndex += 1) queue[queueIndex].nextEpisode = queue[queueIndex + 1];
+		if (queue[0]) player.open(queue[0]);
 	}
 
 	onMount(() => {
@@ -63,9 +80,44 @@
 		}
 		return () => { cancelled = true; };
 	});
+
+	$effect(() => {
+		const id = data.localDetail?.media.id;
+		let cancelled = false;
+		titleLogo = null;
+		titleLogoReady = false;
+		titleLogoResolved = !id;
+		if (id) {
+			void readTitleLogo(id).then((url) => {
+				if (cancelled) return;
+				titleLogo = url;
+				titleLogoResolved = true;
+			}).catch(() => {
+				if (!cancelled) titleLogoResolved = true;
+			});
+		}
+		return () => { cancelled = true; };
+	});
+
+	$effect(() => {
+		const files = data.localDetail?.files;
+		const title = data.item.title;
+		const year = data.item.year;
+		if (!files?.length || data.item.kind !== 'series') { episodeSummaries = {}; return; }
+		let cancelled = false;
+		episodeSummaries = {};
+		for (const file of files) {
+			if (file.season === null || file.episode === null) continue;
+			void findTvMazeEpisodeDetails(title, year || null, file.season, file.episode).then((details) => {
+				if (cancelled || !details?.summary) return;
+				episodeSummaries = { ...episodeSummaries, [String(file.mediaId)]: details.summary };
+			});
+		}
+		return () => { cancelled = true; };
+	});
 </script>
 
-<svelte:head><title>{data.item.title} · Media library</title></svelte:head>
+<svelte:head><title>{data.item.title} · Luma</title></svelte:head>
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape') trailerOpen = false; }} />
 
 
@@ -80,7 +132,15 @@
 			<div class="detail-poster"><img src={data.item.poster} alt={`Poster for ${data.item.title}`} width="520" height="780" /></div>
 			<div class="detail-copy">
 				<p class="detail-kind">{data.item.kind === 'series' ? 'Series' : 'Movie'} <span>·</span> {data.item.year}</p>
-				<h1>{data.item.title}</h1>
+				<h1 class="detail-title" aria-label={data.item.title}>
+					{#if titleLogo}
+						<img class="detail-title__logo" class:detail-title__logo--ready={titleLogoReady} src={titleLogo} alt="" onload={() => { titleLogoReady = true; }} onerror={() => { titleLogo = null; titleLogoResolved = true; }} />
+					{:else if titleLogoResolved}
+						{data.item.title}
+					{:else}
+						<span class="detail-title__pending" aria-hidden="true">{data.item.title}</span>
+					{/if}
+				</h1>
 				<div class="detail-meta">
 					{#if data.localDetail}
 						<span>{data.localDetail.files.length} {data.item.kind === 'series' ? 'episodes' : 'local file'}</span>
@@ -91,8 +151,8 @@
 				</div>
 				<p class="detail-synopsis">{data.item.synopsis}</p>
 				<div class="detail-actions">
-					<button class="button button--primary" onclick={() => playEpisode(data.localDetail?.files[0]?.mediaId)}><Icon name="play" size={15} />{data.item.progress ? 'Resume' : 'Play now'}</button>
-				{#if trailer}<button class="button button--ghost" onclick={() => { trailerOpen = true; }}><Icon name="play" size={15} />Trailer</button>{/if}
+					<button class="button button--primary" onclick={() => playEpisode(localEpisodes[0]?.mediaId)}><Icon name="play" size={15} />{data.item.progress ? 'Resume' : 'Play now'}</button>
+				{#if trailer}<button class="button button--ghost" onclick={() => { trailerOpen = true; }}><Icon name="play" size={15} />{trailer.isTeaser ? 'Teaser' : 'Trailer'}</button>{/if}
 					<button class="button button--ghost" class:saved aria-pressed={saved} onclick={() => (saved = !saved)}><Icon name={saved ? 'check' : 'bookmark'} size={15} />{saved ? 'In library' : 'Add to library'}</button>
 				</div>
 			</div>
@@ -112,25 +172,25 @@
 			<div class="episode-list">
 				{#if data.localDetail}
 					{#each localEpisodes as file, index (file.mediaId)}
-						{@const label = localEpisodeLabel(file, index)}
+					{@const label = localEpisodeLabel(file, index)}
 						{@const title = localEpisodeTitle(file, index)}
 						<article class="episode-row">
-							<EpisodePreview path={file.path} label={`${label} ${title}`} showTitle={data.item.title} showYear={data.item.year} season={file.season} episode={file.episode} />
-							<div class="episode-copy"><div class="episode-title"><span class="episode-number">{label}</span><h3>{title}</h3></div><p>{file.fileName}</p></div>
-							<button class="episode-play" aria-label={`Play ${label}, ${title}`} onclick={() => playEpisode(file.mediaId)}><Icon name="play" size={15} /></button>
+							<div class="episode-art"><EpisodePreview path={file.path} label={`${label} ${title}`} showTitle={data.item.title} showYear={data.item.year} season={file.season} episode={file.episode} /></div>
+							<div class="episode-copy"><div class="episode-title"><span class="episode-number">{label}</span><h3>{title}</h3></div><p>{episodeSummaries[String(file.mediaId)] ?? 'Episode summary unavailable.'}</p></div>
+							<button class="episode-select" type="button" aria-label={`Play ${label}, ${title}`} onclick={() => playEpisode(file.mediaId)}></button>
 						</article>
 					{/each}
 				{:else}
 					{#each episodes as episode, index (episode.id)}
 						<article class="episode-row">
-							<div class="episode-thumb"><img src={episode.thumbnail} alt="" width="520" height="292" loading={index === 0 ? 'eager' : 'lazy'} />{#if episode.progress}<span class="episode-progress" style={`--progress: ${episode.progress * 100}%`}></span>{/if}</div>
+							<div class="episode-art"><div class="episode-thumb"><img src={episode.thumbnail} alt="" width="520" height="292" loading={index === 0 ? 'eager' : 'lazy'} />{#if episode.progress}<span class="episode-progress" style={`--progress: ${episode.progress * 100}%`}></span>{/if}</div></div>
 							<div class="episode-copy"><div class="episode-title"><span class="episode-number">{String(episode.number).padStart(2, '0')}</span><h3>{episode.title}</h3><span>{episode.duration}</span></div><p>{episode.summary}</p></div>
-							<button class="episode-play" aria-label={`Play episode ${episode.number}, ${episode.title}`} onclick={() => playEpisode()}><Icon name="play" size={15} /></button>
+							<button class="episode-select" type="button" aria-label={`Play episode ${episode.number}, ${episode.title}`} onclick={() => playEpisode()}></button>
 						</article>
 					{/each}
 				{/if}
 			</div>
-				{#if data.localDetail}<p class="episode-credit">Episode artwork provided by <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer">TVmaze</a> when available.</p>{/if}
+				{#if data.localDetail}<p class="episode-credit">Episode data: <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer">TVmaze</a></p>{/if}
 		</section>
 	{/if}
 
@@ -172,6 +232,10 @@
 	.detail-copy { width: min(520px, 55%); }
 	.detail-copy h1 { margin: 0; color: var(--text-strong); font-size: clamp(2.4rem, 5vw, 4.6rem); font-weight: 600; letter-spacing: -0.07em; line-height: 0.94; }
 	.detail-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 19px; color: var(--text-muted); font-size: 0.7rem; }
+	.detail-title { display: grid; align-items: center; min-height: 104px; }
+	.detail-title__pending { visibility: hidden; }
+	.detail-title__logo { display: block; width: auto; height: auto; max-width: min(480px, 100%); max-height: 104px; object-fit: contain; object-position: left center; filter: drop-shadow(0 12px 38px rgba(0,0,0,0.4)); opacity: 0; }
+	.detail-title__logo--ready { opacity: 1; }
 	.detail-meta span:not(:first-child)::before { content: '·'; margin-right: 10px; color: var(--text-dim); }
 	.detail-meta .match { color: var(--success); font-weight: 700; }
 	.detail-meta .match::before { display: none; }
@@ -192,7 +256,10 @@
 	.episode-list { display: grid; border-top: 1px solid var(--line-subtle); }
 	.episode-credit { margin: 12px 0 0; color: var(--text-dim); font-size: 0.62rem; }
 	.episode-credit a { color: var(--text-muted); text-decoration: underline; text-underline-offset: 2px; }
-	.episode-row { display: grid; grid-template-columns: 180px minmax(0, 1fr) 36px; align-items: center; gap: 20px; padding: 17px 0; border-bottom: 1px solid var(--line-subtle); }
+	.episode-row { position: relative; display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: center; gap: 20px; margin: 0 -12px; padding: 17px 12px; border-bottom: 1px solid var(--line-subtle); border-radius: 10px; transition: background-color 140ms ease; }
+	.episode-row:hover, .episode-row:has(.episode-select:focus-visible) { background: rgba(158,198,214,0.07); }
+	.episode-row:hover .episode-title h3, .episode-row:has(.episode-select:focus-visible) .episode-title h3 { color: var(--accent-soft); }
+	.episode-art { position: relative; min-width: 0; }
 	.episode-thumb { position: relative; overflow: hidden; aspect-ratio: 16 / 9; border-radius: 7px; background: var(--surface-2); }
 	.episode-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 	.episode-number { position: absolute; top: 8px; left: 8px; color: rgba(255,255,255,0.84); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; }
@@ -202,8 +269,7 @@
 	.episode-title h3 { overflow: hidden; margin: 0; color: var(--text-soft); font-size: 0.84rem; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 	.episode-title span { flex: 0 0 auto; color: var(--text-muted); font-size: 0.68rem; }
 	.episode-copy p { max-width: 600px; margin: 7px 0 0; color: var(--text-muted); font-size: 0.73rem; line-height: 1.55; }
-	.episode-play { display: grid; place-items: center; width: 33px; height: 33px; padding: 0; border: 1px solid var(--line-subtle); border-radius: 50%; color: var(--text-soft); background: var(--surface-2); cursor: pointer; }
-	.episode-play:hover { border-color: var(--accent); color: var(--accent-soft); }
+	.episode-select { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
 	.related-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; }
 	@media (max-width: 900px) { .detail-page { padding-right: 28px; padding-left: 28px; } .detail-hero__content { padding: 38px; } .detail-poster { flex-basis: 150px; } .detail-copy { width: min(500px, 64%); } .related-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } :global(.related-grid .poster-card:nth-child(4)) { display: none; } }
 	@media (max-width: 680px) { .detail-page { padding: 20px 18px 56px; } .detail-hero { min-height: 650px; margin-top: 18px; } .detail-hero__backdrop { inset: 0 0 48% 0; } .detail-hero__veil { background: linear-gradient(0deg, var(--surface-1) 0%, rgba(14,17,21,0.96) 43%, rgba(14,17,21,0.12) 73%), linear-gradient(90deg, rgba(14,17,21,0.24), transparent); } .detail-hero__content { align-items: end; flex-direction: column; justify-content: end; gap: 24px; min-height: 650px; padding: 28px 24px; } .detail-poster { align-self: flex-start; flex-basis: auto; width: 120px; } .detail-copy { width: 100%; } .detail-copy h1 { font-size: clamp(2.4rem, 12vw, 3.8rem); } .detail-synopsis { font-size: 0.75rem; } .episode-row { grid-template-columns: 122px minmax(0, 1fr) 32px; gap: 13px; } .episode-copy p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; } .related-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; } }
@@ -235,14 +301,12 @@
 	.section-heading h2 { font-family: var(--font-display); font-size: 1.08rem; font-weight: 690; letter-spacing: -0.034em; }
 	.season-select select { padding: 5px 20px 5px 0; border: 0; border-bottom: 1px solid var(--line-subtle); border-radius: 0; color: var(--text-soft); background: transparent; }
 	.episode-list { border-top-color: var(--line-subtle); }
-	.episode-row { grid-template-columns: 170px minmax(0, 1fr) 36px; gap: 20px; padding: 16px 0; border-bottom-color: var(--line-subtle); }
+	.episode-row { grid-template-columns: 170px minmax(0, 1fr); gap: 20px; padding: 16px 12px; border-bottom-color: var(--line-subtle); }
 	.episode-thumb { border: 1px solid rgba(255,255,255,0.1); border-radius: 9px; }
 	.episode-number { position: static; color: var(--accent); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; }
 	.episode-title { gap: 9px; }
 	.episode-title h3 { color: var(--text-strong); font-weight: 650; }
 	.episode-copy p { max-width: 680px; margin-top: 6px; }
-	.episode-play { width: 34px; height: 34px; border: 0; color: var(--text-muted); background: transparent; transition: color 140ms ease, background-color 140ms ease; }
-	.episode-play:hover { color: var(--text-strong); background: var(--surface-2); }
 	.related-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; }
 	@media (max-width: 900px) { .detail-hero__content { padding-right: 28px; padding-left: 28px; } }
 	@media (max-width: 680px) {
@@ -259,11 +323,11 @@
 		.detail-actions { margin-top: 18px; }
 		.button { min-height: 40px; padding: 0 15px; }
 		.episodes-section, .related-section { margin-top: 43px; }
-		.episode-row { grid-template-columns: 116px minmax(0, 1fr) 32px; gap: 12px; padding: 14px 0; }
+		.episode-row { grid-template-columns: 116px minmax(0, 1fr); gap: 12px; padding: 14px 12px; }
 		.episode-copy p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 		.related-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 	}
-	@media (prefers-reduced-motion: reduce) { .button, .episode-play { transition: none; } .button:hover, .button:focus-visible { transform: none; } }
+	@media (prefers-reduced-motion: reduce) { .button, .episode-row { transition: none; } .button:hover, .button:focus-visible { transform: none; } }
 	@media (prefers-reduced-transparency: reduce) {
 		.button--ghost { background: var(--surface-3); backdrop-filter: none; }
 		:global(html[data-runtime='desktop']) .detail-surface { background: #0c0f13; }
