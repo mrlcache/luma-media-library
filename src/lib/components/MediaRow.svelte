@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import { recoverRemoteArtwork } from '$lib/media/artwork';
 	import { usePlayer } from '$lib/player-context';
 	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
 	import { rightEdgeHint } from '$lib/scroll/right-edge-hint';
@@ -24,7 +25,7 @@
 					<div class="landscape-card__art" style="corner-shape: squircle">
 						<div class="landscape-card__selection-halo" style="corner-shape: squircle"></div>
 						<a class="landscape-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} style="corner-shape: squircle">
-							<img src={media.backdrop} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />
+							<img use:recoverRemoteArtwork src={media.backdrop} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />
 							<div class="landscape-card__scrim"></div>
 							{#if showProgress && media.progress}
 								<div class="landscape-card__progress"><span style={`--progress: ${media.progress * 100}%`}></span></div>

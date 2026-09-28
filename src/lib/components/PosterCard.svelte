@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import { recoverRemoteArtwork } from '$lib/media/artwork';
 	import { usePlayer } from '$lib/player-context';
 	import type { MediaItem } from '$lib/types';
 
@@ -12,6 +13,7 @@
 	<div class="poster-card__art" style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
 		<a class="poster-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}, ${media.year}`} style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
 			<img
+				use:recoverRemoteArtwork
 				src={media.poster}
 				alt={`Poster for ${media.title}`}
 				width="520"

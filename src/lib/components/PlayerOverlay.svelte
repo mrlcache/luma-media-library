@@ -723,48 +723,66 @@
 
 		{#if subtitlePanelOpen}
 			<section class="subtitle-panel" aria-label="Subtitle settings" style="corner-shape: squircle">
-				<header><strong>Subtitles</strong><button type="button" aria-label="Close subtitle settings" onclick={() => (subtitlePanelOpen = false)}><Icon name="close" size={16} /></button></header>
-				<div class="subtitle-panel__tracks">
-					{#if activeEngine}
-						<button type="button" class:active={!nativeSubtitleTracks.some((track) => track.selected)} onclick={() => selectNativeSubtitle(-1)}>Off</button>
-						{#each nativeSubtitleTracks as track (track.id)}<button type="button" class:active={track.selected} onclick={() => selectNativeSubtitle(track.id)}>{track.label}{track.language ? ` · ${track.language}` : ''}</button>{/each}
-						{#each subtitleTracks.filter((track) => track.path) as track (track.path)}<button type="button" onclick={() => selectNativeExternalSubtitle(track)}>{track.label}</button>{/each}
-					{:else}
-						<button type="button" class:active={activeSubtitle === -1} onclick={() => selectSubtitle(-1)}>Off</button>
-						{#each subtitleTracks as track, index}<button type="button" class:active={activeSubtitle === index} onclick={() => selectSubtitle(index)}>{track.label}</button>{/each}
-					{/if}
-				</div>
-				<label>Text size <SteppedRange min={70} max={150} step={10} bind:value={subtitleSize} oninput={changeSubtitleSize} ariaLabel="Subtitle text size" disabled={activeEngine === 'vlc'} /></label>
-				<label>Vertical position <SteppedRange min={0} max={8} step={1} bind:value={subtitleOffset} oninput={changeSubtitleOffset} ariaLabel="Subtitle vertical position" disabled={activeEngine === 'vlc'} /></label>
-				{#if vlcSubtitleNote}<p class="subtitle-panel__note">VLC styling preferences apply on the next open; use libmpv for live size and position adjustments.</p>{/if}
-				<div class="subtitle-panel__actions">
-					<button type="button" onclick={chooseSubtitle}><Icon name="captions" size={15} /> Load subtitle file</button>
-					<input id="player-subtitle-file-input" class="sr-only" type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" onchange={loadSubtitleFile} />
-				</div>
-				<details class="subtitle-online">
-					<summary><Icon name="search" size={15} /> Find on OpenSubtitles</summary>
-					<p class="subtitle-online__note">The API key and sign-in stay in memory for this session; your password is not saved.</p>
-					<label>API key <input type="password" bind:value={subtitleApiKey} autocomplete="off" placeholder="OpenSubtitles API key" /></label>
-					<div class="subtitle-online__row"><input bind:value={subtitleUsername} autocomplete="username" placeholder="Username" aria-label="OpenSubtitles username" /><input type="password" bind:value={subtitlePassword} autocomplete="current-password" placeholder="Password" aria-label="OpenSubtitles password" /></div>
-					<button class="subtitle-online__button" type="button" onclick={signInToOpenSubtitles}>Sign in to download</button>
-					<label>Title <input bind:value={subtitleQuery} maxlength="120" aria-label="Subtitle search title" /></label>
-					<label>Language
-						<select bind:value={subtitleLanguage} aria-label="Subtitle language">
-							<option value="en">English</option><option value="pt-br">Portuguese (Brazil)</option><option value="es">Spanish</option><option value="fr">French</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="de">German</option>
-						</select>
-					</label>
-					<button class="subtitle-online__button subtitle-online__button--primary" type="button" disabled={subtitleSearchBusy} onclick={findOpenSubtitles}>{subtitleSearchBusy ? 'Searching…' : 'Search subtitles'}</button>
-					{#if subtitleStatus}<p class="subtitle-online__status" role="status">{subtitleStatus}</p>{/if}
-					{#if subtitleError}<p class="subtitle-online__error" role="alert">{subtitleError}</p>{/if}
-					{#if subtitleResults.length > 0}
-						<div class="subtitle-online__results" aria-label="Subtitle results">
-							{#each subtitleResults as result (result.fileId)}
-								<div><span><strong>{result.release}</strong><small>{result.language}{result.hearingImpaired ? ' · SDH' : ''} · {result.downloads} downloads</small></span><button type="button" aria-label={`Download ${result.release}`} disabled={subtitleBusyFile === result.fileId} onclick={() => downloadSubtitle(result)}>{subtitleBusyFile === result.fileId ? '…' : 'Get'}</button></div>
-							{/each}
+				<header class="subtitle-panel__header"><strong><Icon name="captions" size={17} /> Subtitles</strong><button type="button" aria-label="Close subtitle settings" onclick={() => (subtitlePanelOpen = false)}><Icon name="close" size={16} /></button></header>
+				<div class="subtitle-panel__body">
+					<section class="subtitle-panel__section" aria-label="Subtitle track">
+						<h3>Subtitle track</h3>
+						<div class="subtitle-panel__tracks">
+							{#if activeEngine}
+								<button type="button" class:active={!nativeSubtitleTracks.some((track) => track.selected)} aria-pressed={!nativeSubtitleTracks.some((track) => track.selected)} onclick={() => selectNativeSubtitle(-1)}><span>Off</span>{#if !nativeSubtitleTracks.some((track) => track.selected)}<Icon name="check" size={14} />{/if}</button>
+								{#each nativeSubtitleTracks as track (track.id)}<button type="button" class:active={track.selected} aria-pressed={track.selected} onclick={() => selectNativeSubtitle(track.id)}><span>{track.label}{track.language && track.language.toLowerCase() !== track.label.toLowerCase() ? ` · ${track.language}` : ''}</span>{#if track.selected}<Icon name="check" size={14} />{/if}</button>{/each}
+								{#each subtitleTracks.filter((track) => track.path) as track (track.path)}<button type="button" onclick={() => selectNativeExternalSubtitle(track)}>{track.label}</button>{/each}
+							{:else}
+								<button type="button" class:active={activeSubtitle === -1} aria-pressed={activeSubtitle === -1} onclick={() => selectSubtitle(-1)}><span>Off</span>{#if activeSubtitle === -1}<Icon name="check" size={14} />{/if}</button>
+								{#each subtitleTracks as track, index}<button type="button" class:active={activeSubtitle === index} aria-pressed={activeSubtitle === index} onclick={() => selectSubtitle(index)}><span>{track.label}</span>{#if activeSubtitle === index}<Icon name="check" size={14} />{/if}</button>{/each}
+							{/if}
 						</div>
-					{/if}
-					<a class="subtitle-online__account" href="https://www.opensubtitles.com/" target="_blank" rel="noreferrer">OpenSubtitles account and API key ↗</a>
-				</details>
+					</section>
+					<section class="subtitle-panel__section subtitle-panel__appearance" aria-label="Subtitle appearance">
+						<h3>Appearance</h3>
+						<label><span class="subtitle-panel__setting-label">Text size <output>{subtitleSize}%</output></span><SteppedRange min={70} max={150} step={10} bind:value={subtitleSize} oninput={changeSubtitleSize} ariaLabel="Subtitle text size" disabled={activeEngine === 'vlc'} /></label>
+						<label><span class="subtitle-panel__setting-label">Vertical position <output>{subtitleOffset === 0 ? 'Default' : `${subtitleOffset} / 8`}</output></span><SteppedRange min={0} max={8} step={1} bind:value={subtitleOffset} oninput={changeSubtitleOffset} ariaLabel="Subtitle vertical position" disabled={activeEngine === 'vlc'} /></label>
+						{#if vlcSubtitleNote}<p class="subtitle-panel__note">VLC styling preferences apply on the next open; use libmpv for live size and position adjustments.</p>{/if}
+					</section>
+					<div class="subtitle-panel__actions">
+						<button type="button" onclick={chooseSubtitle}><Icon name="captions" size={15} /> Load subtitle file</button>
+						<input id="player-subtitle-file-input" class="sr-only" type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" onchange={loadSubtitleFile} />
+					</div>
+					<details class="subtitle-online">
+						<summary><Icon name="search" size={15} /><span>Find on OpenSubtitles</span><span class="subtitle-online__chevron"><Icon name="chevron-down" size={14} /></span></summary>
+						<div class="subtitle-online__content">
+							<label class="subtitle-online__field">API key <input type="password" bind:value={subtitleApiKey} autocomplete="off" placeholder="OpenSubtitles API key" /></label>
+							<label class="subtitle-online__field">Title <input bind:value={subtitleQuery} maxlength="120" aria-label="Subtitle search title" /></label>
+							<label class="subtitle-online__field">Language
+								<select bind:value={subtitleLanguage} aria-label="Subtitle language">
+									<option value="en">English</option><option value="pt-br">Portuguese (Brazil)</option><option value="es">Spanish</option><option value="fr">French</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="de">German</option>
+								</select>
+							</label>
+							<button class="subtitle-online__button subtitle-online__button--primary" type="button" disabled={subtitleSearchBusy} onclick={findOpenSubtitles}>{subtitleSearchBusy ? 'Searching…' : 'Search subtitles'}</button>
+							{#if subtitleStatus}<p class="subtitle-online__status" role="status">{subtitleStatus}</p>{/if}
+							{#if subtitleError}<p class="subtitle-online__error" role="alert">{subtitleError}</p>{/if}
+							{#if subtitleResults.length > 0}
+								<div class="subtitle-online__results" aria-label="Subtitle results">
+									{#each subtitleResults as result (result.fileId)}
+										<div><span><strong>{result.release}</strong><small>{result.language}{result.hearingImpaired ? ' · SDH' : ''} · {result.downloads} downloads</small></span><button type="button" aria-label={`Download ${result.release}`} disabled={subtitleBusyFile === result.fileId} onclick={() => downloadSubtitle(result)}>{subtitleBusyFile === result.fileId ? '…' : 'Get'}</button></div>
+									{/each}
+								</div>
+							{/if}
+							<details class="subtitle-online__credentials">
+								<summary><span>Sign in to download</span><span class="subtitle-online__chevron"><Icon name="chevron-down" size={14} /></span></summary>
+								<div class="subtitle-online__credentials-content">
+									<div class="subtitle-online__row">
+										<label class="subtitle-online__field">Username <input bind:value={subtitleUsername} autocomplete="username" placeholder="Username" /></label>
+										<label class="subtitle-online__field">Password <input type="password" bind:value={subtitlePassword} autocomplete="current-password" placeholder="Password" /></label>
+									</div>
+									<button class="subtitle-online__button" type="button" onclick={signInToOpenSubtitles}>Sign in</button>
+									<p class="subtitle-online__note">Your API key and sign-in stay in memory for this session. Your password is not saved.</p>
+								</div>
+							</details>
+							<a class="subtitle-online__account" href="https://www.opensubtitles.com/" target="_blank" rel="noreferrer">OpenSubtitles account and API key ↗</a>
+						</div>
+					</details>
+				</div>
 			</section>
 		{/if}
 	</div>
@@ -789,7 +807,6 @@
 	.player-message { position: absolute; top: 50%; left: 50%; z-index: 2; display: grid; justify-items: center; gap: 12px; width: min(440px, calc(100% - 36px)); color: rgba(244,247,249,0.72); font-size: 0.78rem; text-align: center; transform: translate(-50%,-50%); }
 	.player-message--error { padding: 22px 24px; border: 1px solid rgba(255,255,255,0.15); border-radius: 18px; background: rgba(13,16,20,0.72); box-shadow: 0 24px 60px rgba(0,0,0,0.38); backdrop-filter: blur(24px) saturate(135%); }
 	.player-message--error strong { color: #fff; font-size: 0.95rem; font-weight: 650; }
-	.player-message--error button { min-height: 36px; margin-top: 4px; padding: 0 13px; border: 1px solid rgba(255,255,255,0.16); border-radius: 10px; color: #12161a; background: rgba(240,246,248,0.94); cursor: pointer; font: inherit; font-weight: 650; }
 	.player-loading__spinner { width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #e8f3f5; border-radius: 50%; animation: player-spin 700ms linear infinite; }
 	@keyframes player-spin { to { transform: rotate(360deg); } }
 
@@ -863,36 +880,51 @@
 	.player-rate__value { color: rgba(244,247,249,0.88); font-size: 0.68rem; font-variant-numeric: tabular-nums; font-weight: 700; }
 	.player-rate select { position: absolute; inset: 0; z-index: 1; width: 100%; max-width: none; height: 100%; padding: 0; border: 0; outline: 0; opacity: 0; cursor: pointer; }
 	.player-rate:focus-within { outline: 2px solid rgba(158,198,214,0.8); outline-offset: 2px; }
-	.subtitle-panel { position: absolute; right: 20px; bottom: 124px; z-index: 8; display: grid; gap: 14px; width: min(340px, calc(100vw - 32px)); max-height: min(70vh, 620px); overflow: auto; padding: 17px; border: 1px solid rgba(255,255,255,0.16); border-radius: 19px; color: rgba(244,247,249,0.76); background: rgba(20,24,29,0.91); box-shadow: 0 22px 66px rgba(0,0,0,0.42), inset 0 1px rgba(255,255,255,0.07); backdrop-filter: blur(34px) saturate(145%); pointer-events: auto; }
-	.subtitle-panel header { display: flex; align-items: center; justify-content: space-between; color: #f8fafb; font-size: 0.86rem; font-weight: 650; }
-	.subtitle-panel header button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 9px; color: inherit; background: transparent; cursor: pointer; }
-	.subtitle-panel header button:hover { background: rgba(255,255,255,0.09); }
+	.subtitle-panel { position: absolute; right: 20px; bottom: 124px; z-index: 8; display: flex; flex-direction: column; width: min(380px, calc(100% - 40px)); max-height: min(680px, calc(100% - 148px)); overflow: hidden; border: 1px solid rgba(255,255,255,0.16); border-radius: 19px; color: rgba(244,247,249,0.76); background: rgba(20,24,29,0.91); box-shadow: 0 22px 66px rgba(0,0,0,0.42), inset 0 1px rgba(255,255,255,0.07); backdrop-filter: blur(34px) saturate(145%); pointer-events: auto; }
+	.subtitle-panel__header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.1); color: #f8fafb; font-size: 0.86rem; font-weight: 650; }
+	.subtitle-panel__header strong { display: flex; align-items: center; gap: 9px; }
+	.subtitle-panel__header button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 9px; color: inherit; background: transparent; cursor: pointer; }
+	.subtitle-panel__header button:hover { background: rgba(255,255,255,0.09); }
+	.subtitle-panel__body { display: grid; flex: 1 1 auto; gap: 18px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px; scrollbar-width: thin; scrollbar-color: rgba(235,240,244,0.18) transparent; }
+	.subtitle-panel__body::-webkit-scrollbar { display: block !important; width: 4px !important; }
+	.subtitle-panel__body::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(235,240,244,0.18); }
+	.subtitle-panel__section { display: grid; gap: 10px; min-width: 0; }
+	.subtitle-panel__section h3 { margin: 0; color: rgba(235,240,244,0.5); font-size: 0.62rem; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; }
 	.subtitle-panel__tracks { display: grid; gap: 4px; max-height: 145px; overflow: auto; }
-	.subtitle-panel__tracks button { overflow: hidden; min-height: 34px; padding: 0 10px; border: 1px solid transparent; border-radius: 9px; color: rgba(244,247,249,0.68); background: transparent; cursor: pointer; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+	.subtitle-panel__tracks button { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid transparent; border-radius: 9px; color: rgba(244,247,249,0.68); background: transparent; cursor: pointer; font: inherit; font-size: 0.73rem; text-align: left; }
+	.subtitle-panel__tracks button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.subtitle-panel__tracks button:hover { background: rgba(255,255,255,0.06); }
 	.subtitle-panel__tracks button.active { border-color: rgba(255,255,255,0.12); color: #fff; background: rgba(255,255,255,0.1); }
-	.subtitle-panel__note { margin: -5px 0 0; color: rgba(235,240,244,0.55); font-size: 0.62rem; line-height: 1.45; }
-	.subtitle-panel > label { display: grid; gap: 7px; font-size: 0.68rem; }
-	.subtitle-panel__actions { display: grid; gap: 7px; padding-top: 5px; border-top: 1px solid rgba(255,255,255,0.1); }
-	.subtitle-panel__actions button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; color: #f1f5f6; background: rgba(255,255,255,0.06); cursor: pointer; font-size: 0.69rem; font-weight: 600; }
+	.subtitle-panel__appearance { gap: 12px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); }
+	.subtitle-panel__appearance label { display: grid; gap: 5px; font-size: 0.68rem; }
+	.subtitle-panel__setting-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+	.subtitle-panel__setting-label output { color: rgba(235,240,244,0.5); font-size: 0.65rem; font-variant-numeric: tabular-nums; }
+	.subtitle-panel__note { margin: 0; color: rgba(235,240,244,0.55); font-size: 0.64rem; line-height: 1.5; }
+	.subtitle-panel__actions { display: grid; gap: 7px; }
+	.subtitle-panel__actions button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; color: #f1f5f6; background: rgba(255,255,255,0.06); cursor: pointer; font: inherit; font-size: 0.7rem; font-weight: 600; }
 	.subtitle-panel__actions button:hover:not(:disabled) { background: rgba(255,255,255,0.12); }
 	.subtitle-panel__actions button:disabled { opacity: 0.45; cursor: not-allowed; }
-	.subtitle-online { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); }
+	.subtitle-online { min-width: 0; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); }
 	.subtitle-online summary { display: flex; align-items: center; gap: 8px; color: #f1f5f6; cursor: pointer; font-size: 0.72rem; font-weight: 640; list-style: none; }
 	.subtitle-online summary::-webkit-details-marker { display: none; }
-	.subtitle-online[open] summary { margin-bottom: 2px; }
-	.subtitle-online__note { margin: -4px 0 0; color: rgba(235,240,244,0.5); font-size: 0.63rem; line-height: 1.45; }
-	.subtitle-online > label { display: grid; gap: 5px; font-size: 0.63rem; }
-	.subtitle-online input, .subtitle-online select { min-width: 0; height: 34px; padding: 0 9px; border: 1px solid rgba(255,255,255,0.12); border-radius: 9px; outline: none; color: #f2f5f7; background: rgba(5,8,11,0.38); font: inherit; font-size: 0.67rem; }
+	.subtitle-online__chevron { display: flex; margin-left: auto; color: rgba(235,240,244,0.5); transition: transform 150ms ease; }
+	.subtitle-online[open] > summary > .subtitle-online__chevron, .subtitle-online__credentials[open] > summary > .subtitle-online__chevron { transform: rotate(180deg); }
+	.subtitle-online__content { display: grid; gap: 14px; padding-top: 16px; }
+	.subtitle-online__note { margin: 0; color: rgba(235,240,244,0.5); font-size: 0.64rem; line-height: 1.5; }
+	.subtitle-online__field { display: grid; gap: 6px; min-width: 0; color: rgba(244,247,249,0.66); font-size: 0.66rem; }
+	.subtitle-online input, .subtitle-online select { width: 100%; min-width: 0; height: 38px; padding: 0 11px 2px; border: 1px solid rgba(255,255,255,0.12); border-radius: 9px; outline: none; color: #f2f5f7; background: rgba(5,8,11,0.38); font: inherit; font-size: 0.7rem; line-height: 1.2; }
 	.subtitle-online input:focus, .subtitle-online select:focus { border-color: rgba(225,242,248,0.38); }
 	.subtitle-online input::placeholder { color: rgba(235,240,244,0.4); }
 	.subtitle-online option { color: #edf2f4; background: #171c22; }
-	.subtitle-online__row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-	.subtitle-online__button { min-height: 34px; padding: 0 9px; border: 1px solid rgba(255,255,255,0.13); border-radius: 9px; color: rgba(244,247,249,0.8); background: rgba(255,255,255,0.055); cursor: pointer; font-size: 0.66rem; font-weight: 620; }
+	.subtitle-online__row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 10px; }
+	.subtitle-online__button { width: 100%; min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.13); border-radius: 9px; color: rgba(244,247,249,0.8); background: rgba(255,255,255,0.055); cursor: pointer; font: inherit; font-size: 0.7rem; font-weight: 620; }
 	.subtitle-online__button:hover:not(:disabled) { background: rgba(255,255,255,0.11); }
 	.subtitle-online__button:disabled { opacity: 0.48; cursor: wait; }
 	.subtitle-online__button--primary { color: #101418; background: rgba(232,243,245,0.94); }
 	.subtitle-online__button--primary:hover:not(:disabled) { background: #fff; }
+	.subtitle-online__credentials { padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.1); }
+	.subtitle-online__credentials > summary { color: rgba(244,247,249,0.7); font-size: 0.68rem; font-weight: 600; }
+	.subtitle-online__credentials-content { display: grid; gap: 12px; padding-top: 14px; }
 	.subtitle-online__status, .subtitle-online__error { margin: 0; font-size: 0.64rem; line-height: 1.45; }
 	.subtitle-online__status { color: #b8d9cf; }
 	.subtitle-online__error { color: #f3b6b7; }
@@ -903,7 +935,9 @@
 	.subtitle-online__results small { color: rgba(235,240,244,0.48); font-size: 0.58rem; }
 	.subtitle-online__results button { min-width: 42px; height: 28px; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #f3f6f7; background: rgba(255,255,255,0.08); cursor: pointer; font-size: 0.63rem; }
 	.subtitle-online__results button:disabled { opacity: 0.5; cursor: wait; }
-	.subtitle-online__account { color: rgba(235,240,244,0.54); font-size: 0.61rem; text-decoration: underline; text-underline-offset: 2px; }
+	.subtitle-online__account { display: block; justify-self: start; color: rgba(235,240,244,0.54); font-size: 0.63rem; line-height: 1.5; text-decoration: underline; text-underline-offset: 3px; }
+	.subtitle-online__account:hover { color: #f1f5f6; }
+	.subtitle-panel :global(button:focus-visible), .subtitle-panel :global(summary:focus-visible), .subtitle-panel :global(a:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
 	.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
 
 	@media (max-width: 760px) {
@@ -916,7 +950,7 @@
 		.player-chip span { display: none; }
 		.player-volume__range { width: 54px; }
 		.player-center-play { width: 66px; height: 66px; border-radius: 20px; }
-		.subtitle-panel { right: 12px; bottom: 118px; }
+		.subtitle-panel { right: 12px; bottom: 118px; width: min(380px, calc(100% - 24px)); max-height: min(680px, calc(100% - 142px)); }
 	}
 
 	@media (max-width: 520px) {
@@ -926,6 +960,7 @@
 		.player-transport__group { gap: 2px; }
 		.player-chip:nth-child(2),
 		.player-chip:nth-child(3) { display: none; }
+		.subtitle-online__row { grid-template-columns: minmax(0,1fr); }
 	}
 
 	@media (prefers-reduced-transparency: reduce) {

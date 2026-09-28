@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import { recoverRemoteArtwork } from '$lib/media/artwork';
 	import CatalogSkeletonGrid from '$lib/components/CatalogSkeletonGrid.svelte';
 	import EmptyLibraryCard from '$lib/components/EmptyLibraryCard.svelte';
 	import LocalCatalogGrid from '$lib/components/LocalCatalogGrid.svelte';
@@ -189,7 +190,7 @@
 				{#each filteredTmdbResults as item (item.kind + item.id)}
 					<article class="tmdb-result" role="listitem">
 						{#if item.posterUrl}
-							<img class="tmdb-result__poster" src={item.posterUrl} alt={`Poster for ${item.title}`} width="342" height="513" loading="lazy" decoding="async" />
+							<img use:recoverRemoteArtwork class="tmdb-result__poster" src={item.posterUrl} alt={`Poster for ${item.title}`} width="342" height="513" loading="lazy" decoding="async" />
 						{:else}
 							<div class="tmdb-result__poster tmdb-result__poster--empty" aria-label="Poster unavailable"></div>
 						{/if}

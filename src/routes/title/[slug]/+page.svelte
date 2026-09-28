@@ -4,6 +4,7 @@
 	import EpisodePreview from '$lib/components/EpisodePreview.svelte';
 	import PosterCard from '$lib/components/PosterCard.svelte';
 	import { media } from '$lib/data';
+	import { recoverRemoteArtwork } from '$lib/media/artwork';
 	import { findTvMazeEpisodeDetails } from '$lib/media/tvmaze-episodes';
 	import { usePlayer } from '$lib/player-context';
 	import { readTitleLogo, readTitleTrailer } from '$lib/platform/desktop';
@@ -125,11 +126,11 @@
 	<div class="detail-page">
 	<a class="back-link" href={data.item.kind === 'movie' ? '/library?type=movie' : '/library?type=series'}><Icon name="arrow-left" size={15} />Back to {data.item.kind === 'movie' ? 'movies' : 'series'}</a>
 
-	<section class="detail-hero" style={`--backdrop: url("${data.item.backdrop}")`}>
-		<div class="detail-hero__backdrop"></div>
+	<section class="detail-hero">
+		<div class="detail-hero__backdrop" aria-hidden="true"><img use:recoverRemoteArtwork src={data.item.backdrop} alt="" /></div>
 		<div class="detail-hero__veil"></div>
 		<div class="detail-hero__content">
-			<div class="detail-poster"><img src={data.item.poster} alt={`Poster for ${data.item.title}`} width="520" height="780" /></div>
+			<div class="detail-poster"><img use:recoverRemoteArtwork src={data.item.poster} alt={`Poster for ${data.item.title}`} width="520" height="780" /></div>
 			<div class="detail-copy">
 				<p class="detail-kind">{data.item.kind === 'series' ? 'Series' : 'Movie'} <span>·</span> {data.item.year}</p>
 				<h1 class="detail-title" aria-label={data.item.title}>
@@ -182,8 +183,8 @@
 					{/each}
 				{:else}
 					{#each episodes as episode, index (episode.id)}
-						<article class="episode-row">
-							<div class="episode-art"><div class="episode-thumb"><img src={episode.thumbnail} alt="" width="520" height="292" loading={index === 0 ? 'eager' : 'lazy'} />{#if episode.progress}<span class="episode-progress" style={`--progress: ${episode.progress * 100}%`}></span>{/if}</div></div>
+							<article class="episode-row">
+								<div class="episode-art"><div class="episode-thumb"><img use:recoverRemoteArtwork src={episode.thumbnail} alt="" width="520" height="292" loading={index === 0 ? 'eager' : 'lazy'} />{#if episode.progress}<span class="episode-progress" style={`--progress: ${episode.progress * 100}%`}></span>{/if}</div></div>
 							<div class="episode-copy"><div class="episode-title"><span class="episode-number">{String(episode.number).padStart(2, '0')}</span><h3>{episode.title}</h3><span>{episode.duration}</span></div><p>{episode.summary}</p></div>
 							<button class="episode-select" type="button" aria-label={`Play episode ${episode.number}, ${episode.title}`} onclick={() => playEpisode()}></button>
 						</article>
@@ -224,7 +225,8 @@
 	.back-link { position: relative; z-index: 81; display: inline-flex; align-items: center; gap: 7px; min-height: 44px; margin-left: -12px; padding: 0 12px; border: 1px solid transparent; border-radius: 13px; color: var(--text-muted); font-size: 0.74rem; text-decoration: none; transition: color 140ms ease, background-color 140ms ease; }
 	.back-link:hover { color: var(--text-strong); background: rgba(255,255,255,0.06); }
 	.detail-hero { position: relative; min-height: 470px; margin-top: 22px; overflow: hidden; border: 1px solid var(--line-subtle); border-radius: var(--radius-lg); background: var(--surface-1); }
-	.detail-hero__backdrop { position: absolute; inset: 0 0 0 32%; background-image: var(--backdrop); background-position: center; background-size: cover; filter: saturate(0.72); }
+	.detail-hero__backdrop { position: absolute; inset: 0 0 0 32%; overflow: hidden; background: var(--surface-1); }
+	.detail-hero__backdrop img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; filter: saturate(0.72); }
 	.detail-hero__veil { position: absolute; inset: 0; background: linear-gradient(90deg, var(--surface-1) 0%, rgba(14,17,21,0.95) 26%, rgba(14,17,21,0.58) 66%, rgba(14,17,21,0.25) 100%), linear-gradient(0deg, rgba(14,17,21,0.52), transparent 38%); }
 	.detail-hero__content { position: relative; display: flex; align-items: center; gap: 38px; min-height: 470px; padding: 50px; }
 	.detail-poster { flex: 0 0 190px; overflow: hidden; aspect-ratio: 2 / 3; border-radius: 10px; box-shadow: 0 18px 38px rgba(0,0,0,0.32); }

@@ -1,7 +1,8 @@
 [package]
 name = "media-platform-desktop"
-version = "0.1.0"
+version = "0.1.2"
 description = "A fast local media library and player"
+license = "GPL-2.0-or-later"
 edition = "2021"
 
 [workspace]
@@ -16,6 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22"
 media-core = { path = "media-core" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
@@ -43,3 +45,6 @@ incremental = true
 [profile.test]
 debug = 0
 incremental = false
+
+[profile.release.package.media-platform-desktop]
+opt-level = 1

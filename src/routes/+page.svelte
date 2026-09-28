@@ -6,7 +6,7 @@
 	import MediaRow from '$lib/components/MediaRow.svelte';
 	import PosterCard from '$lib/components/PosterCard.svelte';
 	import { isDesktopRuntime, readCatalogPage, readContinueWatching, readPlaybackHistory, readTitleLogo, readTitleTrailer } from '$lib/platform/desktop';
-	import { tmdbImageSize } from '$lib/media/artwork';
+	import { recoverRemoteArtwork, tmdbImageSize } from '$lib/media/artwork';
 	import { loadYouTubeIframeApi, type YouTubePlayer } from '$lib/media/youtube-iframe';
 	import { PLAYBACK_HISTORY_UPDATED_EVENT, usePlayer } from '$lib/player-context';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
@@ -109,6 +109,7 @@
 			.map(({ media }) => media);
 	});
 	let featured = $derived(recentlyWatchedItems[0] ?? continueWatchingItems[0] ?? libraryItems.find((item) => item.backdrop || item.poster) ?? null);
+	let featuredBackdrop = $derived(featured ? tmdbImageSize(featured.backdrop, 'original') : '');
 	let libraryPreview = $derived(libraryItems.filter((item) => item.poster).slice(0, 8));
 	let recentlyAdded = $derived(libraryItems.slice(0, 8));
 
@@ -319,14 +320,16 @@
 <svelte:head><title>Home · Luma</title></svelte:head>
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape') closeHeroTrailer(); }} />
 
-<div class="home-page" class:home-page--empty={!featured && !catalogLoading && (!!catalogError || (!catalogItems.length && !continueWatchingItems.length))} style={featured ? `--backdrop: url("${tmdbImageSize(featured.backdrop, 'original')}")` : undefined}>
+<div class="home-page" class:home-page--empty={!featured && !catalogLoading && (!!catalogError || (!catalogItems.length && !continueWatchingItems.length))}>
 	{#if featured}
 	<section
 		class="featured"
 		aria-labelledby="featured-title"
 		bind:this={heroElement}
 	>
-		<div class="featured__backdrop" aria-hidden="true"></div>
+		<div class="featured__backdrop" aria-hidden="true">
+			{#if featuredBackdrop}<img use:recoverRemoteArtwork class="featured__backdrop-image" src={featuredBackdrop} alt="" />{/if}
+		</div>
 		{#if showHeroVideo && heroTrailer}
 			<div class="featured__video" class:featured__video--ready={heroVideoReady} aria-hidden="true">
 				<iframe
@@ -464,16 +467,11 @@
 	.featured__backdrop {
 		position: absolute;
 		inset: 0;
-		background-image:
-			linear-gradient(90deg, rgba(3, 5, 8, 0.96) 0%, rgba(3, 5, 8, 0.72) 34%, rgba(3, 5, 8, 0.15) 68%, rgba(3, 5, 8, 0.08) 100%),
-			linear-gradient(0deg, rgba(7, 9, 12, 0.98) 0%, rgba(7, 9, 12, 0.22) 34%, rgba(7, 9, 12, 0.08) 75%),
-			var(--backdrop);
-		background-position: center 25%;
-		background-size: cover;
-		filter: saturate(0.84) contrast(1.04);
-		transform: scale(1.008);
+		background: #080a0d;
 		z-index: -2;
 	}
+	.featured__backdrop::after { position: absolute; z-index: 1; inset: 0; background-image: linear-gradient(90deg, rgba(3, 5, 8, 0.96) 0%, rgba(3, 5, 8, 0.72) 34%, rgba(3, 5, 8, 0.15) 68%, rgba(3, 5, 8, 0.08) 100%), linear-gradient(0deg, rgba(7, 9, 12, 0.98) 0%, rgba(7, 9, 12, 0.22) 34%, rgba(7, 9, 12, 0.08) 75%); content: ''; pointer-events: none; }
+	.featured__backdrop-image { position: absolute; z-index: 0; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; object-position: center 25%; filter: saturate(0.84) contrast(1.04); transform: scale(1.008); }
 	.featured__video { position: absolute; inset: 0; z-index: -1; overflow: hidden; opacity: 0; transition: opacity 850ms ease; pointer-events: none; }
 	.featured__video--ready { opacity: 1; }
 	.featured__video iframe { position: absolute; top: 50%; left: 50%; width: 100%; height: max(100%, 56.25vw); min-width: 780px; transform: translate(-50%, -50%); border: 0; pointer-events: none; }
@@ -645,13 +643,8 @@
 	@media (max-width: 760px) {
 		.home-page { --featured-content-bottom: 48px; --featured-content-top: 30px; }
 		.featured { min-height: 360px; }
-		.featured__backdrop {
-			background-image:
-				linear-gradient(0deg, rgba(7, 9, 12, 0.97) 0%, rgba(7, 9, 12, 0.64) 35%, rgba(7, 9, 12, 0.06) 73%),
-				var(--backdrop);
-			background-position: 60% center;
-			filter: saturate(0.83) contrast(1.04);
-		}
+		.featured__backdrop::after { background-image: linear-gradient(0deg, rgba(7, 9, 12, 0.97) 0%, rgba(7, 9, 12, 0.64) 35%, rgba(7, 9, 12, 0.06) 73%); }
+		.featured__backdrop-image { object-position: 60% center; filter: saturate(0.83) contrast(1.04); }
 		.featured__content { min-height: 360px; padding: var(--featured-content-top) 18px var(--featured-content-bottom); }
 		.featured__trailer-button { bottom: 8px; }
 		.featured h1 { max-width: 94%; font-size: clamp(2.75rem, 12vw, 3.6rem); font-weight: 650; line-height: 0.94; }

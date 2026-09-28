@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, setContext } from 'svelte';
+	import { dev } from '$app/environment';
 	import { afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
@@ -243,6 +244,12 @@
 		<aside class="sidebar" aria-label="Application navigation" onwheel={scrollContentFromChrome}>
 			<div class="library-context" aria-label="Luma">
 				<img class="library-wordmark" src="/luma-wordmark.svg" alt="Luma" />
+				{#if dev}
+					<span class="dev-badge" title="Development version" aria-label="Development version">
+						<Icon name="code" size={12} weight="bold" />
+						<span>DEV</span>
+					</span>
+				{/if}
 			</div>
 
 			<a
@@ -407,11 +414,26 @@
 	.library-context {
 		display: flex;
 		align-items: center;
+		gap: 9px;
 		min-height: 44px;
 		padding: 0 9px;
 	}
 
 	.library-wordmark { display: block; width: 72px; height: 24px; object-fit: contain; object-position: left center; }
+	.dev-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 6px;
+		border: 1px solid rgba(255, 190, 112, 0.32);
+		border-radius: 999px;
+		color: #ffc17f;
+		background: rgba(148, 76, 20, 0.2);
+		font-size: 0.56rem;
+		font-weight: 740;
+		letter-spacing: 0.07em;
+		line-height: 1;
+	}
 
 	.sidebar-search {
 		display: flex;

@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tauri::Manager;
 
+mod artwork;
 mod hss_backdrop;
 mod metadata;
 #[cfg(windows)]
@@ -543,6 +544,7 @@ pub fn run() {
                 db_path,
                 scanning: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
+            app.manage(artwork::ArtworkState::new().map_err(std::io::Error::other)?);
             app.manage(
                 tmdb::TmdbState::new(app_data_dir.join("tmdb_read_access_token"))
                     .map_err(std::io::Error::other)?,
@@ -574,6 +576,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             desktop_bootstrap,
+            artwork::load_remote_artwork,
             get_library_status,
             get_catalog_page,
             get_local_title_detail,

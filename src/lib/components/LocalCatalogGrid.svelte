@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
-	import { tmdbImageSize } from '$lib/media/artwork';
+	import { recoverRemoteArtwork, tmdbImageSize } from '$lib/media/artwork';
 	import { usePlayer } from '$lib/player-context';
 	import type { CatalogMedia } from '$lib/types';
 
@@ -31,7 +31,7 @@
 			<div class="catalog-card__poster">
 				<a class="catalog-card__poster-link" href={`/title/${item.id}`} aria-label={`Details for ${item.title}`}>
 					{#if item.posterUrl}
-						<img src={tmdbImageSize(item.posterUrl, 'w780')} alt={`Poster for ${item.title}`} width="780" height="1170" loading={index < 8 ? 'eager' : 'lazy'} decoding="async" />
+						<img use:recoverRemoteArtwork src={tmdbImageSize(item.posterUrl, 'w780')} alt={`Poster for ${item.title}`} width="780" height="1170" loading={index < 8 ? 'eager' : 'lazy'} decoding="async" />
 					{:else}
 						<span class="catalog-card__placeholder" aria-hidden="true"><Icon name={item.kind === 'series' ? 'tv' : 'film'} size={25} /></span>
 					{/if}

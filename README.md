@@ -1,41 +1,56 @@
-# Unnamed Media Platform
+# Luma
 
-Windows-first desktop media library in progress. The product name is intentionally unset; all visible application copy is English.
+Luma is an open-source, Windows desktop media library for organizing and watching a personal movie and TV collection. It scans folders you choose, keeps a local catalog, and brings playback, subtitles, metadata, and torrent management into one interface.
 
-## Current phase
+## What it does
 
-Desktop foundation: reuse the existing Svelte 5/SvelteKit UI in a Tauri 2/WebView2 shell. The catalog and Player are still fixture-backed visual prototypes.
+- Scans local media folders and builds a searchable library with movie and series details.
+- Plays video in the built-in MPV engine or opens it with supported external players.
+- Loads local subtitles, lets you adjust subtitle appearance, and searches OpenSubtitles.
+- Shows artwork and metadata from TMDB and TVmaze.
+- Manages torrent downloads through the bundled libtorrent bridge.
+- Stores the library and playback history locally on your computer.
 
-The current Home and shared shell are the canonical visual reference. Read these files before changing UI:
+Luma does not include a demo library or media files. You select the folders it scans. Metadata and artwork require an internet connection; playback and local library scanning work with your own files.
 
-1. `DESIGN_SYSTEM.md`
-2. `PROJECT_STATE.md`
-3. `DECISIONS.md`
-4. `LUNA_HANDOFF.md`
+## Run from source on Windows
 
-The broader technical plan and autonomous execution protocol live in:
+Install Node.js 22 or later, Rust stable with the MSVC toolchain, Visual Studio C++ Build Tools, CMake, and vcpkg. The desktop build also needs the WebView2 runtime; the installer can download its bootstrapper.
 
-```text
-C:\Users\muris\OneDrive\Imagens\Documentos\ChatGPT\Bountys
-```
+In PowerShell, set `VCPKG_ROOT` to your vcpkg installation and run:
 
-The first local media slice is in progress: desktop Settings can select a folder and index recognized video files into a local SQLite database. The Rust core now keeps stable file identities and serves paginated catalog records through a narrow Tauri command. The visual catalog is still fixture-backed. Codec probing, playback and UPnP/DLNA sharing are not implemented yet. The browser preview cannot select local folders. ADR-013 records UPnP/DLNA as the primary LAN delivery target, with automatic transcoding when needed.
-
-## Development
-
-```sh
-npm install
+```powershell
+npm ci
+npm run check
 npm run desktop:dev
 ```
 
-Validation:
+`desktop:dev` prepares the native playback and torrent engines before starting the live development app. For a production installer, run:
 
-```sh
-npm run check
-npm run build
+```powershell
 npm run desktop:build
 ```
 
-`npm run build` creates the local static frontend in `build/`; the desktop command also compiles Rust and packages the Windows application. The browser preview remains available with `npm run dev` at `http://127.0.0.1:1420/`. See `PROJECT_STATE.md` for the native-build limitation on this machine.
+The installer is written under `src-tauri/target/release/bundle/nsis/`. `npm run build` builds only the frontend; use `npm run desktop:build` to package the Windows app with its native engines.
 
-Do not add product branding, a general-purpose UI kit, eager player loading or large scrolling live-blur surfaces without an accepted architectural decision.
+The torrent bridge uses the `x64-windows-static-md` vcpkg triplet and the pinned baseline in `native/libtorrent-bridge/vcpkg.json`. The preparation script builds the bridge when its source has changed.
+
+## MPV and native binaries
+
+The Windows MPV development archive is pinned in `scripts/prepare-mpv.mjs`. The preparation script downloads the upstream archive only when needed, verifies its SHA-256 checksum, and copies the runtime DLLs into Tauri's ignored `target` directory. No generated engine binaries or personal media are stored in the repository.
+
+The bundled MPV build comes from [mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20260928) and uses [mpv](https://github.com/mpv-player/mpv), licensed under GPL-2.0-or-later. See [Third-party notices](THIRD_PARTY_NOTICES.md) and [LICENSE](LICENSE) for license information.
+
+## Development checks
+
+```powershell
+npm run check
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml --workspace
+```
+
+The Tauri desktop build and native playback engine target Windows. The Vite frontend can be run on its own with `npm run dev`, but features that use the desktop shell or native engines require Tauri.
+
+## License
+
+Luma is available under the GNU General Public License, version 2 or (at your option) any later version. See [LICENSE](LICENSE). Third-party components retain their own licenses as described in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
