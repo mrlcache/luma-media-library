@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
+  <title id="title">Luma</title>
+  <desc id="desc">A home for your movies and series. Dark Luma branding with an abstract collection of media cards.</desc>
+  <defs>
+    <linearGradient id="surface" x2="1" y2="1"><stop stop-color="#151d22"/><stop offset=".65" stop-color="#0d1216"/><stop offset="1" stop-color="#18242b"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#567d8a" stop-opacity=".34"/><stop offset="1" stop-color="#567d8a" stop-opacity="0"/></radialGradient>
+    <linearGradient id="blue" x2=".8" y2="1"><stop stop-color="#4f6d79"/><stop offset="1" stop-color="#111b23"/></linearGradient>
+    <linearGradient id="gold" x2=".8" y2="1"><stop stop-color="#7b6855"/><stop offset="1" stop-color="#1d1e22"/></linearGradient>
+    <linearGradient id="slate" x2=".8" y2="1"><stop stop-color="#526162"/><stop offset="1" stop-color="#121d21"/></linearGradient>
+  </defs>
+  <rect width="1280" height="360" rx="24" fill="url(#surface)"/>
+  <ellipse cx="985" cy="135" rx="360" ry="260" fill="url(#glow)"/>
+  <rect x=".5" y=".5" width="1279" height="359" rx="24" fill="none" stroke="#93b1bd" stroke-opacity=".16"/>
+  <g transform="translate(66 68) scale(.82)" fill="none" stroke="#eaf0f2" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 17v84M57 48v31c0 31 54 31 54 0V48M146 101V49m0 22c0-31 42-31 42 0v30m0-30c0-31 42-31 42 0v30M319 76c0-39-61-39-61 0s61 39 61 0Zm0-27v52"/>
+  </g>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <text x="80" y="224" fill="#eaf0f2" font-size="32" font-weight="500" letter-spacing="-.8">A home for your movies and series.</text>
+    <text x="81" y="260" fill="#9caeb6" font-size="17">Local library. Native playback. Open source.</text>
+    <text x="81" y="316" fill="#81969f" font-size="12" letter-spacing="2.5">MADE FOR WINDOWS</text>
+  </g>
+  <g stroke="#b4ccd5" stroke-opacity=".18">
+    <g transform="translate(858 63) rotate(-9 67 101)">
+      <rect width="134" height="204" rx="14" fill="url(#gold)"/>
+      <path d="M0 153 48 91 79 136 105 61 134 109V190q0 14-14 14H14q-14 0-14-14Z" fill="#0b1118" stroke="none" opacity=".38"/>
+    </g>
+    <g transform="translate(1060 72) rotate(10 67 101)">
+      <rect width="134" height="204" rx="14" fill="url(#slate)"/>
+      <circle cx="77" cy="73" r="38" fill="#adbdba" fill-opacity=".12" stroke="none"/>
+      <path d="M0 144 39 112 93 151 134 117V190q0 14-14 14H14q-14 0-14-14Z" fill="#0c1317" stroke="none" opacity=".5"/>
+    </g>
+    <g transform="translate(957 49)">
+      <rect width="144" height="224" rx="14" fill="url(#blue)"/>
+      <path d="M0 169 39 85 67 128 98 68 144 156V210q0 14-14 14H14q-14 0-14-14Z" fill="#0b141b" stroke="none" opacity=".4"/>
+      <circle cx="72" cy="112" r="25" fill="#eaf0f2" fill-opacity=".92" stroke="none"/>
+      <path d="m67 101 15 11-15 11Z" fill="#1a2a34" stroke="none"/>
+      <rect x="17" y="198" width="110" height="3" rx="1.5" fill="#bacbd2" fill-opacity=".2" stroke="none"/>
+      <rect x="17" y="198" width="34" height="3" rx="1.5" fill="#bfdce6" stroke="none"/>
+    </g>
+  </g>
+</svg>
