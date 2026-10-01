@@ -2,6 +2,12 @@
 
 Luma is an open-source, Windows desktop media library for organizing and watching a personal movie and TV collection. It scans folders you choose, keeps a local catalog, and brings playback, subtitles, metadata, and torrent management into one interface.
 
+## Download for Windows
+
+[Download the Luma 0.1.3 installer (Windows x64)](https://github.com/mrlcache/luma-media-library/releases/download/v0.1.3/Luma_0.1.3_x64-setup.exe).
+
+Open the downloaded `.exe` to start the installation wizard. The installer includes the MPV playback engine and the libtorrent bridge. See [Releases](https://github.com/mrlcache/luma-media-library/releases) for release notes and downloads.
+
 ## What it does
 
 - Scans local media folders and builds a searchable library with movie and series details.
