@@ -12,6 +12,7 @@
 <article class:poster-card--home={variant === 'home'} class:poster-card--catalog={variant === 'catalog'} class="poster-card">
 	<div class="poster-card__art" style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
 		<a class="poster-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}, ${media.year}`} style={variant === 'home' ? 'corner-shape: squircle' : undefined}>
+			{#if media.poster}
 			<img
 				use:recoverRemoteArtwork
 				src={media.poster}
@@ -21,6 +22,7 @@
 				loading={priority ? 'eager' : 'lazy'}
 				decoding="async"
 			/>
+			{/if}
 			<div class="poster-card__scrim"></div>
 			{#if media.progress}
 				<div class="poster-card__progress" aria-label={`${Math.round(media.progress * 100)} percent watched`}>

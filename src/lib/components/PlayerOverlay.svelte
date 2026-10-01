@@ -177,7 +177,7 @@
 			isPlaying = false;
 			isLoading = false;
 			delete document.documentElement.dataset.nativePlayer;
-			playbackError = error instanceof Error ? error.message : `Could not start ${desktopPlayerLabel()}.`;
+			playbackError = error instanceof Error ? error.message : typeof error === 'string' && error.trim() ? error : `Could not start ${desktopPlayerLabel()}.`;
 		} finally {
 			desktopPlayerBusy = false;
 		}

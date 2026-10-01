@@ -51,6 +51,14 @@ cargo test --manifest-path src-tauri/Cargo.toml --workspace
 
 The Tauri desktop build and native playback engine target Windows. The Vite frontend can be run on its own with `npm run dev`, but features that use the desktop shell or native engines require Tauri.
 
+## Installed app troubleshooting
+
+Settings shows the running desktop version. Release 0.1.3 also reports metadata errors after a library refresh and preserves the native player's error message when playback cannot start.
+
+The catalog and metadata configuration are stored under `%APPDATA%\local.media.platform`. An application started by a packaged development tool can inherit Windows AppData virtualization and read a private profile under that tool's package `LocalCache\Roaming` directory. For release verification, open Luma through its Windows Start Menu shortcut and check its catalog there. A matching executable does not prove that both launches use the same library data.
+
+If two profiles exist, back up both databases with SQLite's backup API before repairing them. Match media by the library's canonical folder path and relative file path when transferring metadata; numeric media IDs can differ between profiles. Preserve the installed profile's playback history and keep credentials and database backups out of Git.
+
 ## License
 
 Luma is available under the GNU General Public License, version 2 or (at your option) any later version. See [LICENSE](LICENSE). Third-party components retain their own licenses as described in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -127,10 +127,10 @@
 	<a class="back-link" href={data.item.kind === 'movie' ? '/library?type=movie' : '/library?type=series'}><Icon name="arrow-left" size={15} />Back to {data.item.kind === 'movie' ? 'movies' : 'series'}</a>
 
 	<section class="detail-hero">
-		<div class="detail-hero__backdrop" aria-hidden="true"><img use:recoverRemoteArtwork src={data.item.backdrop} alt="" /></div>
+		<div class="detail-hero__backdrop" aria-hidden="true">{#if data.item.backdrop || data.item.poster}<img use:recoverRemoteArtwork src={data.item.backdrop || data.item.poster} alt="" />{/if}</div>
 		<div class="detail-hero__veil"></div>
 		<div class="detail-hero__content">
-			<div class="detail-poster"><img use:recoverRemoteArtwork src={data.item.poster} alt={`Poster for ${data.item.title}`} width="520" height="780" /></div>
+			<div class="detail-poster">{#if data.item.poster}<img use:recoverRemoteArtwork src={data.item.poster} alt={`Poster for ${data.item.title}`} width="520" height="780" />{/if}</div>
 			<div class="detail-copy">
 				<p class="detail-kind">{data.item.kind === 'series' ? 'Series' : 'Movie'} <span>·</span> {data.item.year}</p>
 				<h1 class="detail-title" aria-label={data.item.title}>

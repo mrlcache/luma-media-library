@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir, readdir, stat, copyFile, rename, rm, readFile } from 'node:fs/promises';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
+import { mkdir, readdir, stat, copyFile, rename, rm } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -38,7 +38,9 @@ if (!existsSync(archivePath) || (await stat(archivePath)).size === 0) {
 	}
 }
 
-const archiveHash = createHash('sha256').update(await readFile(archivePath)).digest('hex');
+const archiveHasher = createHash('sha256');
+for await (const chunk of createReadStream(archivePath)) archiveHasher.update(chunk);
+const archiveHash = archiveHasher.digest('hex');
 if (archiveHash !== expectedSha256) throw new Error(`MPV archive checksum mismatch: expected ${expectedSha256}, got ${archiveHash}.`);
 
 await mkdir(extractionPath, { recursive: true });

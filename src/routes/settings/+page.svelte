@@ -8,6 +8,7 @@
 		rescanLibrary,
 		scanLibrary,
 		readLibraryStatus,
+		readDesktopBootstrap,
 		type LibraryStatus
 	} from '$lib/platform/desktop';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
@@ -27,6 +28,7 @@
 	let loadingLibrary = $state(true);
 	let scanning = $state(false);
 	let libraryFeedback = $state('');
+	let appVersion = $state('');
 
 	onMount(() => {
 		const appearance = readAppearancePreferences();
@@ -40,6 +42,7 @@
 		subtitleSize = playback.subtitleSize;
 		subtitlePosition = playback.subtitlePosition / 1.5;
 		void refreshLibraryStatus();
+		void readDesktopBootstrap().then((bootstrap) => { appVersion = bootstrap?.version ?? ''; }).catch(() => {});
 		const acrylicRequester = Symbol('Settings surface');
 		requestNativeAcrylic(acrylicRequester, true);
 		return () => requestNativeAcrylic(acrylicRequester, false);
@@ -68,10 +71,10 @@
 
 			scanning = true;
 			const result = await scanLibrary(folder);
-			libraryFeedback = `${result.fileCount} video files indexed in ${result.rootName}.`;
+			libraryFeedback = `${result.fileCount} video files indexed in ${result.rootName}.${result.metadataError ? ` Metadata unavailable: ${result.metadataError}` : ''}`;
 			libraryStatus = await readLibraryStatus();
 		} catch (error) {
-			libraryFeedback = error instanceof Error ? error.message : 'The library scan could not finish.';
+			libraryFeedback = error instanceof Error ? error.message : typeof error === 'string' ? error : 'The library scan could not finish.';
 		} finally {
 			scanning = false;
 		}
@@ -82,10 +85,10 @@
 		scanning = true;
 		try {
 			const result = await rescanLibrary();
-			libraryFeedback = `Library refreshed: ${result.fileCount} video files across ${result.rootCount} folders.`;
+			libraryFeedback = `Library refreshed: ${result.fileCount} video files across ${result.rootCount} folders.${result.metadataError ? ` Metadata unavailable: ${result.metadataError}` : ''}`;
 			libraryStatus = await readLibraryStatus();
 		} catch (error) {
-			libraryFeedback = error instanceof Error ? error.message : 'The library refresh could not finish.';
+			libraryFeedback = error instanceof Error ? error.message : typeof error === 'string' ? error : 'The library refresh could not finish.';
 		} finally {
 			scanning = false;
 		}
@@ -205,6 +208,7 @@
 					</div>
 				</div>
 				<div class="setting-row setting-row--meta"><span>Folders</span><strong>{loadingLibrary ? '—' : `${libraryStatus?.rootCount ?? 0} added`}</strong></div>
+				{#if appVersion}<div class="setting-row setting-row--meta"><span>Luma version</span><strong>{appVersion}</strong></div>{/if}
 				<div class="setting-row setting-row--meta"><span>Last updated</span><strong>{formatScanTime(libraryStatus?.lastScanAt)}</strong></div>
 				<div class="server-action-row">
 					<button class="settings-action" type="button" disabled={!desktopAvailable || loadingLibrary || scanning} onclick={libraryStatus?.rootCount ? refreshLibrary : addOrScanFolder}>
