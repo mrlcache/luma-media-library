@@ -66,6 +66,7 @@
 	let playerMenuOpen = $state(false);
 	let mobileSourceUrl = $state('');
 	let transcoding = $state(false);
+	let activeTranscoding = $state(false);
 	let transcodeQuality = $state('auto');
 	let transcodeBitrate = $state(0);
 	const bitrateOptions = $derived((bitratePresets[transcodeQuality] || []).map(value=>({value,label:`${value / 1_000_000} Mbps`})));
@@ -276,7 +277,7 @@
 
 	function seekBy(amount: number) {
 		if (previewOnly) { currentTime = Math.min(duration, Math.max(0, currentTime + amount)); return; }
-		if (mobilePlayer && transcoding) { void loadMobileStream(Math.min(duration || 86400, Math.max(0,currentTime + amount))); return; }
+		if (mobilePlayer && activeTranscoding) { void loadMobileStream(Math.min(duration || 86400, Math.max(0,currentTime + amount))); return; }
 		if (activeEngine) {
 			void nativePlayerAction('seek', Math.min(duration || Number.MAX_SAFE_INTEGER, Math.max(0, currentTime + amount))).then(applyNativeSnapshot).catch(console.warn);
 			revealControls();
@@ -322,22 +323,22 @@
 			return;
 		}
 		if (!video) return;
-		if (mobilePlayer && transcoding) { void loadMobileStream(duration * Number((event.currentTarget as HTMLInputElement).value) / 100); return; }
+		if (mobilePlayer && activeTranscoding) { void loadMobileStream(duration * Number((event.currentTarget as HTMLInputElement).value) / 100); return; }
 		video.currentTime = duration * Number((event.currentTarget as HTMLInputElement).value) / 100;
 		revealControls();
 	}
 
 	function onTimeUpdate() {
 		if (!video) return;
-		currentTime = video.currentTime + (transcoding ? transcodeOffset : 0);
-		if (!transcoding) duration = Number.isFinite(video.duration) ? video.duration : duration;
+		currentTime = video.currentTime + (activeTranscoding ? transcodeOffset : 0);
+		if (!activeTranscoding) duration = Number.isFinite(video.duration) ? video.duration : duration;
 		if (Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
 	}
 
 	async function persistProgress() {
 		const mediaId = Number(media.id);
-		const position = activeEngine || transcoding ? currentTime : video?.currentTime;
-		const length = activeEngine || transcoding ? duration : video?.duration;
+		const position = activeEngine || activeTranscoding ? currentTime : video?.currentTime;
+		const length = activeEngine || activeTranscoding ? duration : video?.duration;
 		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || !Number.isFinite(position) || !Number.isFinite(length) || !length || length <= 0) return;
 		lastSavedPosition = position!;
 		try { await savePlaybackProgress(mediaId, position!, length); }
@@ -356,7 +357,7 @@
 	function onLoadedMetadata() {
 		if (!video) return;
 		for(const track of Array.from(video.textTracks))setCueOffset(track);
-		if (transcoding) { currentTime = transcodeOffset; isLoading = false; video.playbackRate = playbackRate; readAudioTracks(); return; }
+		if (activeTranscoding) { currentTime = transcodeOffset; isLoading = false; video.playbackRate = playbackRate; readAudioTracks(); return; }
 		duration = Number.isFinite(video.duration) ? video.duration : 0;
 		if(mobilePendingSeek!==null){video.currentTime=Math.min(Math.max(0,mobilePendingSeek),Math.max(0,duration-.1));mobilePendingSeek=null;}
 		else if (resumePosition > 15 && resumePosition < duration - 10) video.currentTime = resumePosition;
@@ -433,8 +434,8 @@
 		for (const cue of Array.from(track.cues)) {
 			if(!originalCueTimes.has(cue))originalCueTimes.set(cue,[cue.startTime,cue.endTime]);
 			const times=originalCueTimes.get(cue)!;
-			cue.startTime=Math.max(0,times[0]-(transcoding?transcodeOffset:0));
-			cue.endTime=Math.max(0,times[1]-(transcoding?transcodeOffset:0));
+			cue.startTime=Math.max(0,times[0]-(activeTranscoding?transcodeOffset:0));
+			cue.endTime=Math.max(0,times[1]-(activeTranscoding?transcodeOffset:0));
 			if (cue instanceof VTTCue) cue.line = subtitleOffset === 0 ? 'auto' : -(subtitleOffset * 1.5);
 		}
 	}
@@ -663,16 +664,19 @@
 
 	async function loadMobileStream(position=0) {
 		const attempt=++mobileLoadAttempt;
+		const requestedTranscoding = transcoding;
+		const requestedQuality = transcodeQuality;
+		const requestedBitrate = transcodeBitrate;
 		mobileMetadataAbort?.abort();
 		const controller=new AbortController();mobileMetadataAbort=controller;
 		const metadataTimeout=setTimeout(()=>controller.abort(),20000);
 		playbackError='';isLoading=true;
 		try {
 			const url=new URL(mobileSourceUrl);
-			if(transcoding){
+			if(requestedTranscoding){
 				url.pathname += '/compatible';url.searchParams.set('start',String(Math.max(0,position)));
-				url.searchParams.set('quality',transcodeQuality);
-				url.searchParams.set('bitrate',String(transcodeBitrate));
+				url.searchParams.set('quality',requestedQuality);
+				url.searchParams.set('bitrate',String(requestedBitrate));
 				url.searchParams.set('session',mobileStreamSession);
 				const metadata=await fetch(url,{method:'HEAD',cache:'no-store',signal:controller.signal});
 				if(!metadata.ok)throw new Error('Could not start transcoding on your computer. Check that Luma is updated and FFmpeg is available.');
@@ -682,7 +686,8 @@
 			}
 			if(attempt!==mobileLoadAttempt||playerDisposed)return;
 			video.pause();video.removeAttribute('src');video.load();mediaReady=false;isPlaying=false;
-			transcodeOffset=transcoding?position:0;resumePosition=transcoding?0:position;mobilePendingSeek=transcoding?null:position;
+			activeTranscoding=requestedTranscoding;
+			transcodeOffset=activeTranscoding?position:0;resumePosition=activeTranscoding?0:position;mobilePendingSeek=activeTranscoding?null:position;
 			currentTime=position;video.src=url.toString();video.load();video.playbackRate=playbackRate;
 			try {await video.play();} catch(error){if(error instanceof Error && error.name==='NotAllowedError'){isLoading=false;controlsVisible=true;}else throw error;}
 		}catch(error){if(attempt===mobileLoadAttempt&&!playerDisposed){isLoading=false;playbackError=error instanceof Error && error.name==='AbortError'?'Your computer took too long to prepare the stream. Try again.':error instanceof Error?error.message:String(error);}}
@@ -700,7 +705,7 @@
 	}
 	async function toggleTranscoding(){
 		if(!canTranscode)return;
-		transcoding=!transcoding;playerMenuOpen=false;
+		transcoding=!(previewOnly ? transcoding : activeTranscoding);playerMenuOpen=false;
 		rememberTranscoding();
 		if(previewOnly)return;
 		await loadMobileStream(currentTime || resumePosition);
@@ -901,7 +906,7 @@
 					{#if playerMenuOpen}
 						{#if mobilePlayer}
 							<div class="player-options" role="group" aria-label="Playback options">
-								<button type="button" role="switch" aria-checked={transcoding} disabled={!canTranscode || isLoading} onclick={toggleTranscoding}>Transcoding <span>{transcoding?'On':'Off'}</span></button>
+								<button type="button" role="switch" aria-checked={previewOnly ? transcoding : activeTranscoding} disabled={!canTranscode || isLoading} onclick={toggleTranscoding}>Transcoding <span>{(previewOnly ? transcoding : activeTranscoding)?'On':'Off'}</span></button>
 								<p>{canTranscode?'Convert unsupported formats on your computer.':'Transcoding is available for media streamed from your computer.'}</p>
 								{#if canTranscode}
 									<span class="player-options__label">Quality</span>
