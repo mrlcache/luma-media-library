@@ -4,6 +4,7 @@
 
 <script lang="ts">
 	import AppSelect from '$lib/components/AppSelect.svelte';
+	import { bitratePresets, readTranscodePreferences, saveTranscodePreferences } from '$lib/platform/transcode-preferences';
 	import { onMount, tick } from 'svelte';
 	import { dev } from '$app/environment';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
@@ -67,7 +68,6 @@
 	let transcoding = $state(false);
 	let transcodeQuality = $state('auto');
 	let transcodeBitrate = $state(0);
-	const bitratePresets: Record<string,number[]> = { '480p':[800000,1200000,2000000], '720p':[1500000,2500000,4000000], '1080p':[3000000,5000000,8000000] };
 	const bitrateOptions = $derived((bitratePresets[transcodeQuality] || []).map(value=>({value,label:`${value / 1_000_000} Mbps`})));
 	const mobileStreamSession = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,14)}`;
 	let mobileMetadataAbort: AbortController | undefined;
@@ -701,26 +701,38 @@
 	async function toggleTranscoding(){
 		if(!canTranscode)return;
 		transcoding=!transcoding;playerMenuOpen=false;
+		rememberTranscoding();
 		if(previewOnly)return;
 		await loadMobileStream(currentTime || resumePosition);
 	}
 	async function changeTranscodeQuality(quality: string) {
 		transcodeQuality = quality;
 		transcodeBitrate=bitratePresets[quality]?.[1] || 0;
-		if (!canTranscode || previewOnly) return;
+		if (!canTranscode) return;
 		transcoding = true;
+		rememberTranscoding();
+		if (previewOnly) return;
 		playerMenuOpen = false;
 		await loadMobileStream(currentTime || resumePosition);
 	}
 	async function changeTranscodeBitrate(bitrate: number) {
 		transcodeBitrate=bitrate;
-		if(!canTranscode || previewOnly)return;
+		if(!canTranscode)return;
 		transcoding=true;playerMenuOpen=false;
+		rememberTranscoding();
+		if(previewOnly)return;
 		await loadMobileStream(currentTime || resumePosition);
+	}
+	function rememberTranscoding() {
+		if (mobilePlayer && !previewOnly) saveTranscodePreferences({ enabled: transcoding, quality: transcodeQuality, bitrate: transcodeBitrate });
 	}
 
 	onMount(() => {
 		if (previewOnly) { isLoading = false; currentTime = 854; duration = 3120; return; }
+		if (mobilePlayer) {
+			const saved = readTranscodePreferences();
+			transcoding = saved.enabled; transcodeQuality = saved.quality; transcodeBitrate = saved.bitrate;
+		}
 		playerDisposed = false;
 		suspendNativeAcrylicForPlayback(true);
 		selectedDesktopPlayer = readPreferredDesktopPlayer();
@@ -771,16 +783,11 @@
 				activeSubtitle = preferredSubtitleIndex(tracks);
 				await tick();
 				if (import.meta.env.VITE_LUMA_MOBILE === 'true') {
-					video.src = await localMediaUrl(source.path);
-					mobileSourceUrl = video.src;
-					video.load();
-					try { await video.play(); }
-					catch (error) {
-						// Android may require a fresh tap after asynchronous pairing/media requests.
-						// Keep our Play control available instead of treating this as a broken file.
-						if (error instanceof Error && error.name === 'NotAllowedError') { isLoading = false; isPlaying = false; controlsVisible = true; }
-						else throw error;
-					}
+					mobileSourceUrl = await localMediaUrl(source.path);
+					// Files stored on this phone have no computer transcoder.
+					// Keep the saved preference for the next computer-backed video.
+					if (!canTranscode) transcoding = false;
+					await loadMobileStream(resumePosition);
 				} else await startSelectedEngine();
 			})
 			.catch((error) => {
