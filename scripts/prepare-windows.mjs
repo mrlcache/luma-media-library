@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readdir, stat, mkdir, copyFile } from 'node:fs/promises';
+import { readdir, stat, mkdir, copyFile, cp } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,39 @@ await mkdir(releaseRuntime, {recursive:true});
 await copyFile(process.execPath, join(releaseRuntime,'node.exe'));
 for(const file of ['release-service.mjs','torrent-search-preview.mjs','prowlarr-preview.mjs']) {
     await copyFile(join(repoRoot,'scripts',file),join(releaseRuntime,file));
+}
+
+// Bundle the production media server beside its Node entry point. Keep its
+// dependency tree small: only fast-xml-parser and its runtime dependencies
+// are needed by the UPnP protocol implementation.
+const mediaServerRoot = join(repoRoot, 'media-server');
+const bundledMediaServer = join(releaseRuntime, 'media-server');
+await mkdir(bundledMediaServer, {recursive:true});
+await mkdir(join(releaseRuntime, 'scripts'), {recursive:true});
+for (const file of ['torrent-search-preview.mjs', 'prowlarr-preview.mjs']) {
+    await copyFile(join(repoRoot, 'scripts', file), join(releaseRuntime, 'scripts', file));
+}
+await cp(join(mediaServerRoot, 'src'), join(bundledMediaServer, 'src'), {recursive:true, force:true});
+await cp(join(mediaServerRoot, 'web'), join(bundledMediaServer, 'web'), {recursive:true, force:true});
+await mkdir(join(bundledMediaServer, 'node_modules'), {recursive:true});
+for (const dependency of [
+    '@nodable/entities', 'anynum', 'fast-xml-builder', 'fast-xml-parser',
+    'is-unsafe', 'path-expression-matcher', 'strnum', 'xml-naming'
+]) {
+    const source = join(mediaServerRoot, 'node_modules', dependency);
+    if (!existsSync(source)) {
+        throw new Error(`Media server dependency ${dependency} is missing. Run npm ci --prefix media-server and prepare the desktop again.`);
+    }
+    await cp(source, join(bundledMediaServer, 'node_modules', dependency), {recursive:true, force:true});
+}
+const mediaTools = join(mediaServerRoot, 'tools');
+await mkdir(join(bundledMediaServer, 'tools'), {recursive:true});
+for (const file of ['ffmpeg.exe', 'ffprobe.exe', 'LICENSE-FFmpeg.txt']) {
+    const source = join(mediaTools, file);
+    if (existsSync(source)) await copyFile(source, join(bundledMediaServer, 'tools', file));
+}
+if (!existsSync(join(bundledMediaServer, 'tools', 'ffmpeg.exe')) || !existsSync(join(bundledMediaServer, 'tools', 'ffprobe.exe'))) {
+    console.warn('FFmpeg or ffprobe is missing; the installed media server will offer original playback only.');
 }
 
 function run(command, args) {

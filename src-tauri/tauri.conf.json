@@ -38,8 +38,8 @@
     "targets": ["nsis"],
     "resources": {
       "../native/libtorrent-bridge/build/Release/media_libtorrent_bridge.dll": "torrent-engine/media_libtorrent_bridge.dll",
-      "target/player-engines": "player-engines"
-      ,"target/release-service": "release-service"
+      "target/player-engines": "player-engines",
+      "target/release-service": "release-service"
     },
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "windows": {

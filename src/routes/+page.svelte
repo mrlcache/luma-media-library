@@ -13,7 +13,7 @@
 	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
 	import { rightEdgeHint } from '$lib/scroll/right-edge-hint';
 	import type { CatalogMedia, ContinueWatchingItem, MediaItem, PlaybackHistoryItem, TmdbTrailer } from '$lib/types';
-	import { cachedDiscovery, discoveryMedia, readDiscovery, prepareDiscoveryLogo, readDiscoveryTrailer } from '$lib/media/discovery';
+	import { cachedDiscovery, discoveryMedia, readDiscovery, prepareDiscoveryLogo, readDiscoveryTrailer, decodeHeroArtwork } from '$lib/media/discovery';
 	import { homeSnapshot } from '$lib/media/home-state';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
 	const mobilePreview = isMobilePreview();
@@ -137,10 +137,10 @@
 		const item = heroItems[heroIndex % Math.max(1, heroItems.length)];
 		if (!item) { featured = null; return; }
 		let cancelled = false;
-		void prepareDiscoveryLogo(item).then(async (logo) => {
-			const backdrop = new Image();
-			backdrop.src = tmdbImageSize(item.backdrop, mobilePreview ? 'w780' : 'original');
-			try { await backdrop.decode(); } catch { /* The artwork recovery action can retry unavailable backdrops. */ }
+		void Promise.all([
+			prepareDiscoveryLogo(item),
+			decodeHeroArtwork(tmdbImageSize(item.backdrop, mobilePreview ? 'w780' : 'original'))
+		]).then(([logo]) => {
 			if (cancelled) return;
 			// Commit the title and its decoded logo together, without a text placeholder.
 			heroLogoUrl = logo;
@@ -471,11 +471,11 @@
 			{#if !recommendationSections.some((section) => section.title === 'For you') && continueWatchingItems.length}
 				<div class="home-section"><MediaRow title="Continue watching" items={continueWatchingItems} showProgress /></div>
 			{/if}
-			{#if discoveryError}<div class="discovery-feedback" role="status"><span>{discoveryError}</span><button onclick={() => retryDiscovery()}>Retry</button></div>{/if}
-			{#if catalogError}<p class="discovery-feedback" role="status">{catalogError}</p>{/if}
+			{#if discoveryError && (recommendationSections.length || continueWatchingItems.length || recentlyAdded.length)}<div class="discovery-feedback" role="status"><span>{discoveryError}</span><button onclick={() => retryDiscovery()}>Retry</button></div>{/if}
+			{#if catalogError && (recommendationSections.length || continueWatchingItems.length || recentlyAdded.length)}<p class="discovery-feedback" role="status">{catalogError}</p>{/if}
 			{#if recentlyAdded.length}<div class="home-section home-section--last"><MediaRow title="Recently added" items={recentlyAdded} /></div>{/if}
 			{#if !discoveryLoading && !recommendationSections.length && !continueWatchingItems.length && !recentlyAdded.length}
-				<EmptyLibraryCard title="Discover your next watch" description={discoveryError || 'Connect TMDb in Settings to discover movies and series.'} showSettingsLink fullHeight />
+				<EmptyLibraryCard title="Discover your next watch" description={discoveryError || catalogError || 'Connect TMDb in Settings to discover movies and series.'} showSettingsLink fullHeight />
 			{/if}
 		</div>
 	</div>

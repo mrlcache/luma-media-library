@@ -8,13 +8,13 @@ import { createReleaseSearch } from '../../scripts/torrent-search-preview.mjs';
 const releaseSearch = createReleaseSearch();
 
 const workspace=path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const runtime=path.join(workspace,'.runtime');mkdirSync(runtime,{recursive:true});
+const runtime=path.resolve(process.env.LUMA_SERVER_RUNTIME||path.join(workspace,'.runtime'));mkdirSync(runtime,{recursive:true});
 const options={};
 for(let i=2;i<process.argv.length;i++){const arg=process.argv[i];if(arg.startsWith('--'))options[arg.slice(2)]=process.argv[i+1]?.startsWith('--')||!process.argv[i+1]?true:process.argv[++i];}
 const interfaces=lanInterfaces();
 const selected=options.host?interfaces.find(i=>i.address===options.host):interfaces.find(i=>i.name.toLowerCase().includes('wi'))||interfaces[0];
 if(!selected)throw new Error('No local IPv4 network interface. Pass --host with an active local address.');
-const dbPath=options.db||path.join(process.env.APPDATA||'','local.media.platform','media-library.sqlite3');
+const dbPath=path.resolve(options.db||process.env.LUMA_SERVER_DB||path.join(process.env.LUMA_APP_DATA||path.join(process.env.APPDATA||'','local.media.platform'),'media-library.sqlite3'));
 if(!existsSync(dbPath))throw new Error('Luma library not found. Pass --db with the library database path.');
 const identityFile=path.join(runtime,'identity.json');
 const uuid=existsSync(identityFile)?JSON.parse(readFileSync(identityFile,'utf8')).uuid:randomUUID();
@@ -35,6 +35,20 @@ const admin=http.createServer(async(req,res)=>{
     const url=new URL(req.url,origin);
     if(url.pathname==='/'&&req.method==='GET'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https://image.tmdb.org data:; object-src 'none'; frame-ancestors 'none'"});res.end(page);return;}
     if(url.pathname==='/manrope.woff2'&&req.method==='GET'){const font=path.join(workspace,'web','manrope.woff2');if(existsSync(font)){res.writeHead(200,{'Content-Type':'font/woff2'});res.end(readFileSync(font));return;}}
+    const mobileStream=/^\/api\/mobile-stream\/(file-\d+)$/.exec(url.pathname);
+    if(mobileStream&&['GET','HEAD'].includes(req.method)){
+      if(req.headers['x-luma-control']!=='1'){res.writeHead(403);res.end();return;}
+      const start=Number(url.searchParams.get('start')||0);
+      if(!Number.isFinite(start)||start<0||start>86400){res.writeHead(400,{'Content-Type':'text/plain'});res.end('Invalid start position');return;}
+      const file=await media.catalog.file(mobileStream[1]);
+      if(!file){res.writeHead(404,{'Content-Type':'text/plain'});res.end('Media not found');return;}
+      if(!media.transcoder.available){res.writeHead(503,{'Content-Type':'text/plain'});res.end('FFmpeg unavailable');return;}
+      if(req.method==='HEAD'){
+        const plan=await media.transcoder.plan(file,'mp4');
+        res.writeHead(200,{'Content-Type':'video/mp4','X-Luma-Duration':String(plan.duration),'Cache-Control':'no-store','Access-Control-Allow-Origin':'*','Access-Control-Expose-Headers':'X-Luma-Duration'});res.end();return;
+      }
+      return await media.transcoder.stream(file,req,res,start,'mp4');
+    }
     let result;
     if(url.pathname==='/api/dev-version'&&req.method==='GET')result={version:devVersion,enabled:Boolean(options.dev)};
     else if(url.pathname==='/api/releases'&&req.method==='GET') {

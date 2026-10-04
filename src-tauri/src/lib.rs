@@ -19,6 +19,7 @@ mod tmdb;
 mod recommendations;
 mod torrent_engine;
 mod mobile_bridge;
+mod media_server;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +40,17 @@ fn desktop_bootstrap(frame_state: tauri::State<'_, NativeWindowFrameState>) -> D
         native_window_frame: frame_state.0.load(Ordering::Relaxed),
         window_shape: "system",
     }
+}
+
+#[tauri::command]
+async fn media_server_request(
+    action: String,
+    state: tauri::State<'_, media_server::MediaServerState>,
+) -> Result<serde_json::Value, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.request(&action))
+        .await
+        .map_err(|error| format!("Media server request could not finish: {error}"))?
 }
 
 #[derive(Default)]
@@ -595,6 +607,7 @@ pub fn run() {
             }
             app.manage(native_player::NativePlayerState::default());
             let resource_dir = app.path().resource_dir().unwrap_or_else(|_| app_data_dir.clone());
+            app.manage(media_server::MediaServerState::new(app_data_dir.clone(), resource_dir.clone()));
             let torrent_state = torrent_engine::TorrentState::new(&app_data_dir, &resource_dir);
             torrent_state.start_save_worker();
             torrent_state.start_library_worker(app.handle().clone());
@@ -651,6 +664,7 @@ pub fn run() {
             get_library_status,
             get_catalog_page,
             get_local_title_detail,
+            media_server_request,
             resolve_media_file,
             save_playback_progress,
             record_playback_activity,

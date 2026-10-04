@@ -6,6 +6,7 @@ import { createReadStream, statSync } from 'node:fs';
 import path from 'node:path';
 const mobileDemo = process.env.VITE_LUMA_MOBILE_DEMO === 'true';
 const mobileBuild = process.env.VITE_LUMA_MOBILE === 'true';
+const desktopBuild = process.env.LUMA_DESKTOP_BUILD === 'true';
 const mobileDemoAssets: Plugin = {
 	name: 'luma-mobile-demo-assets', apply: 'serve',
 	configureServer(server) {
@@ -43,7 +44,7 @@ export default defineConfig({
 		discoveryDiagnostics,
 		torrentSearchPreview(),
 		sveltekit({
-			outDir: mobileBuild ? '.artifacts/mobile-svelte-kit' : '.svelte-kit',
+			outDir: mobileBuild ? '.artifacts/mobile-svelte-kit' : desktopBuild ? '.artifacts/desktop-svelte-kit' : '.svelte-kit',
 			compilerOptions: {
 				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.
 				runes: ({ filename }) =>

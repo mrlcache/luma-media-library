@@ -88,11 +88,43 @@ async function asset<T>(media: MediaItem, type: 'logo' | 'trailer'): Promise<T |
 	}
 	return await request as T | null;
 }
-export const readDiscoveryLogo = (media: MediaItem) => asset<string>(media, 'logo');
+const logoStorageKey = 'luma.logo-urls.v1';
+type LogoEntry = {url:string|null;time:number};
+function logoUrls(): Record<string,LogoEntry> {
+	try {
+		const value=JSON.parse(localStorage.getItem(logoStorageKey) ?? '{}');
+		if(!value || typeof value!=='object' || Array.isArray(value))return {};
+		return Object.fromEntries(Object.entries(value).filter(([,entry])=>{
+			const saved=entry as LogoEntry|null;
+			return saved && Number.isFinite(saved.time) && (saved.url===null || (typeof saved.url==='string' && saved.url.startsWith('https://image.tmdb.org/')));
+		})) as Record<string,LogoEntry>;
+	} catch { return {}; }
+}
+export async function readDiscoveryLogo(media: MediaItem): Promise<string|null> {
+	if(!media.tmdbId || !isDesktopRuntime())return null;
+	const entries=logoUrls(), saved=entries[media.id];
+	if(saved && Number.isFinite(saved.time) && Date.now()-saved.time < 7*24*60*60*1000 && (saved.url===null || (typeof saved.url==='string' && saved.url.startsWith('https://image.tmdb.org/')))) return saved.url;
+	const url=await asset<string>(media,'logo');
+	entries[media.id]={url,time:Date.now()};
+	// Persist only URL metadata, never decoded PNGs or base64 artwork.
+	const recent=Object.entries(entries).sort((a,b)=>b[1].time-a[1].time).slice(0,32);
+	try { localStorage.setItem(logoStorageKey,JSON.stringify(Object.fromEntries(recent))); } catch { /* Browsing still works without persistent storage. */ }
+	return url;
+}
 export const readDiscoveryTrailer = (media: MediaItem) => asset<TmdbTrailer>(media, 'trailer');
 
 const preparedLogos = new Map<string, Promise<string | null>>();
 const decodedImages = new Map<string, HTMLImageElement>();
+export async function decodeHeroArtwork(url:string): Promise<HTMLImageElement|null> {
+	const image=new Image();
+	let timeout:ReturnType<typeof setTimeout>|undefined;
+	try {
+		image.src=url;
+		await Promise.race([image.decode(),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Artwork timeout')),8000);})]);
+		return image;
+	} catch { image.src=''; return null; }
+	finally { if(timeout)clearTimeout(timeout); }
+}
 
 export async function prepareDiscoveryLogo(media: MediaItem): Promise<string | null> {
 	let pending = preparedLogos.get(media.id);
@@ -101,10 +133,13 @@ export async function prepareDiscoveryLogo(media: MediaItem): Promise<string | n
 			if (!source) return null;
 			// The hero displays this at at most 480px; avoid decoding an oversized original PNG.
 			const url = tmdbImageSize(source, 'w500');
-			const image = new Image();
-			image.src = url;
-			try { await image.decode(); }
-			catch { preparedLogos.delete(media.id); return null; }
+			const image = await decodeHeroArtwork(url);
+			if(!image) {
+				preparedLogos.delete(media.id); assets.delete(`${media.id}:logo`);
+				const entries=logoUrls();delete entries[media.id];
+				try {localStorage.setItem(logoStorageKey,JSON.stringify(entries));} catch { /* Retry on the next request. */ }
+				return null;
+			}
 			decodedImages.set(url, image);
 			trimCache(decodedImages, 2);
 			return url;

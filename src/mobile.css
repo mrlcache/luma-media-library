@@ -57,6 +57,13 @@ html[data-mobile-preview='true'] .server-page { padding:28px 18px 80px; }
 html[data-mobile-preview='true'] .home-section + .home-section { margin-top:30px; }
 html[data-mobile-preview='true'] .home-content__inner { padding:26px 18px 32px; }
 html[data-mobile-preview='true'] .library-page { min-height:0; padding-bottom:32px; }
+/* Keep empty states in the available handset viewport, below the library filters. */
+html[data-mobile-preview='true'] .home-page--empty { min-height:calc(100dvh - 88px); }
+html[data-mobile-preview='true'] .home-page--empty .home-content { min-height:0; }
+html[data-mobile-preview='true'] .home-page--empty .home-content__inner { align-content:center; padding:24px 18px; }
+html[data-mobile-preview='true'] .empty-card-shell--full-height { height:auto; }
+html[data-mobile-preview='true'] .library-page { display:flex; flex-direction:column; min-height:calc(100dvh - 88px); }
+html[data-mobile-preview='true'] .library-page .empty-card-shell--centered { position:static; flex:1; min-height:280px; padding:24px 0; }
 html[data-mobile-preview='true'] .library-controls { gap:12px; padding:10px 0 12px; }
 html[data-mobile-preview='true'] .library-controls__right { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px 16px; }
 html[data-mobile-preview='true'] .library-controls__right .filter-group { grid-column:1 / -1; }

@@ -57,7 +57,19 @@
 	let isMuted = $state(false);
 	let isLoading = $state(!isVisualPreview());
 	let playbackError = $state('');
+	$effect(() => {
+		if (!playbackError) return;
+		isLoading = false; isPlaying = false;
+		subtitlePanelOpen = false; speedMenuOpen = false; gestureFeedback = null; gesture = null;
+	});
 	let playerMenuOpen = $state(false);
+	let mobileSourceUrl = $state('');
+	let transcoding = $state(false);
+	let transcodeOffset = 0;
+	let mobilePendingSeek:number|null = null;
+	const originalCueTimes = new WeakMap<TextTrackCue,[number,number]>();
+	let mobileLoadAttempt = 0;
+	const canTranscode = $derived(previewOnly || /^https?:\/\/[^/]+\/api\/v1\/media\/\d+\?/.test(mobileSourceUrl));
 	let speedMenuOpen = $state(false);
 	let brightness = $state(100);
 	let gestureFeedback = $state<'brightness' | 'volume' | 'back' | 'forward' | null>(null);
@@ -251,6 +263,7 @@
 
 	function seekBy(amount: number) {
 		if (previewOnly) { currentTime = Math.min(duration, Math.max(0, currentTime + amount)); return; }
+		if (mobilePlayer && transcoding) { void loadMobileStream(Math.min(duration || 86400, Math.max(0,currentTime + amount))); return; }
 		if (activeEngine) {
 			void nativePlayerAction('seek', Math.min(duration || Number.MAX_SAFE_INTEGER, Math.max(0, currentTime + amount))).then(applyNativeSnapshot).catch(console.warn);
 			revealControls();
@@ -296,21 +309,22 @@
 			return;
 		}
 		if (!video) return;
+		if (mobilePlayer && transcoding) { void loadMobileStream(duration * Number((event.currentTarget as HTMLInputElement).value) / 100); return; }
 		video.currentTime = duration * Number((event.currentTarget as HTMLInputElement).value) / 100;
 		revealControls();
 	}
 
 	function onTimeUpdate() {
 		if (!video) return;
-		currentTime = video.currentTime;
-		duration = Number.isFinite(video.duration) ? video.duration : duration;
+		currentTime = video.currentTime + (transcoding ? transcodeOffset : 0);
+		if (!transcoding) duration = Number.isFinite(video.duration) ? video.duration : duration;
 		if (Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
 	}
 
 	async function persistProgress() {
 		const mediaId = Number(media.id);
-		const position = activeEngine ? currentTime : video?.currentTime;
-		const length = activeEngine ? duration : video?.duration;
+		const position = activeEngine || transcoding ? currentTime : video?.currentTime;
+		const length = activeEngine || transcoding ? duration : video?.duration;
 		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || !Number.isFinite(position) || !Number.isFinite(length) || !length || length <= 0) return;
 		lastSavedPosition = position!;
 		try { await savePlaybackProgress(mediaId, position!, length); }
@@ -328,8 +342,11 @@
 
 	function onLoadedMetadata() {
 		if (!video) return;
+		for(const track of Array.from(video.textTracks))setCueOffset(track);
+		if (transcoding) { currentTime = transcodeOffset; isLoading = false; video.playbackRate = playbackRate; readAudioTracks(); return; }
 		duration = Number.isFinite(video.duration) ? video.duration : 0;
-		if (resumePosition > 15 && resumePosition < duration - 10) video.currentTime = resumePosition;
+		if(mobilePendingSeek!==null){video.currentTime=Math.min(Math.max(0,mobilePendingSeek),Math.max(0,duration-.1));mobilePendingSeek=null;}
+		else if (resumePosition > 15 && resumePosition < duration - 10) video.currentTime = resumePosition;
 		currentTime = video.currentTime;
 		isLoading = false;
 		readAudioTracks();
@@ -401,6 +418,10 @@
 	function setCueOffset(track: TextTrack) {
 		if (!track.cues) return;
 		for (const cue of Array.from(track.cues)) {
+			if(!originalCueTimes.has(cue))originalCueTimes.set(cue,[cue.startTime,cue.endTime]);
+			const times=originalCueTimes.get(cue)!;
+			cue.startTime=Math.max(0,times[0]-(transcoding?transcodeOffset:0));
+			cue.endTime=Math.max(0,times[1]-(transcoding?transcodeOffset:0));
 			if (cue instanceof VTTCue) cue.line = subtitleOffset === 0 ? 'auto' : -(subtitleOffset * 1.5);
 		}
 	}
@@ -600,7 +621,7 @@
 		if (activeEngine) return;
 		if (!video?.error) return;
 		playbackError = video.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
-			? 'This file or its video codec is not supported by the built-in Windows player. Try an MP4 or WebM file, or open it in your configured desktop player.'
+			? mobilePlayer ? 'This video format is not supported on your phone.' : 'This file or its video codec is not supported by the built-in Windows player. Try an MP4 or WebM file, or open it in your configured desktop player.'
 			: 'This media file could not be played. Check that it is still available in the library.';
 		isLoading = false;
 	}
@@ -624,6 +645,32 @@
 		playerMenuOpen = false;
 		await persistProgress();
 		await startSelectedEngine(currentTime);
+	}
+
+	async function loadMobileStream(position=0) {
+		const attempt=++mobileLoadAttempt;
+		playbackError='';isLoading=true;mediaReady=false;isPlaying=false;
+		video.pause();video.removeAttribute('src');video.load();
+		try {
+			const url=new URL(mobileSourceUrl);
+			if(transcoding){
+				url.pathname += '/compatible';url.searchParams.set('start',String(Math.max(0,position)));
+				const metadata=await fetch(url,{method:'HEAD',cache:'no-store'});
+				if(!metadata.ok)throw new Error('Could not start transcoding on your computer. Check that Luma is updated and FFmpeg is available.');
+				const length=Number(metadata.headers.get('X-Luma-Duration'));
+				if(Number.isFinite(length)&&length>0)duration=length;
+			}
+			if(attempt!==mobileLoadAttempt||playerDisposed)return;
+			transcodeOffset=transcoding?position:0;resumePosition=transcoding?0:position;mobilePendingSeek=transcoding?null:position;
+			currentTime=position;video.src=url.toString();video.load();video.playbackRate=playbackRate;
+			try {await video.play();} catch(error){if(error instanceof Error && error.name==='NotAllowedError'){isLoading=false;controlsVisible=true;}else throw error;}
+		}catch(error){if(attempt===mobileLoadAttempt&&!playerDisposed){isLoading=false;playbackError=error instanceof Error?error.message:String(error);}}
+	}
+	async function toggleTranscoding(){
+		if(!canTranscode)return;
+		transcoding=!transcoding;playerMenuOpen=false;
+		if(previewOnly)return;
+		await loadMobileStream(currentTime || resumePosition);
 	}
 
 	onMount(() => {
@@ -678,17 +725,25 @@
 				await tick();
 				if (import.meta.env.VITE_LUMA_MOBILE === 'true') {
 					video.src = await localMediaUrl(source.path);
+					mobileSourceUrl = video.src;
 					video.load();
-					await video.play();
+					try { await video.play(); }
+					catch (error) {
+						// Android may require a fresh tap after asynchronous pairing/media requests.
+						// Keep our Play control available instead of treating this as a broken file.
+						if (error instanceof Error && error.name === 'NotAllowedError') { isLoading = false; isPlaying = false; controlsVisible = true; }
+						else throw error;
+					}
 				} else await startSelectedEngine();
 			})
 			.catch((error) => {
 				if (playerDisposed) return;
 				isLoading = false;
-				playbackError = error instanceof Error ? error.message : 'The local media file could not be opened.';
+				playbackError = error instanceof Error ? error.message : typeof error === 'string' ? error : 'The media file could not be opened.';
 			});
 		return () => {
 			playerDisposed = true;
+			mobileLoadAttempt++;
 			resetPlayerLevels();
 			document.removeEventListener('fullscreenchange', handleFullscreenChange);
 			window.removeEventListener('resize', handleResize);
@@ -728,7 +783,7 @@
 		<div class="player-stage__vignette"></div>
 		<video
 			class="player-video"
-			class:player-video--hidden={playbackError || activeEngine !== null}
+			class:player-video--hidden={!!playbackError || activeEngine !== null || (mobilePlayer && !mediaReady)}
 			bind:this={video}
 			playsinline
 			preload="metadata"
@@ -746,7 +801,7 @@
 				<track kind="subtitles" src={track.url} srclang={track.language} label={track.label} onload={(event) => onTrackLoad(event, index)} />
 			{/each}
 		</video>
-		{#if mobilePlayer}
+		{#if mobilePlayer && !playbackError && !isLoading}
 			<div class="mobile-player-dimmer" style={`opacity: ${nativeMobile && !previewOnly ? 0 : (100 - brightness) / 100 * .85}`}></div>
 			<div class="mobile-player-gestures" aria-label="Player gestures">
 				{#each ['brightness', 'volume'] as side}
@@ -766,7 +821,11 @@
 		{#if isLoading}
 			<div class="player-message" role="status"><span class="player-loading__spinner"></span><span>Opening media…</span></div>
 		{:else if playbackError}
-			<div class="player-message player-message--error" role="alert"><strong>Playback unavailable</strong><span>{playbackError}</span><span>Choose another engine in the menu at the top right.</span></div>
+			{#if mobilePlayer}
+				<div class="player-message player-message--mobile-error" role="alert"><Icon name="info" size={26}/><strong>Couldn’t play this video</strong><span>{playbackError}</span><button type="button" onclick={closePlayer}><Icon name="arrow-left" size={16}/>Go back</button></div>
+			{:else}
+				<div class="player-message player-message--error" role="alert"><strong>Playback unavailable</strong><span>{playbackError}</span><span>Choose another engine in the menu at the top right.</span></div>
+			{/if}
 		{/if}
 
 		<div class:player-ui--hidden={!controlsVisible && isPlaying} class="player-ui">
@@ -787,8 +846,9 @@
 					{#if playerMenuOpen}
 						{#if mobilePlayer}
 							<div class="player-options" role="group" aria-label="Playback options">
-								{#if audioTracks.length > 1}<span class="player-options__label">Audio</span><AppSelect value={activeAudio} label="Audio track" options={audioTracks.map(track => ({value:track.index,label:track.label}))} onchange={selectAudio} />{/if}
-								<button type="button" onclick={toggleMuted}>{isMuted ? 'Unmute' : 'Mute'}</button>
+								<button type="button" role="switch" aria-checked={transcoding} disabled={!canTranscode || isLoading} onclick={toggleTranscoding}>Transcoding <span>{transcoding?'On':'Off'}</span></button>
+								<p>{canTranscode?'Convert unsupported formats on your computer.':'Transcoding is available for media streamed from your computer.'}</p>
+								{#if audioTracks.length>1}<AppSelect value={activeAudio} label="Audio track" options={audioTracks.map(track=>({value:track.index,label:track.label}))} onchange={selectAudio}/>{/if}
 							</div>
 						{:else}
 						<div class="player-options" role="group" aria-label="Playback engine selection">
@@ -802,14 +862,14 @@
 				</div>
 			</div>
 
-			{#if mobilePlayer}
+			{#if mobilePlayer && !playbackError && !isLoading}
 				<div class="mobile-player-transport">
 					<button class="mobile-player-skip" type="button" aria-label="Go back ten seconds" onclick={() => seekBy(-10)}><Icon name="rewind-ten" size={30} /><span>10</span></button>
 					<button class="mobile-player-play" type="button" aria-label={isPlaying ? 'Pause' : 'Play'} onclick={togglePlayback}><Icon name={isPlaying ? 'pause' : 'play'} size={30} weight="fill" /></button>
 					<button class="mobile-player-skip" type="button" aria-label="Forward ten seconds" onclick={() => seekBy(10)}><Icon name="forward-ten" size={30} /><span>10</span></button>
 				</div>
 			{/if}
-			<div class="player-control-deck" style="corner-shape: squircle">
+			{#if !mobilePlayer || (!playbackError && !isLoading)}<div class="player-control-deck" style="corner-shape: squircle">
 				<div class="player-timeline">
 					<div class="player-timeline__meta"><span>{elapsedLabel}</span><span>{remainingLabel}</span></div>
 					<input
@@ -865,7 +925,7 @@
 					</div>
 				</div>
 				{/if}
-			</div>
+			</div>{/if}
 		</div>
 
 		{#if !isPlaying && !mobilePlayer}
@@ -954,10 +1014,15 @@
 	.player-stage--media-ready .player-stage__vignette { visibility: hidden; opacity: 0; transition: opacity 320ms ease, visibility 0s linear 320ms; }
 	.player-video { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; background: #000; object-fit: contain; outline: none; }
 	.player-video--hidden { visibility: hidden; }
+	.player-overlay--mobile .player-video::-webkit-media-controls,
+	.player-overlay--mobile .player-video::-webkit-media-controls-start-playback-button { display:none !important; -webkit-appearance:none; }
 	.player-video::cue { color: #fff; font-family: var(--caption-font, Manrope, sans-serif); font-size: var(--caption-size, 100%); background: rgba(0,0,0,0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
 	.player-message { position: absolute; top: 50%; left: 50%; z-index: 2; display: grid; justify-items: center; gap: 12px; width: min(440px, calc(100% - 36px)); color: rgba(244,247,249,0.72); font-size: 0.78rem; text-align: center; transform: translate(-50%,-50%); }
 	.player-message--error { padding: 22px 24px; border: 1px solid rgba(255,255,255,0.15); border-radius: 18px; background: rgba(13,16,20,0.72); box-shadow: 0 24px 60px rgba(0,0,0,0.38); backdrop-filter: blur(24px) saturate(135%); }
 	.player-message--error strong { color: #fff; font-size: 0.95rem; font-weight: 650; }
+	.player-message--mobile-error { z-index:4; width:min(340px,calc(100% - 48px)); gap:14px; padding:26px 22px; border:1px solid rgba(220,234,246,.13); border-radius:20px; background:#111b25; line-height:1.6; }
+	.player-message--mobile-error strong { color:#edf3f7; font-size:1rem; }
+	.player-message--mobile-error button { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:44px; margin-top:6px; padding:0 18px; border:1px solid rgba(220,234,246,.17); border-radius:11px; background:#253440; color:#edf3f7; font:inherit; cursor:pointer; }
 	.player-loading__spinner { width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #e8f3f5; border-radius: 50%; animation: player-spin 700ms linear infinite; }
 	@keyframes player-spin { to { transform: rotate(360deg); } }
 

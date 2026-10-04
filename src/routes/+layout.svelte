@@ -30,14 +30,6 @@
 	let windowMaximized = $state(false);
 	let contentArea: HTMLElement;
 	let desktopScroll: Lenis | undefined;
-	let mobilePreviewError = $state('');
-	async function openHandset() {
-		try {
-			const { invoke } = await import('@tauri-apps/api/core');
-			await invoke('open_mobile_preview');
-			mobilePreviewError = '';
-		} catch { mobilePreviewError = 'Could not open mobile preview.'; }
-	}
 
 	onNavigate(() => {
 		// Do not carry the outgoing page's animated wheel movement into the next view.
@@ -156,7 +148,7 @@
 	};
 	const mobileNavItems = mobilePreview
 		? [navItems[0], { ...navItems[1], isActive: (url: URL) => url.pathname === '/library' }, {label:'Search',href:'/search',icon:'search' as IconName,isActive:(url:URL)=>url.pathname==='/search'}, navItems[4]]
-		: [...navItems, ...(dev ? [mediaServerItem] : [])];
+		: [...navItems, mediaServerItem];
 
 	onMount(() => {
 		let disposed = false;
@@ -283,8 +275,6 @@
 						<Icon name="code" size={12} weight="bold" />
 						<span>DEV</span>
 					</span>
-					{#if desktopRuntime}<button class="open-handset" type="button" aria-label="Open mobile preview" onclick={openHandset}><Icon name="phone" size={18} /></button>{/if}
-					{#if mobilePreviewError}<span role="status">{mobilePreviewError}</span>{/if}
 				{/if}
 			</div>
 
@@ -306,7 +296,6 @@
 			</nav>
 
 			<div class="sidebar-footer">
-				{#if dev}
 					<a
 						class="sidebar-link"
 						class:active={mediaServerItem.isActive(page.url)}
@@ -316,7 +305,6 @@
 						<Icon name={mediaServerItem.icon} size={19} weight={mediaServerItem.isActive(page.url) ? 'fill' : 'regular'} />
 						<span>{mediaServerItem.label}</span>
 					</a>
-				{/if}
 				<a
 					class="sidebar-link"
 					class:active={settingsItem.isActive(page.url)}
@@ -392,8 +380,6 @@
 <svelte:window onkeydown={handleGlobalKeydown} />
 
 <style>
-	.open-handset { display:grid; place-items:center; width:30px; height:30px; padding:0; border:0; border-radius:7px; color:var(--text-muted); background:transparent; cursor:pointer; }
-	.open-handset:hover { color:var(--accent-soft); background:var(--surface-2); }
 	.app-stage {
 		min-height: 100vh;
 		padding: 0;

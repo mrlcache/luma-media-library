@@ -57,6 +57,7 @@
 	box-sizing: border-box;
 	scrollbar-width: none;
 	-ms-overflow-style: none;
+	-webkit-tap-highlight-color: transparent;
 	-webkit-user-select: none;
 	user-select: none;
 }
@@ -109,11 +110,6 @@ html[data-runtime='desktop'] body {
 button,
 input,
 select { font: inherit; }
-
-button,
-a,
-input,
-select { -webkit-tap-highlight-color: transparent; }
 
 button { color: inherit; }
 

@@ -88,3 +88,16 @@ test('FFmpeg converts incompatible audio only and incompatible video when reques
     await server.start();const result=await fetch(`${server.baseURL}/media/file-10/compatible`);assert.equal(result.status,200);assert.equal(result.headers.get('X-Luma-Playback'),expected);const data=new Uint8Array(await result.arrayBuffer());assert.ok(data.length>188);assert.equal(data[0],0x47);await server.stop();
   }
 });
+test('FFmpeg emits fragmented MP4 with H.264/AAC, capped dimensions and duration metadata',async t=>{
+  const tools=path.resolve('tools');const transcoder=new Transcoder(tools);if(!transcoder.available){t.skip('Run setup-ffmpeg.ps1');return;}
+  const f=await fixture();t.after(()=>rm(f.root,{recursive:true,force:true}));const exec=promisify(execFile);
+  const source=path.join(f.media,'episode.mkv');
+  await exec(transcoder.ffmpeg,['-y','-v','error','-f','lavfi','-i','color=c=black:s=1600x900:r=24','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t','2','-c:v','mpeg4','-q:v','5','-c:a','pcm_s16le',source],{windowsHide:true,timeout:30000});
+  const catalog=new Catalog(f.dbPath);await catalog.refresh(true);const file=await catalog.file('file-10');assert.ok(file);
+  const server=http.createServer((req,res)=>transcoder.stream(file,req,res,0,'mp4'));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const response=await fetch(`http://127.0.0.1:${server.address().port}/stream`);assert.equal(response.status,200);assert.equal(response.headers.get('Content-Type'),'video/mp4');assert.equal(response.headers.get('Access-Control-Expose-Headers'),'X-Luma-Duration');assert.ok(Number(response.headers.get('X-Luma-Duration'))>=1.9);
+  const output=path.join(f.root,'converted.mp4');await writeFile(output,Buffer.from(await response.arrayBuffer()));
+  const {stdout}=await exec(transcoder.ffprobe,['-v','error','-show_entries','stream=codec_name,width,height','-of','json',output],{windowsHide:true,timeout:15000});const streams=JSON.parse(stdout).streams;
+  assert.ok(streams.some(stream=>stream.codec_name==='h264'&&stream.width===1280&&stream.height===720));assert.ok(streams.some(stream=>stream.codec_name==='aac'));
+});

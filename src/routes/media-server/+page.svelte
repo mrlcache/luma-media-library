@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { dev } from '$app/environment';
+	import { isDesktopRuntime } from '$lib/platform/desktop';
+	import { invoke } from '@tauri-apps/api/core';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	type ServerStatus = { running: boolean; name: string; url: string; items: number; transcoding: boolean; activeTranscodes: number; error: string | null };
 	let status = $state<ServerStatus | null>(null);
@@ -8,11 +11,16 @@
 	let reachable = $state(false);
 	let copyFeedback = $state('');
 	let copyTimer: ReturnType<typeof setTimeout> | undefined;
+	async function serverRequest(action: 'status' | 'start' | 'stop'): Promise<ServerStatus> {
+		if (!dev && isDesktopRuntime()) return invoke<ServerStatus>('media_server_request', {action});
+		const reply = await fetch(`/__media-server/${action}`, action === 'status' ? undefined : {method:'POST',headers:{'X-Luma-Control':'1'}});
+		const result = await reply.json();
+		if (!reply.ok) throw new Error(result.error ?? 'The media server could not be reached.');
+		return result;
+	}
 	async function refresh() {
 		try {
-			const reply = await fetch('/__media-server/status');
-			if (!reply.ok) throw new Error('The media server could not be reached.');
-			const result: ServerStatus = await reply.json();
+			const result = await serverRequest('status');
 			if (busy) return;
 			status = result; reachable = true; error = result.error ?? '';
 		} catch (failure) { reachable = false; error = failure instanceof Error ? failure.message : 'The media server could not be reached.'; }
@@ -21,9 +29,7 @@
 		if (!status || !reachable || busy) return;
 		busy = true;
 		try {
-			const reply = await fetch(`/__media-server/${status.running ? 'stop' : 'start'}`, { method: 'POST', headers: { 'X-Luma-Control': '1' } });
-			const result = await reply.json();
-			if (!reply.ok) throw new Error(result.error ?? 'Could not update the server.');
+			const result = await serverRequest(status.running ? 'stop' : 'start');
 			status = result; error = result.error ?? '';
 		} catch (failure) { error = failure instanceof Error ? failure.message : 'Could not update the server.'; }
 		finally { busy = false; }

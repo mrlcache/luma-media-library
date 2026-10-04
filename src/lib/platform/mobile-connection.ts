@@ -9,3 +9,4 @@ export type MobileConnection = {url:string | null; paired:boolean};
 export const readMobileConnection = () => nativeInvoke<MobileConnection>('get_mobile_connection');
 export const saveMobileConnection = (url:string,token:string) => nativeInvoke<void>('set_mobile_connection',{url,token});
 export const testMobileConnection = () => nativeInvoke('mobile_remote_command',{command:'desktop_bootstrap',args:{}});
+export const clearMobileConnection = () => nativeInvoke<void>('clear_mobile_connection');

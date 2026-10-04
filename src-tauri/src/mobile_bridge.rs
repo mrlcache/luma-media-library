@@ -2,7 +2,7 @@
 use serde::Serialize;
 use std::{
     collections::HashMap,
-    io::{Read, Seek, Write},
+    io::{self, Read, Seek, Write},
     net::{TcpListener, TcpStream, UdpSocket},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -12,6 +12,8 @@ use tauri::Manager;
 
 const PORT: u16 = 47631;
 const MAX_BODY: usize = 8 * 1024 * 1024;
+const ADMIN_ORIGIN: &str = "http://127.0.0.1:8940";
+const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct BridgeState {
@@ -647,6 +649,34 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
         reply(stream, 200, &body, "application/json");
         return;
     }
+    if enabled && method == "POST" && path == "/api/v1/pair/cancel" {
+        let id = target
+            .split_once('?')
+            .and_then(|(_, query)| query.split('&').find_map(|field| field.strip_prefix("id=")))
+            .unwrap_or("");
+        if id.len() != 64 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
+            reply(
+                stream,
+                400,
+                "{\"error\":\"Invalid pair request\"}",
+                "application/json",
+            );
+            return;
+        }
+        let bridge = app.state::<BridgeState>();
+        let Ok(mut requests) = bridge.pairing.lock() else {
+            reply(
+                stream,
+                503,
+                "{\"error\":\"Pairing is unavailable\"}",
+                "application/json",
+            );
+            return;
+        };
+        requests.remove(id);
+        reply(stream, 200, "{\"cancelled\":true}", "application/json");
+        return;
+    }
     if enabled && method == "GET" && path == "/api/v1/pair/status" {
         let id = target.split_once("?id=").map(|s| s.1).unwrap_or("");
         let bridge = app.state::<BridgeState>();
@@ -673,7 +703,7 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
         return;
     }
     if method == "OPTIONS" {
-        let _=write!(stream,"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Range\r\nAccess-Control-Max-Age: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let _=write!(stream,"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Range\r\nAccess-Control-Max-Age: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return;
     }
     if path == "/api/v1/health" && method == "GET" {
@@ -716,7 +746,24 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
             return;
         }
         let base = format!("/api/v1/media/{id}");
-        if path == base {
+        if path == format!("{base}/compatible") && matches!(method.as_str(), "GET" | "HEAD") {
+            let start = match fields.get("start") {
+                None => 0.0,
+                Some(value) => match value.parse::<f64>() {
+                    Ok(value) if value.is_finite() && (0.0..=86400.0).contains(&value) => value,
+                    _ => {
+                        reply(
+                            stream,
+                            400,
+                            "{\"error\":\"Invalid start position\"}",
+                            "application/json",
+                        );
+                        return;
+                    }
+                },
+            };
+            stream_compatible(stream, app, id, start, method == "HEAD");
+        } else if path == base && method == "GET" {
             stream_media(stream, app, id, &data[..split]);
         } else if let Some(index) = path
             .strip_prefix(&format!("{base}/subtitles/"))
@@ -925,6 +972,95 @@ fn stream_media(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, headers: &[u
             }
         }
     }
+}
+fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: f64, head: bool) {
+    if let Err(error) = app
+        .state::<crate::media_server::MediaServerState>()
+        .request("status")
+    {
+        let body = serde_json::json!({"error":error}).to_string();
+        reply(s, 503, &body, "application/json");
+        return;
+    }
+    let client = match reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(6))
+        .timeout(None::<std::time::Duration>)
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            let body = serde_json::json!({"error":error.to_string()}).to_string();
+            reply(s, 502, &body, "application/json");
+            return;
+        }
+    };
+    let url = format!("{ADMIN_ORIGIN}/api/mobile-stream/file-{id}?start={start}");
+    let request = if head {
+        client.head(&url)
+    } else {
+        client.get(&url)
+    };
+    let mut response = match request.header("X-Luma-Control", "1").send() {
+        Ok(response) => response,
+        Err(error) => {
+            let body = serde_json::json!({"error":format!("Could not start mobile media conversion: {error}")}).to_string();
+            reply(s, 502, &body, "application/json");
+            return;
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        let code = status.as_u16();
+        let mut detail = String::new();
+        let _ = response
+            .take(MAX_RESPONSE_BYTES)
+            .read_to_string(&mut detail);
+        let body = serde_json::json!({"error":detail.trim()}).to_string();
+        reply(s, code, &body, "application/json");
+        return;
+    }
+    let Some(content_type) = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("video/mp4"))
+        })
+    else {
+        reply(
+            s,
+            502,
+            "{\"error\":\"Unexpected media type from transcoder\"}",
+            "application/json",
+        );
+        return;
+    };
+    let duration = response
+        .headers()
+        .get("X-Luma-Duration")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.parse::<f64>().is_ok_and(f64::is_finite));
+    let code = status.as_u16();
+    let reason = if code == 206 { "Partial Content" } else { "OK" };
+    let mut header = format!(
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Luma-Duration\r\nConnection: close\r\n"
+    );
+    if let Some(duration) = duration {
+        header.push_str(&format!("X-Luma-Duration: {duration}\r\n"));
+    }
+    if let Some(length) = response.content_length() {
+        header.push_str(&format!("Content-Length: {length}\r\n"));
+    }
+    header.push_str("\r\n");
+    if s.write_all(header.as_bytes()).is_err() || head {
+        return;
+    }
+    let _ = io::copy(&mut response, s);
 }
 fn byte_range(range: Option<&str>, size: u64) -> Result<(u64, u64, bool), ()> {
     let Some(range) = range else {
