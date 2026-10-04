@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">"Luma Demo"</string>
-    <string name="main_activity_title">"Luma Demo"</string>
+    <string name="app_name">Luma</string>
+    <string name="main_activity_title">Luma</string>
 </resources>

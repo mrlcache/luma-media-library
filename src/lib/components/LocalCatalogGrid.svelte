@@ -3,11 +3,13 @@
 	import FavoriteButton from './FavoriteButton.svelte';
 	import { cardMedia } from '$lib/media/favorites';
 	import { recoverRemoteArtwork, tmdbImageSize } from '$lib/media/artwork';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
 	import { usePlayer } from '$lib/player-context';
 	import type { LibraryCard } from '$lib/torrents/library';
 
 	type Props = { items: LibraryCard[] };
 	let { items }: Props = $props();
+	const mobilePreview = isMobilePreview();
 	const player = usePlayer();
 
 	function play(item: LibraryCard) {
@@ -33,7 +35,7 @@
 			<div class="catalog-card__poster">
 				<a class="catalog-card__poster-link" href={`/title/${item.id}`} aria-label={`Details for ${item.title}`}>
 					{#if item.posterUrl}
-						<img use:recoverRemoteArtwork src={tmdbImageSize(item.posterUrl, 'w780')} alt={`Poster for ${item.title}`} width="780" height="1170" loading={index < 8 ? 'eager' : 'lazy'} decoding="async" />
+						<img use:recoverRemoteArtwork src={tmdbImageSize(item.posterUrl, mobilePreview ? 'w500' : 'w780')} alt={`Poster for ${item.title}`} width="780" height="1170" loading={index < (mobilePreview ? 4 : 8) ? 'eager' : 'lazy'} decoding="async" />
 					{:else}
 						<span class="catalog-card__placeholder" aria-hidden="true"><Icon name={item.kind === 'series' ? 'tv' : 'film'} size={25} /></span>
 					{/if}

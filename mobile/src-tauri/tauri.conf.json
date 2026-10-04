@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Luma Mobile",
-  "version": "0.2.0",
+  "productName": "Luma",
+  "version": "0.2.1",
   "identifier": "app.luma.mobile.demo",
   "build": {
     "beforeBuildCommand": "node ../scripts/build-mobile-demo.mjs",

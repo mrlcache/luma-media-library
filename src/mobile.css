@@ -8,7 +8,7 @@ html[data-mobile-preview='true'] .window-chrome { display:none; }
 html[data-mobile-preview='true'] .workspace { display:flex; flex-direction:column; height:100%; min-height:0; background:#0c1117; }
 html[data-mobile-preview='true'] .content-area { flex:1; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior-y:contain; touch-action:pan-y; }
 html[data-mobile-preview='true'] .route-content { min-height:100%; padding-bottom:88px; }
-html[data-mobile-preview='true'] .mobile-nav { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); left:12px; right:12px; bottom:max(12px,env(safe-area-inset-bottom)); height:64px; background:linear-gradient(135deg,rgba(35,46,59,.5),rgba(14,22,32,.62)); border-color:rgba(211,228,245,.16); box-shadow:inset 0 1px rgba(231,242,255,.1),0 12px 32px rgba(0,0,0,.32); -webkit-backdrop-filter:blur(24px) saturate(135%); backdrop-filter:blur(24px) saturate(135%); }
+html[data-mobile-preview='true'] .mobile-nav { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); left:12px; right:12px; bottom:max(12px,env(safe-area-inset-bottom)); height:64px; background:linear-gradient(135deg,rgba(35,46,59,.5),rgba(14,22,32,.62)); border-color:rgba(211,228,245,.16); box-shadow:inset 0 1px rgba(231,242,255,.1),0 12px 32px rgba(0,0,0,.32); -webkit-backdrop-filter:blur(14px) saturate(120%); backdrop-filter:blur(14px) saturate(120%); }
 html[data-mobile-preview='true'] .mobile-nav__link { min-height:48px; font-size:.62rem; }
 html[data-mobile-preview='true'] .poster-card__favorite,
 html[data-mobile-preview='true'] .catalog-card__favorite,
@@ -121,6 +121,25 @@ html[data-mobile-preview='true'] .catalog-card__availability svg,
 html[data-mobile-preview='true'] .landscape-card__availability svg { width:16px; height:16px; }
 html[data-mobile-preview='true'] .catalog-card__availability { width:22px; height:22px; right:7px; bottom:7px; }
 html[data-mobile-preview='true'] .catalog-card__availability svg { width:12px; height:12px; }
+
+/* Keep the acrylic nav, while avoiding a separate blur surface on every card. */
+html[data-mobile-preview='true'] .poster-card__favorite .favorite-button--compact,
+html[data-mobile-preview='true'] .catalog-card__favorite .favorite-button--compact,
+html[data-mobile-preview='true'] .landscape-card__favorite .favorite-button--compact,
+html[data-mobile-preview='true'] .poster-card__availability,
+html[data-mobile-preview='true'] .catalog-card__availability,
+html[data-mobile-preview='true'] .landscape-card__availability { -webkit-backdrop-filter:none; backdrop-filter:none; }
+
+/* Touch cards do not need the desktop hover image effects or their extra layers. */
+html[data-mobile-preview='true'] .poster-card__art img,
+html[data-mobile-preview='true'] .landscape-card__art img,
+html[data-mobile-preview='true'] .catalog-card__poster img { transition:none; }
+html[data-mobile-preview='true'] .poster-card:hover .poster-card__art img,
+html[data-mobile-preview='true'] .poster-card:focus-within .poster-card__art img,
+html[data-mobile-preview='true'] .landscape-card:hover .landscape-card__art img,
+html[data-mobile-preview='true'] .landscape-card:focus-within .landscape-card__art img,
+html[data-mobile-preview='true'] .catalog-card:hover .catalog-card__poster img,
+html[data-mobile-preview='true'] .catalog-card:focus-within .catalog-card__poster img { filter:none; transform:none; }
 
 html[data-mobile-preview='true'] .detail-page { padding-top:0; }
 html[data-mobile-preview='true'] .detail-hero { margin-top:0; border:0; border-radius:0; corner-shape:initial; box-shadow:none; }

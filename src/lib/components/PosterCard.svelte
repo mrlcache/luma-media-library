@@ -1,12 +1,14 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import FavoriteButton from './FavoriteButton.svelte';
-	import { recoverRemoteArtwork } from '$lib/media/artwork';
+	import { recoverRemoteArtwork, tmdbImageSize } from '$lib/media/artwork';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
 	import { usePlayer } from '$lib/player-context';
 	import type { MediaItem } from '$lib/types';
 
 	type Props = { media: MediaItem; priority?: boolean; variant?: 'default' | 'home' | 'catalog' };
 	let { media, priority = false, variant = 'default' }: Props = $props();
+	const mobilePreview = isMobilePreview();
 	const player = usePlayer();
 </script>
 
@@ -16,7 +18,7 @@
 			{#if media.poster}
 			<img
 				use:recoverRemoteArtwork
-				src={media.poster}
+				src={mobilePreview ? tmdbImageSize(media.poster, 'w500') : media.poster}
 				alt={`Poster for ${media.title}`}
 				width="520"
 				height="780"

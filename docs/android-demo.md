@@ -41,3 +41,11 @@ The frontend builds into `.artifacts/mobile-web`, independently of the desktop b
 ## Hot reload on a USB-connected phone
 
 Enable USB debugging, connect and authorize the phone, then run `scripts/start-android-dev.ps1` in PowerShell. It uses port 1422, forwards that port through ADB and runs the mobile shell in development mode. The initial native build/install still takes time. Subsequent Svelte/CSS changes reload on the phone without generating an APK. Rust/Kotlin changes require a native rebuild. This is separate from the standalone demo APK, which embeds its assets and works offline.
+
+## Mobile 0.2.1 test build
+
+The launcher label is Luma and Android uses the approved desktop icon, including adaptive launcher resources. The APK includes only the architectures requested by the build script, so stale JNI output from an earlier build cannot be packaged accidentally.
+
+The torrent session no longer runs synchronously during application setup. Empty first-launch snapshots do not start the engine; adding a torrent or restoring saved transfers starts it asynchronously. Initialization errors are returned to the download operation instead of aborting the application setup. This removes an identified startup failure path, but the reported device crash still requires a real-device log to confirm its cause.
+
+Mobile cards use smaller TMDb images, native touch scrolling, fewer per-card blur surfaces and no background autoplay iframe. The navigation retains its acrylic treatment, and the explicit Trailer action remains available. Library polling pauses while the app is hidden. No device frame-rate measurement has been performed.

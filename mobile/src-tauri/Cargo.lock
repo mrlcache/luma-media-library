@@ -2674,7 +2674,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "luma-mobile"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "librqbit",
@@ -2685,6 +2685,7 @@ dependencies = [
  "tauri-build",
  "tauri-runtime",
  "tauri-runtime-wry",
+ "tokio",
 ]
 
 [[package]]

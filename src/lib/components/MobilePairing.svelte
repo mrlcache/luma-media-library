@@ -5,8 +5,9 @@
 	import {isDesktopRuntime,invalidateCatalogPageCache} from '$lib/platform/desktop';
 	import {resetDiscovery} from '$lib/media/discovery';
 	import Icon from './Icon.svelte';
+	let {preview=false}=$props<{preview?:boolean}>();
 	type Request={id:string;name:string;code:string};
-	let visible=$state(false), busy=$state(false), message=$state(''), code=$state(''), address=$state('');
+	let visible=$state(preview), busy=$state(false), message=$state(''), code=$state(''), address=$state('');
 	let computers=$state<{name:string;url:string}[]>([]), requests=$state<Request[]>([]);
 	let poll:ReturnType<typeof setInterval>|undefined;
 	let disposed=false;
@@ -40,7 +41,7 @@
 		catch(error){message=String(error);}
 	}
 	onMount(()=>{
-		if(!isDesktopRuntime()||import.meta.env.VITE_LUMA_MOBILE_DEMO==='true')return;
+		if(preview||!isDesktopRuntime()||import.meta.env.VITE_LUMA_MOBILE_DEMO==='true')return;
 		const show=()=>{visible=true;code='';void discover();};
 		window.addEventListener('luma-pair-computer',show);
 		if(nativeMobile){
@@ -59,10 +60,10 @@
 	});
 </script>
 
-{#if nativeMobile && visible}
+{#if (nativeMobile || preview) && visible}
 	<div class="pair-screen">
 		<div class="pair-content">
-			<span class="pair-logo">luma</span>
+			<img class="pair-logo" src="/luma-wordmark.svg" alt="Luma" width="120" height="44"/>
 			<Icon name="computer" size={34}/>
 			<h1>Connect your computer</h1><p>Access your library, stream your media and manage your downloads.</p>
 			{#if code}<div class="pair-code">{code}</div><p>Approve this code in Luma on your computer.</p>
@@ -90,7 +91,7 @@
 	.pair-overlay{background:rgba(4,8,12,.6);backdrop-filter:blur(15px);}
 	.pair-content{display:grid;justify-items:center;gap:16px;width:min(100%,380px);text-align:center;}
 	.pair-desktop{padding:30px;border:1px solid var(--line-strong);border-radius:20px;background:var(--surface-1);}
-	.pair-logo{font-size:2rem;font-weight:650;margin-bottom:22px;color:var(--text-strong);}
+	.pair-logo{width:120px;height:44px;object-fit:contain;margin-bottom:22px;}
 	h1,h2{margin:0;color:var(--text-strong);font-size:1.2rem;}p{margin:0;font-size:.8rem;line-height:1.6;color:var(--text-muted);}
 	button{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;min-height:46px;padding:10px 14px;border:1px solid var(--line-strong);border-radius:12px;background:var(--surface-2);color:var(--text-soft);font:inherit;font-size:.85rem;cursor:pointer;}
 	button:disabled{opacity:.5;}label{display:grid;gap:8px;width:100%;text-align:left;color:var(--text-muted);font-size:.75rem;}

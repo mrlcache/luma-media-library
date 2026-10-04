@@ -22,6 +22,68 @@ use std::num::NonZeroU32;
 const MANIFEST_FILE: &str = "local-downloads.json";
 type ManagedTorrentHandle = Arc<librqbit::ManagedTorrent>;
 
+/// Lazily creates the torrent engine so filesystem or resume errors are
+/// reported to download commands without preventing the mobile UI from opening.
+pub struct LocalDownloadsState {
+    initialized: tokio::sync::OnceCell<Result<LocalDownloads, String>>,
+}
+
+impl Default for LocalDownloadsState {
+    fn default() -> Self {
+        Self {
+            initialized: tokio::sync::OnceCell::new(),
+        }
+    }
+}
+
+impl LocalDownloadsState {
+    pub async fn get_or_init(
+        &self,
+        app_data_dir: PathBuf,
+        download_dir: PathBuf,
+    ) -> Result<&LocalDownloads, String> {
+        let initialized = self
+            .initialized
+            .get_or_init(|| async move {
+                LocalDownloads::new(app_data_dir, download_dir)
+                    .await
+                    .map_err(|error| format!("On-device downloads are unavailable: {error}"))
+            })
+            .await;
+        initialized.as_ref().map_err(Clone::clone)
+    }
+
+    /// Catalog reads can safely run before the download engine is needed.
+    pub fn incomplete_files(&self) -> Vec<PathBuf> {
+        self.initialized
+            .get()
+            .and_then(|result| result.as_ref().ok())
+            .map(LocalDownloads::incomplete_files)
+            .unwrap_or_default()
+    }
+}
+
+/// Whether a torrent snapshot needs to restore a previously saved session.
+/// An unreadable or malformed manifest is treated as needing initialization so
+/// the normal command can return the detailed error through IPC.
+pub fn has_saved_transfers(app_data_dir: &PathBuf) -> bool {
+    match fs::read(app_data_dir.join(MANIFEST_FILE)) {
+        Ok(bytes) => match serde_json::from_slice::<Vec<SavedTransfer>>(&bytes) {
+            Ok(transfers) => !transfers.is_empty(),
+            Err(_) => true,
+        },
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+pub fn empty_snapshot(download_dir: &PathBuf) -> TorrentSnapshot {
+    TorrentSnapshot {
+        engine: "rqbit".to_owned(),
+        download_directory: download_dir.to_string_lossy().into_owned(),
+        transfers: Vec::new(),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SavedTransfer {
     info_hash: String,
@@ -417,4 +479,51 @@ fn parse_hash(value: &str) -> Result<librqbit::dht::Id20, String> {
 
 fn display_error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_saved_transfers, SavedTransfer};
+    use std::{fs, path::PathBuf, time::SystemTime};
+
+    fn temporary_directory() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "luma-downloads-test-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn snapshot_only_restores_when_a_transfer_may_exist() {
+        let app_data_dir = temporary_directory();
+        assert!(!has_saved_transfers(&app_data_dir));
+
+        let manifest = app_data_dir.join(super::MANIFEST_FILE);
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&Vec::<SavedTransfer>::new()).unwrap(),
+        )
+        .unwrap();
+        assert!(!has_saved_transfers(&app_data_dir));
+
+        let transfer = SavedTransfer {
+            info_hash: "0123456789012345678901234567890123456789".to_owned(),
+            name: "sample".to_owned(),
+            output_folder: app_data_dir.to_string_lossy().into_owned(),
+            queue_position: 0,
+        };
+        fs::write(&manifest, serde_json::to_vec(&[transfer]).unwrap()).unwrap();
+        assert!(has_saved_transfers(&app_data_dir));
+
+        fs::write(&manifest, b"invalid manifest").unwrap();
+        assert!(has_saved_transfers(&app_data_dir));
+
+        fs::remove_dir_all(app_data_dir).unwrap();
+    }
 }

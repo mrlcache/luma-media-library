@@ -2,6 +2,7 @@ param([ValidateSet('armv7','aarch64')][string[]]$Target = @('armv7'), [switch]$R
 $ErrorActionPreference = 'Stop'
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 $env:CARGO_BUILD_JOBS = '2'
+$env:LUMA_ANDROID_ABIS = (($Target | ForEach-Object { if ($_ -eq 'armv7') { 'armeabi-v7a' } else { 'arm64-v8a' } }) -join ',')
 $projectRoot = Split-Path $PSScriptRoot -Parent
 if (-not $env:JAVA_HOME) { $env:JAVA_HOME = 'C:\Program Files\Java\jdk-17' }
 if (-not $env:ANDROID_HOME) { $env:ANDROID_HOME = Join-Path $env:LOCALAPPDATA 'Android\Sdk' }

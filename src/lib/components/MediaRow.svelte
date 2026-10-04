@@ -2,7 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import FavoriteButton from './FavoriteButton.svelte';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
-	import { recoverRemoteArtwork } from '$lib/media/artwork';
+	import { recoverRemoteArtwork, tmdbImageSize } from '$lib/media/artwork';
 	import { usePlayer } from '$lib/player-context';
 	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
 	import { rightEdgeHint } from '$lib/scroll/right-edge-hint';
@@ -28,7 +28,7 @@
 					<div class="landscape-card__art" style="corner-shape: squircle">
 						<div class="landscape-card__selection-halo" style="corner-shape: squircle"></div>
 						<a class="landscape-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} style="corner-shape: squircle">
-							{#if media.backdrop || media.poster}<img use:recoverRemoteArtwork src={media.backdrop || media.poster} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />{/if}
+							{#if media.backdrop || media.poster}<img use:recoverRemoteArtwork src={mobilePreview ? tmdbImageSize(media.backdrop || media.poster, 'w500') : media.backdrop || media.poster} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />{/if}
 							<div class="landscape-card__scrim"></div>
 							{#if media.installed === false}<span class="landscape-card__availability" role="img" aria-label="Not downloaded" ><Icon name="download" size={13} /></span>{/if}
 							{#if showProgress && media.progress}

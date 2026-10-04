@@ -1,5 +1,6 @@
 import type Lenis from 'lenis';
 import { isDesktopRuntime } from '$lib/platform/desktop';
+import { isMobilePreview } from '$lib/platform/mobile-preview';
 
 const instances = new Set<Lenis>();
 let frame: number | undefined;
@@ -24,7 +25,7 @@ export function registerLenis(instance: Lenis): () => void {
 }
 
 export function smoothHorizontalScroll(node: HTMLElement) {
-	if (!isDesktopRuntime()) return;
+	if (!isDesktopRuntime() || isMobilePreview()) return;
 
 	let disposed = false;
 	let loading = false;

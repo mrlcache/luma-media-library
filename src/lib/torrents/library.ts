@@ -27,6 +27,7 @@ export function transferCard(item: LibraryTransfer): LibraryCard {
 export function startTorrentLibraryUpdates() {
 	let stopped = false;
 	let busy = false;
+	let timer: number | undefined;
 	let release: (() => void) | undefined;
 	let latest: TorrentTransfer[] = [];
 	const completed=new Set<string>();
@@ -65,13 +66,36 @@ export function startTorrentLibraryUpdates() {
 		} catch { /* A missing torrent engine must not hide the existing library. */ }
 		finally { busy = false; }
 	}
+	function stopPolling() {
+		if (timer === undefined) return;
+		window.clearInterval(timer);
+		timer = undefined;
+	}
+	function startPolling() {
+		if (stopped || document.hidden || timer !== undefined) return;
+		timer = window.setInterval(() => void refresh(), 1500);
+	}
+	function handleVisibilityChange() {
+		if (document.hidden) {
+			stopPolling();
+			return;
+		}
+		void refresh();
+		startPolling();
+	}
 	void refresh();
-	const timer = window.setInterval(() => void refresh(), 1500);
+	startPolling();
+	document.addEventListener('visibilitychange', handleVisibilityChange);
 	if (isDesktopRuntime()) {
 		void import('@tauri-apps/api/event').then(({ listen }) => listen('library-changed', () => {
 			invalidateCatalogPageCache();
 			window.dispatchEvent(new Event('luma-library-changed'));
 		})).then((unlisten) => { if (stopped) unlisten(); else release = unlisten; });
 	}
-	return () => { stopped = true; window.clearInterval(timer); release?.(); };
+	return () => {
+		stopped = true;
+		stopPolling();
+		document.removeEventListener('visibilitychange', handleVisibilityChange);
+		release?.();
+	};
 }

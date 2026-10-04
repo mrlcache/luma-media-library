@@ -15,6 +15,8 @@
 	import type { CatalogMedia, ContinueWatchingItem, MediaItem, PlaybackHistoryItem, TmdbTrailer } from '$lib/types';
 	import { cachedDiscovery, discoveryMedia, readDiscovery, prepareDiscoveryLogo, readDiscoveryTrailer } from '$lib/media/discovery';
 	import { homeSnapshot } from '$lib/media/home-state';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
+	const mobilePreview = isMobilePreview();
 
 	let homeContent: HTMLDivElement;
 	let heroElement = $state<HTMLElement>();
@@ -114,7 +116,7 @@
 	});
 	let heroItems = $derived(discovery?.featured.map(discoveryMedia) ?? []);
 	let featured = $state<MediaItem | null>(null);
-	let featuredBackdrop = $derived(featured ? tmdbImageSize(featured.backdrop, 'original') : '');
+	let featuredBackdrop = $derived(featured ? tmdbImageSize(featured.backdrop, mobilePreview ? 'w780' : 'original') : '');
 	let recentlyAdded = $derived(libraryItems.slice(0, 8));
 	let recommendationSections = $derived(discovery?.sections.map((section) => ({title: section.title, items: section.items.map(discoveryMedia)})) ?? []);
 
@@ -137,7 +139,7 @@
 		let cancelled = false;
 		void prepareDiscoveryLogo(item).then(async (logo) => {
 			const backdrop = new Image();
-			backdrop.src = tmdbImageSize(item.backdrop, 'original');
+			backdrop.src = tmdbImageSize(item.backdrop, mobilePreview ? 'w780' : 'original');
 			try { await backdrop.decode(); } catch { /* The artwork recovery action can retry unavailable backdrops. */ }
 			if (cancelled) return;
 			// Commit the title and its decoded logo together, without a text placeholder.
@@ -168,7 +170,7 @@
 
 	$effect(() => {
 		const trailer = heroTrailer;
-		if (!trailer || showHeroVideo || heroTrailerEnded || !heroInView || document.hidden || reduceMotionEnabled || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+		if (mobilePreview || !trailer || showHeroVideo || heroTrailerEnded || !heroInView || document.hidden || reduceMotionEnabled || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 		const timer = window.setTimeout(() => { showHeroVideo = true; }, 5000);
 		return () => window.clearTimeout(timer);
 	});

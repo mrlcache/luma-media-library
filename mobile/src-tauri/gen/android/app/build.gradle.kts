@@ -21,6 +21,11 @@ android {
         applicationId = "app.luma.mobile.demo"
         minSdk = 26
         targetSdk = 36
+        // Package only the requested targets; stale JNI outputs from another build
+        // must never select an older native library on a user's phone.
+        System.getenv("LUMA_ANDROID_ABIS")?.split(",")?.filter { it.isNotBlank() }?.let {
+            ndk { abiFilters.addAll(it) }
+        }
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }

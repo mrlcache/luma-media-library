@@ -2,7 +2,8 @@ import { Window } from 'happy-dom';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-const window = new Window({url:'http://tauri.localhost/',settings:{disableCSSFileLoading:true,disableJavaScriptFileLoading:true,disableIframePageLoading:true}});
+const pairingPreview = process.argv.includes('--pairing-preview');
+const window = new Window({url:`http://tauri.localhost/${pairingPreview ? 'pairing-preview?mobile=1' : ''}`,settings:{disableCSSFileLoading:true,disableJavaScriptFileLoading:true,disableIframePageLoading:true}});
 const real = process.argv.includes('--real');
 for (const key of ['window','document','navigator','location','history','localStorage','sessionStorage','Element','HTMLElement','HTMLMediaElement','HTMLVideoElement','Node','Text','Event','CustomEvent','MutationObserver','ResizeObserver','IntersectionObserver','getComputedStyle','getSelection','requestAnimationFrame','cancelAnimationFrame','pageXOffset','pageYOffset','innerWidth','innerHeight','scrollTo']) {
   if (key in window) Object.defineProperty(globalThis,key,{value:typeof window[key] === 'function' && /^(getComputedStyle|getSelection|scrollTo|request|cancel)/.test(key)?window[key].bind(window):window[key],configurable:true});
@@ -11,6 +12,8 @@ window.__TAURI_INTERNALS__ = {metadata:{currentWindow:{label:'main'},currentWebv
 // Native Tauri defines these as read-only. A plain browser mock hides this constraint.
 for (const key of ['invoke','transformCallback','unregisterCallback','runCallback','callbacks']) {
   const invoke = (command,args) => {
+    if (real && command==='get_mobile_connection') return Promise.resolve({paired:pairingPreview,url:null});
+    if (real && command==='discover_luma_computers') return Promise.resolve([]);
     if (real && command==='mobile_remote_command') {
       if(args.command==='desktop_bootstrap')return Promise.resolve({version:'0.2.0',platform:'android',mediaCoreStatus:'library-index-ready',nativeWindowFrame:true});
       return Promise.reject('Connect to your computer in Settings.');
@@ -47,6 +50,18 @@ if (document.body.textContent.includes('Internal Error') || errors.length) { con
 if (!real && (!document.body.textContent.includes('For you') || !document.body.textContent.includes('Continue watching'))) throw new Error('Home did not render');
 if (document.documentElement.dataset.mobilePreview !== 'true') throw new Error('Mobile shell is not enabled');
 if (real && (!document.body.textContent.includes('Library') || !document.body.textContent.includes('Home'))) throw new Error('Unpaired mobile navigation did not render');
+if (pairingPreview) {
+  if (!document.body.textContent.includes('Connect your computer')) throw new Error('Pairing screen did not render');
+  const assets = path.resolve('.artifacts/mobile-web/_app/immutable/assets');
+  const style = document.createElement('style');
+  style.textContent = fs.readdirSync(assets).filter(name=>name.endsWith('.css')).map(name=>fs.readFileSync(path.join(assets,name),'utf8')).join('\n');
+  document.head.appendChild(style);
+  for (const image of document.querySelectorAll('img[src="/luma-wordmark.svg"]')) image.src = 'data:image/svg+xml;base64,'+fs.readFileSync('static/luma-wordmark.svg').toString('base64');
+  document.querySelectorAll('script,link').forEach(node=>node.remove());
+  const screen = document.querySelector('.pair-screen');
+  document.body.replaceChildren(screen);
+  fs.writeFileSync('.artifacts/pairing-preview.html', '<!doctype html>'+document.documentElement.outerHTML);
+}
 if (window.__TAURI_INTERNALS__ !== nativeBridge || nativeBridge.invoke !== nativeInvoke) throw new Error('Demo replaced the native bridge');
 console.log(real?'Packaged mobile rendered without a paired PC.':'Packaged mobile Home rendered successfully.');
 process.exit(0);

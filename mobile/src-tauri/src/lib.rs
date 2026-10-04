@@ -110,7 +110,7 @@ fn media_files(root: &PathBuf) -> Vec<(PathBuf, LocalCatalogItem)> {
 
 fn ready_media_files(app: &AppHandle, root: &PathBuf) -> Vec<(PathBuf, LocalCatalogItem)> {
     let incomplete = app
-        .state::<local_downloads::LocalDownloads>()
+        .state::<local_downloads::LocalDownloadsState>()
         .incomplete_files();
     let metadata: serde_json::Value = app
         .path()
@@ -460,7 +460,7 @@ async fn mobile_local_command(
     app: AppHandle,
     command: String,
     args: Option<serde_json::Value>,
-    downloads: State<'_, local_downloads::LocalDownloads>,
+    downloads: State<'_, local_downloads::LocalDownloadsState>,
 ) -> Result<serde_json::Value, String> {
     let args = args.unwrap_or_else(|| serde_json::json!({}));
     let string_arg = |key: &str| {
@@ -506,23 +506,34 @@ async fn mobile_local_command(
             Ok(serde_json::Value::Null)
         }
         "torrent_snapshot" => {
-            serde_json::to_value(downloads.snapshot().await.map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())
+            let (app_data_dir, download_dir) = mobile_download_paths(&app)?;
+            let snapshot = if local_downloads::has_saved_transfers(&app_data_dir) {
+                ensure_local_downloads(&app, &downloads)
+                    .await?
+                    .snapshot()
+                    .await?
+            } else {
+                local_downloads::empty_snapshot(&download_dir)
+            };
+            serde_json::to_value(snapshot).map_err(|e| e.to_string())
         }
         "torrent_add_magnet" => {
-            let hash = downloads
+            let hash = ensure_local_downloads(&app, &downloads)
+                .await?
                 .add_magnet(string_arg("uri")?, optional_path())
                 .await?;
             Ok(serde_json::Value::String(hash))
         }
         "torrent_add_file" => {
-            let hash = downloads
+            let hash = ensure_local_downloads(&app, &downloads)
+                .await?
                 .add_file(PathBuf::from(string_arg("path")?), optional_path())
                 .await?;
             Ok(serde_json::Value::String(hash))
         }
         "torrent_add_data" => {
-            let hash = downloads
+            let hash = ensure_local_downloads(&app, &downloads)
+                .await?
                 .add_data(string_arg("encoded")?, optional_path())
                 .await?;
             Ok(serde_json::Value::String(hash))
@@ -532,13 +543,17 @@ async fn mobile_local_command(
                 .get("paused")
                 .and_then(|v| v.as_bool())
                 .ok_or("Missing paused")?;
-            downloads
+            ensure_local_downloads(&app, &downloads)
+                .await?
                 .set_paused(string_arg("infoHash")?, paused)
                 .await?;
             Ok(serde_json::Value::Null)
         }
         "torrent_remove" => {
-            downloads.remove(string_arg("infoHash")?).await?;
+            ensure_local_downloads(&app, &downloads)
+                .await?
+                .remove(string_arg("infoHash")?)
+                .await?;
             Ok(serde_json::Value::Null)
         }
         "torrent_move_queue" => {
@@ -546,7 +561,8 @@ async fn mobile_local_command(
                 .get("direction")
                 .and_then(|v| v.as_i64())
                 .ok_or("Missing direction")? as i32;
-            downloads
+            ensure_local_downloads(&app, &downloads)
+                .await?
                 .move_queue(string_arg("infoHash")?, direction)
                 .await?;
             Ok(serde_json::Value::Null)
@@ -560,7 +576,10 @@ async fn mobile_local_command(
                 .get("upload")
                 .and_then(|v| v.as_u64())
                 .ok_or("Missing upload")?;
-            downloads.set_limits(download, upload).await?;
+            ensure_local_downloads(&app, &downloads)
+                .await?
+                .set_limits(download, upload)
+                .await?;
             Ok(serde_json::Value::Null)
         }
         "get_catalog_page" => serde_json::to_value(mobile_catalog_page(
@@ -650,19 +669,29 @@ async fn mobile_local_command(
     }
 }
 
+fn mobile_download_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Cannot access private app storage for downloads: {error}"))?;
+    let download_dir = app_data_dir.join("Downloads");
+    Ok((app_data_dir, download_dir))
+}
+
+async fn ensure_local_downloads<'a>(
+    app: &AppHandle,
+    state: &'a local_downloads::LocalDownloadsState,
+) -> Result<&'a local_downloads::LocalDownloads, String> {
+    let (app_data_dir, download_dir) = mobile_download_paths(app)?;
+    state.get_or_init(app_data_dir, download_dir).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(player_device::init())
         .setup(|app| {
-            let app_data = app.path().app_data_dir()?;
-            let download_dir = app_data.join("Downloads");
-            let downloads = tauri::async_runtime::block_on(local_downloads::LocalDownloads::new(
-                app_data,
-                download_dir,
-            ))
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
-            app.manage(downloads);
+            app.manage(local_downloads::LocalDownloadsState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
