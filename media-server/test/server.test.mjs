@@ -4,6 +4,8 @@ import { mkdtemp,writeFile,mkdir,rm,stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { XMLParser,XMLValidator } from 'fast-xml-parser';
 import { MediaServer,peerAllowed } from '../src/server.mjs';
@@ -15,6 +17,7 @@ import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 
 const parse=new XMLParser({removeNSPrefix:true,parseTagValue:false});
+const mediaServerRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 async function fixture(){
   const root=await mkdtemp(path.join(os.tmpdir(),'luma-server-test-'));
   const media=path.join(root,'media');await mkdir(media);await writeFile(path.join(media,'episode.mkv'),'0123456789');await writeFile(path.join(root,'private.mkv'),'secret');
@@ -82,6 +85,36 @@ test('server browses series, streams original ranges, events and stops/restarts'
 test('malformed XML and entity definitions get SOAP faults',async t=>{
   const f=await fixture();const server=new MediaServer({dbPath:f.dbPath,host:'127.0.0.1',netmask:'255.0.0.0',port:0,tools:path.join(f.root,'no-tools'),discoveryEnabled:false});t.after(async()=>{await server.stop();await rm(f.root,{recursive:true,force:true});});await server.start();
   for(const body of ['<bad>','<!DOCTYPE e [<!ENTITY secret SYSTEM "file:///secret">]><e>&secret;</e>']){const result=await fetch(`${server.baseURL}/upnp/ContentDirectory/control`,{method:'POST',headers:{SOAPAction:`"${CD}#Browse"`},body});assert.equal(result.status,500);assert.match(await result.text(),/<errorCode>402/);}
+});
+test('mobile admin stream echoes media identity and applies successive quality and bitrate choices',async t=>{
+  const tools=path.join(mediaServerRoot,'tools');const transcoder=new Transcoder(tools);if(!transcoder.available){t.skip('Run setup-ffmpeg.ps1 for conversion integration test');return;}
+  const host=Object.values(os.networkInterfaces()).flat().find(address=>address?.family==='IPv4'&&!address.internal&&!address.address.startsWith('169.254.'))?.address;
+  if(!host){t.skip('A local IPv4 interface is required to launch the media server');return;}
+  const f=await fixture();t.after(()=>rm(f.root,{recursive:true,force:true}));
+  const exec=promisify(execFile);const source=path.join(f.media,'episode.mkv');
+  await exec(transcoder.ffmpeg,['-y','-v','error','-f','lavfi','-i','testsrc2=size=1600x900:rate=24','-f','lavfi','-i','anullsrc=r=48000:cl=5.1','-t','2','-c:v','libx265','-pix_fmt','yuv420p10le','-x265-params','pools=1:frame-threads=1','-c:a','eac3',source],{windowsHide:true,timeout:30000});
+  const portProbe=http.createServer();await new Promise((resolve,reject)=>{portProbe.once('error',reject);portProbe.listen(0,'127.0.0.1',resolve);});const adminPort=portProbe.address().port;await new Promise(resolve=>portProbe.close(resolve));
+  const runtime=path.join(f.root,'runtime');
+  const child=spawn(process.execPath,[path.join(mediaServerRoot,'src','main.mjs'),'--host',host,'--admin-port',String(adminPort),'--db',f.dbPath],{cwd:mediaServerRoot,windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...process.env,LUMA_SERVER_RUNTIME:runtime,LUMA_FFMPEG:transcoder.ffmpeg,LUMA_FFPROBE:transcoder.ffprobe}});
+  let stdout='',stderr='',pending='';child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
+  const ready=new Promise((resolve,reject)=>{
+    child.stdout.on('data',chunk=>{stdout+=chunk;pending+=chunk;const lines=pending.split('\n');pending=lines.pop();for(const line of lines){try{const state=JSON.parse(line);if(state.admin)resolve(state);}catch{}}});
+    child.stderr.on('data',chunk=>{stderr+=chunk;});
+    child.once('error',reject);
+    child.once('exit',code=>reject(new Error(`Media server exited before readiness (${code}): ${stderr||stdout}`)));
+  });
+  t.after(async()=>{if(child.exitCode!==null)return;const exited=new Promise(resolve=>child.once('exit',resolve));child.kill();await Promise.race([exited,new Promise(resolve=>setTimeout(resolve,3000))]);if(child.exitCode===null)child.kill('SIGKILL');});
+  let readyTimeout;const state=await Promise.race([ready,new Promise((_,reject)=>{readyTimeout=setTimeout(()=>reject(new Error(`Timed out waiting for media server: ${stderr||stdout}`)),10000);})]);clearTimeout(readyTimeout);
+  const identity=fileIdentity(source);const session='quality-switch-01';const headers={'X-Luma-Control':'1','X-Luma-Media-Identity':identity};
+  const invalid=await fetch(`${state.admin}/api/mobile-stream/file-10?quality=480p&bitrate=800000&session=bad%2Fsession`,{method:'HEAD',headers});assert.equal(invalid.status,400);
+  const invalidBitrate=await fetch(`${state.admin}/api/mobile-stream/file-10?quality=480p&bitrate=900000&session=${session}`,{headers});assert.equal(invalidBitrate.status,500);assert.equal(invalidBitrate.headers.get('X-Luma-Media-Identity'),identity);assert.match(await invalidBitrate.text(),/Unsupported bitrate for this quality/);
+  for(const choice of [{quality:'480p',bitrate:800000,width:854,height:480},{quality:'720p',bitrate:4000000,width:1280,height:720}]){
+    const url=`${state.admin}/api/mobile-stream/file-10?quality=${choice.quality}&bitrate=${choice.bitrate}&session=${session}`;
+    const head=await fetch(url,{method:'HEAD',headers});assert.equal(head.status,200);assert.equal(head.headers.get('X-Luma-Media-Identity'),identity);assert.equal(head.headers.get('X-Luma-Bitrate-Limit'),String(choice.bitrate));assert.ok(Number(head.headers.get('X-Luma-Source-Bitrate'))>0);assert.ok(Number(head.headers.get('X-Luma-Duration'))>=1.9);assert.equal((await head.arrayBuffer()).byteLength,0);
+    const response=await fetch(url,{headers});assert.equal(response.status,200);assert.equal(response.headers.get('X-Luma-Media-Identity'),identity);assert.ok(Number(response.headers.get('X-Luma-Duration'))>=1.9);
+    const output=path.join(f.root,`${choice.quality}.mp4`);await writeFile(output,Buffer.from(await response.arrayBuffer()));assert.ok((await stat(output)).size>1000);
+    const {stdout:probe}=await exec(transcoder.ffprobe,['-v','error','-show_entries','stream=codec_name,width,height:format=duration,bit_rate','-of','json',output],{windowsHide:true,timeout:15000});const result=JSON.parse(probe);const video=result.streams.find(stream=>stream.codec_name==='h264');assert.ok(video);assert.equal(video.width,choice.width);assert.equal(video.height,choice.height);assert.ok(Number(result.format.duration)>=1.9);assert.ok(Number(result.format.bit_rate)>0);
+  }
 });
 test('FFmpeg compatible stream preserves already compatible codecs via remux',async t=>{
   const tools=path.resolve('tools');const transcoder=new Transcoder(tools);if(!transcoder.available){t.skip('Run setup-ffmpeg.ps1 for conversion integration test');return;}

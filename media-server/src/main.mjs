@@ -41,6 +41,9 @@ const admin=http.createServer(async(req,res)=>{
       if(req.headers['x-luma-control']!=='1'){res.writeHead(403);res.end();return;}
       const start=Number(url.searchParams.get('start')||0);
       const quality=url.searchParams.get('quality')||'auto';
+      const bitrate=Number(url.searchParams.get('bitrate')||0);
+      const session=url.searchParams.get('session')||'';
+      if(session && !/^[a-z0-9-]{1,64}$/.test(session)){res.writeHead(400,{'Content-Type':'text/plain'});res.end('Invalid session');return;}
       if(quality!=='auto' && !Object.hasOwn(mobileQualities,quality)){res.writeHead(400);res.end('Unsupported quality');return;}
       if(!Number.isFinite(start)||start<0||start>86400){res.writeHead(400,{'Content-Type':'text/plain'});res.end('Invalid start position');return;}
       const identity=req.headers['x-luma-media-identity'];
@@ -49,12 +52,12 @@ const admin=http.createServer(async(req,res)=>{
       if(typeof identity==='string')res.setHeader('X-Luma-Media-Identity',identity);
       if(!media.transcoder.available){res.writeHead(503,{'Content-Type':'text/plain'});res.end('FFmpeg unavailable');return;}
       if(req.method==='HEAD'){
-        const plan=await media.transcoder.plan(file,'mp4',quality);
+        const plan=await media.transcoder.plan(file,'mp4',quality,bitrate);
         res.setHeader('X-Luma-Bitrate-Limit',String(plan.profile?.bitrate || 0));
         res.setHeader('X-Luma-Source-Bitrate',String(plan.sourceBitrate));
         res.writeHead(200,{'Content-Type':'video/mp4','X-Luma-Duration':String(plan.duration),'Cache-Control':'no-store','Access-Control-Allow-Origin':'*','Access-Control-Expose-Headers':'X-Luma-Duration'});res.end();return;
       }
-      return await media.transcoder.stream(file,req,res,start,'mp4',quality);
+      return await media.transcoder.stream(file,req,res,start,'mp4',quality,bitrate,session);
     }
     let result;
     if(url.pathname==='/api/dev-version'&&req.method==='GET')result={version:devVersion,enabled:Boolean(options.dev)};

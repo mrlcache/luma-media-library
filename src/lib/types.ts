@@ -69,7 +69,7 @@ export type PlaybackHistoryItem = {
 };
 
 export type SubtitleFileSource = { label: string; path: string };
-export type ResolvedMediaFile = { path: string; subtitles: SubtitleFileSource[]; resumePositionSeconds: number };
+export type ResolvedMediaFile = { path: string; subtitles: SubtitleFileSource[]; resumePositionSeconds: number; mediaId?: number };
 
 export type OpenSubtitleSearchResult = {
 	fileId: number;

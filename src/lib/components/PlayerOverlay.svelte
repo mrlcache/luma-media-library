@@ -66,12 +66,17 @@
 	let mobileSourceUrl = $state('');
 	let transcoding = $state(false);
 	let transcodeQuality = $state('auto');
+	let transcodeBitrate = $state(0);
+	const bitratePresets: Record<string,number[]> = { '480p':[800000,1200000,2000000], '720p':[1500000,2500000,4000000], '1080p':[3000000,5000000,8000000] };
+	const bitrateOptions = $derived((bitratePresets[transcodeQuality] || []).map(value=>({value,label:`${value / 1_000_000} Mbps`})));
+	const mobileStreamSession = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,14)}`;
+	let mobileMetadataAbort: AbortController | undefined;
 	let sourceBitrate = $state(0);
 	const qualityOptions = [
 		{ value: 'auto', label: 'Automatic' },
-		{ value: '480p', label: '480p · up to 1.2 Mbps' },
-		{ value: '720p', label: '720p · up to 2.5 Mbps' },
-		{ value: '1080p', label: '1080p · up to 5 Mbps' },
+		{ value: '480p', label: '480p' },
+		{ value: '720p', label: '720p' },
+		{ value: '1080p', label: '1080p' },
 	];
 	let transcodeOffset = 0;
 	let mobilePendingSeek:number|null = null;
@@ -627,6 +632,7 @@
 
 	function onPlaybackError() {
 		if (activeEngine) return;
+		if(mobilePlayer && isLoading && !video?.getAttribute('src'))return;
 		if (!video?.error) return;
 		playbackError = video.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
 			? mobilePlayer ? 'This video format is not supported on your phone.' : 'This file or its video codec is not supported by the built-in Windows player. Try an MP4 or WebM file, or open it in your configured desktop player.'
@@ -657,24 +663,40 @@
 
 	async function loadMobileStream(position=0) {
 		const attempt=++mobileLoadAttempt;
-		playbackError='';isLoading=true;mediaReady=false;isPlaying=false;
-		video.pause();video.removeAttribute('src');video.load();
+		mobileMetadataAbort?.abort();
+		const controller=new AbortController();mobileMetadataAbort=controller;
+		const metadataTimeout=setTimeout(()=>controller.abort(),20000);
+		playbackError='';isLoading=true;
 		try {
 			const url=new URL(mobileSourceUrl);
 			if(transcoding){
 				url.pathname += '/compatible';url.searchParams.set('start',String(Math.max(0,position)));
 				url.searchParams.set('quality',transcodeQuality);
-				const metadata=await fetch(url,{method:'HEAD',cache:'no-store'});
+				url.searchParams.set('bitrate',String(transcodeBitrate));
+				url.searchParams.set('session',mobileStreamSession);
+				const metadata=await fetch(url,{method:'HEAD',cache:'no-store',signal:controller.signal});
 				if(!metadata.ok)throw new Error('Could not start transcoding on your computer. Check that Luma is updated and FFmpeg is available.');
 				const length=Number(metadata.headers.get('X-Luma-Duration'));
 				if(Number.isFinite(length)&&length>0)duration=length;
 				sourceBitrate=Number(metadata.headers.get('X-Luma-Source-Bitrate')) || 0;
 			}
 			if(attempt!==mobileLoadAttempt||playerDisposed)return;
+			video.pause();video.removeAttribute('src');video.load();mediaReady=false;isPlaying=false;
 			transcodeOffset=transcoding?position:0;resumePosition=transcoding?0:position;mobilePendingSeek=transcoding?null:position;
 			currentTime=position;video.src=url.toString();video.load();video.playbackRate=playbackRate;
 			try {await video.play();} catch(error){if(error instanceof Error && error.name==='NotAllowedError'){isLoading=false;controlsVisible=true;}else throw error;}
-		}catch(error){if(attempt===mobileLoadAttempt&&!playerDisposed){isLoading=false;playbackError=error instanceof Error?error.message:String(error);}}
+		}catch(error){if(attempt===mobileLoadAttempt&&!playerDisposed){isLoading=false;playbackError=error instanceof Error && error.name==='AbortError'?'Your computer took too long to prepare the stream. Try again.':error instanceof Error?error.message:String(error);}}
+		finally {clearTimeout(metadataTimeout);if(mobileMetadataAbort===controller)mobileMetadataAbort=undefined;}
+	}
+	async function retryMobilePlayback() {
+		try {
+			isLoading=true;playbackError='';
+			const source=await resolveMediaFile(Number(media.id),media.title,media.episodeLabel,media.tmdbId);
+			if(playerDisposed)return;
+			if(source.mediaId)media={...media,id:String(source.mediaId)};
+			mobileSourceUrl=await localMediaUrl(source.path);
+			await loadMobileStream(currentTime || source.resumePositionSeconds);
+		}catch(error){isLoading=false;playbackError=error instanceof Error?error.message:String(error);}
 	}
 	async function toggleTranscoding(){
 		if(!canTranscode)return;
@@ -684,9 +706,16 @@
 	}
 	async function changeTranscodeQuality(quality: string) {
 		transcodeQuality = quality;
+		transcodeBitrate=bitratePresets[quality]?.[1] || 0;
 		if (!canTranscode || previewOnly) return;
 		transcoding = true;
 		playerMenuOpen = false;
+		await loadMobileStream(currentTime || resumePosition);
+	}
+	async function changeTranscodeBitrate(bitrate: number) {
+		transcodeBitrate=bitrate;
+		if(!canTranscode || previewOnly)return;
+		transcoding=true;playerMenuOpen=false;
 		await loadMobileStream(currentTime || resumePosition);
 	}
 
@@ -721,9 +750,10 @@
 			return () => { document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
 		}
 		void readPlayerLevels().then(levels=>{ if(levels && !playerDisposed){volume=Math.round(levels.volume); brightness=Math.round(levels.brightness);} }).catch(console.warn);
-		void resolveMediaFile(mediaId, media.title)
+		void resolveMediaFile(mediaId, media.title, media.episodeLabel, media.tmdbId)
 			.then(async (source) => {
 				if (playerDisposed) return;
+				if(source.mediaId && source.mediaId!==Number(media.id))media={...media,id:String(source.mediaId)};
 				resumePosition = source.resumePositionSeconds;
 				const episodeMarker = source.path.match(/(?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{2})/i)?.[0];
 				if (episodeMarker && media.kind === 'series') subtitleQuery = `${media.title} ${episodeMarker.toUpperCase()}`;
@@ -760,6 +790,7 @@
 			});
 		return () => {
 			playerDisposed = true;
+			mobileMetadataAbort?.abort();
 			mobileLoadAttempt++;
 			resetPlayerLevels();
 			document.removeEventListener('fullscreenchange', handleFullscreenChange);
@@ -839,7 +870,7 @@
 			<div class="player-message" role="status"><span class="player-loading__spinner"></span><span>Opening media…</span></div>
 		{:else if playbackError}
 			{#if mobilePlayer}
-				<div class="player-message player-message--mobile-error" role="alert"><Icon name="info" size={26}/><strong>Couldn’t play this video</strong><span>{playbackError}</span><button type="button" onclick={closePlayer}><Icon name="arrow-left" size={16}/>Go back</button></div>
+				<div class="player-message player-message--mobile-error" role="alert"><Icon name="info" size={26}/><strong>Couldn’t play this video</strong><span>{playbackError}</span><button type="button" onclick={retryMobilePlayback}>Try again</button><button type="button" onclick={closePlayer}><Icon name="arrow-left" size={16}/>Go back</button></div>
 			{:else}
 				<div class="player-message player-message--error" role="alert"><strong>Playback unavailable</strong><span>{playbackError}</span><span>Choose another engine in the menu at the top right.</span></div>
 			{/if}
@@ -866,8 +897,9 @@
 								<button type="button" role="switch" aria-checked={transcoding} disabled={!canTranscode || isLoading} onclick={toggleTranscoding}>Transcoding <span>{transcoding?'On':'Off'}</span></button>
 								<p>{canTranscode?'Convert unsupported formats on your computer.':'Transcoding is available for media streamed from your computer.'}</p>
 								{#if canTranscode}
-									<span class="player-options__label">Quality · video bitrate</span>
+									<span class="player-options__label">Quality</span>
 									<AppSelect value={transcodeQuality} label="Streaming quality" options={qualityOptions} disabled={isLoading} onchange={changeTranscodeQuality}/>
+									{#if bitrateOptions.length}<span class="player-options__label">Video bitrate limit</span><AppSelect value={transcodeBitrate} label="Video bitrate limit" options={bitrateOptions} disabled={isLoading} onchange={changeTranscodeBitrate}/>{/if}
 									{#if sourceBitrate > 0}<p>Original bitrate: {(sourceBitrate / 1_000_000).toFixed(1)} Mbps</p>{/if}
 								{/if}
 								{#if audioTracks.length>1}<AppSelect value={activeAudio} label="Audio track" options={audioTracks.map(track=>({value:track.index,label:track.label}))} onchange={selectAudio}/>{/if}
@@ -1199,7 +1231,7 @@
 	.player-overlay--mobile .player-now-playing strong { display: block; overflow: hidden; font-size: .9rem; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 	.player-overlay--mobile .player-now-playing > span { display: block; margin-bottom: 3px; font-size: .65rem; color: rgba(229,238,244,.55); }
 	.player-overlay--mobile .player-glass-button { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; background: rgba(27,37,47,.46); }
-	.player-overlay--mobile .player-ui::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(0deg,rgba(7,12,18,.7),rgba(7,12,18,.2) 24%,transparent 48%); }
+	.player-overlay--mobile .player-control-deck { text-shadow: 0 1px 4px #000, 0 0 12px #000; }
 	.player-overlay--mobile .player-control-deck { left: 0; right: 0; bottom: 0; padding: 64px 22px max(22px, env(safe-area-inset-bottom)); border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
 	.player-overlay--mobile .player-timeline { gap: 0; }
 	.player-overlay--mobile .player-timeline__meta { order: 2; font-size: .69rem; color: rgba(237,242,247,.68); }

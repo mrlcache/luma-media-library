@@ -265,19 +265,31 @@ export async function readTitleTrailer(mediaId: number): Promise<TmdbTrailer | n
 	return pending;
 }
 
-export async function resolveMediaFile(mediaId: number, expectedTitle?: string): Promise<ResolvedMediaFile> {
+export async function resolveMediaFile(mediaId: number, expectedTitle?: string, expectedEpisode?: string, expectedTmdbId?: number): Promise<ResolvedMediaFile> {
 	if (!isDesktopRuntime()) throw new Error('Local playback is available in the desktop app.');
 	const { invoke } = await import('$lib/platform/invoke');
 	if (nativeMobile && mediaId < 1_000_000_000 && expectedTitle) {
 		const current = await invoke<LocalTitleDetail | null>('get_local_title_detail', { mediaId });
 		const normalize = (title: string) => title.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
-		if (!current || normalize(current.media.title) !== normalize(expectedTitle)) {
+		const marker = expectedEpisode?.match(/S(\d+)E(\d+)/i);
+		const sameTitle = (detail: LocalTitleDetail | null) => !!detail && normalize(detail.media.title) === normalize(expectedTitle) && (!expectedTmdbId || !detail.tmdbId || detail.tmdbId === expectedTmdbId);
+		const sameEpisode = (detail: LocalTitleDetail | null) => !marker || detail?.files.some(file => file.mediaId === mediaId && file.season === Number(marker[1]) && file.episode === Number(marker[2]));
+		if (!sameTitle(current) || !sameEpisode(current)) {
 			invalidateCatalogPageCache();
-			window.dispatchEvent(new CustomEvent('library-changed'));
-			throw new Error('Your computer’s library has changed. Reopen this title from the library to play the correct video.');
+			const page = await invoke<CatalogPage>('get_catalog_page', {offset:0,count:48,query:expectedTitle});
+			const matches = new Set<number>();
+			for (const item of page.items.filter(item => item.id < 1_000_000_000 && normalize(item.title) === normalize(expectedTitle))) {
+				const detail = await invoke<LocalTitleDetail | null>('get_local_title_detail', {mediaId:item.id});
+				if (!sameTitle(detail) || !detail) continue;
+				if (marker) {
+					for (const file of detail.files) if (file.season === Number(marker[1]) && file.episode === Number(marker[2])) matches.add(file.mediaId);
+				} else if (detail.media.kind === 'movie' || detail.files.length === 1) matches.add(detail.media.id);
+			}
+			if (matches.size !== 1) throw new Error('Couldn’t identify this video in your computer’s current library.');
+			mediaId = [...matches][0];
 		}
 	}
-	return invoke<ResolvedMediaFile>('resolve_media_file', { mediaId });
+	return {...await invoke<ResolvedMediaFile>('resolve_media_file', { mediaId }),mediaId};
 }
 
 export async function savePlaybackProgress(mediaId: number, positionSeconds: number, durationSeconds: number): Promise<void> {

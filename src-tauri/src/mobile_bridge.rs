@@ -904,7 +904,11 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
                 reply(stream, 400, "Unsupported quality", "text/plain");
                 return;
             }
-            stream_compatible(stream, app, id, start, method == "HEAD", quality);
+            let bitrate = match fields.get("bitrate") { None => 0, Some(value) => match value.parse::<u64>() { Ok(value) => value, Err(_) => {reply(stream,400,"Invalid bitrate","text/plain");return;} } };
+            let allowed: &[u64] = match quality { "480p" => &[0,800000,1200000,2000000], "720p" => &[0,1500000,2500000,4000000], "1080p" => &[0,3000000,5000000,8000000], _ => &[0] };
+            let session = fields.get("session").copied().unwrap_or("");
+            if !allowed.contains(&bitrate) || session.len()>64 || !session.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c==b'-') {reply(stream,400,"Invalid stream options","text/plain");return;}
+            stream_compatible(stream, app, id, start, method == "HEAD", quality, bitrate, session);
         } else if path == base && method == "GET" {
             stream_media(stream, app, id, &data[..split]);
         } else if let Some(index) = path
@@ -1115,7 +1119,7 @@ fn stream_media(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, headers: &[u
         }
     }
 }
-fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: f64, head: bool, quality: &str) {
+fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: f64, head: bool, quality: &str, bitrate: u64, session: &str) {
     use sha2::{Digest, Sha256};
     let state = app.state::<media_core::LibraryState>();
     let expected_path = match media_core::LibraryStore::open(&state.db_path)
@@ -1152,7 +1156,7 @@ fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: 
             return;
         }
     };
-    let url = format!("{ADMIN_ORIGIN}/api/mobile-stream/file-{id}?start={start}&quality={quality}");
+    let url = format!("{ADMIN_ORIGIN}/api/mobile-stream/file-{id}?start={start}&quality={quality}&bitrate={bitrate}&session={session}");
     let request = if head {
         client.head(&url)
     } else {
