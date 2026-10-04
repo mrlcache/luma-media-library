@@ -704,7 +704,7 @@
 			return () => { document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
 		}
 		void readPlayerLevels().then(levels=>{ if(levels && !playerDisposed){volume=Math.round(levels.volume); brightness=Math.round(levels.brightness);} }).catch(console.warn);
-		void resolveMediaFile(mediaId)
+		void resolveMediaFile(mediaId, media.title)
 			.then(async (source) => {
 				if (playerDisposed) return;
 				resumePosition = source.resumePositionSeconds;

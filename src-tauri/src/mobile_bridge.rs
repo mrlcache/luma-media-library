@@ -1111,6 +1111,20 @@ fn stream_media(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, headers: &[u
     }
 }
 fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: f64, head: bool) {
+    use sha2::{Digest, Sha256};
+    let state = app.state::<media_core::LibraryState>();
+    let expected_path = match media_core::LibraryStore::open(&state.db_path)
+        .and_then(|store| store.resolve_media_path(id))
+        .and_then(|path| path.ok_or_else(|| "Media file not found".to_owned()))
+        .and_then(|path| std::fs::canonicalize(path).map_err(|error| error.to_string()))
+    {
+        Ok(path) => path,
+        Err(_) => { reply(s, 404, "Media file not found", "text/plain"); return; }
+    };
+    let path = expected_path.to_string_lossy();
+    let normalized = path.strip_prefix(r"\\?\UNC\").map(|rest| format!(r"\\{rest}"))
+        .unwrap_or_else(|| path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned());
+    let identity = format!("{:x}", Sha256::digest(normalized.replace('\\', "/").to_lowercase().as_bytes()));
     if let Err(error) = app
         .state::<crate::media_server::MediaServerState>()
         .request("status")
@@ -1139,7 +1153,7 @@ fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: 
     } else {
         client.get(&url)
     };
-    let mut response = match request.header("X-Luma-Control", "1").send() {
+    let mut response = match request.header("X-Luma-Control", "1").header("X-Luma-Media-Identity", identity).send() {
         Ok(response) => response,
         Err(error) => {
             let body = serde_json::json!({"error":format!("Could not start mobile media conversion: {error}")}).to_string();

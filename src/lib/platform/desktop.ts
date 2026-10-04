@@ -104,6 +104,7 @@ export type CatalogPage = {
 };
 
 type CatalogPageCacheEntry = {
+	createdAt?: number;
 	page?: CatalogPage;
 	pending?: Promise<CatalogPage | null>;
 };
@@ -120,7 +121,8 @@ export function peekCatalogPage(
 	query?: string,
 	sort?: string
 ): CatalogPage | undefined {
-	return catalogPageCache.get(JSON.stringify([offset, count, kind, query, sort]))?.page;
+	const entry = catalogPageCache.get(JSON.stringify([offset, count, kind, query, sort]));
+	return nativeMobile && entry?.createdAt && Date.now() - entry.createdAt > 30_000 ? undefined : entry?.page;
 }
 
 export function invalidateCatalogPageCache() {
@@ -159,7 +161,7 @@ export async function readCatalogPage(
 
 	const cacheKey = JSON.stringify([offset, count, kind, query, sort]);
 	const cached = catalogPageCache.get(cacheKey);
-	if (cached) {
+	if (cached && !(nativeMobile && cached.createdAt && Date.now() - cached.createdAt > 30_000)) {
 		catalogPageCache.delete(cacheKey);
 		catalogPageCache.set(cacheKey, cached);
 		if (cached.page) return cached.page;
@@ -172,7 +174,7 @@ export async function readCatalogPage(
 			const { invoke } = await import('$lib/platform/invoke');
 			const page = await invoke<CatalogPage>('get_catalog_page', { offset, count, kind, query, sort });
 			if (catalogPageCache.get(cacheKey) === entry) {
-				catalogPageCache.set(cacheKey, { page });
+				catalogPageCache.set(cacheKey, { page, createdAt: Date.now() });
 				while (catalogPageCache.size > catalogPageCacheLimit) {
 					const oldestKey = catalogPageCache.keys().next().value;
 					if (oldestKey === undefined) break;
@@ -263,9 +265,18 @@ export async function readTitleTrailer(mediaId: number): Promise<TmdbTrailer | n
 	return pending;
 }
 
-export async function resolveMediaFile(mediaId: number): Promise<ResolvedMediaFile> {
+export async function resolveMediaFile(mediaId: number, expectedTitle?: string): Promise<ResolvedMediaFile> {
 	if (!isDesktopRuntime()) throw new Error('Local playback is available in the desktop app.');
 	const { invoke } = await import('$lib/platform/invoke');
+	if (nativeMobile && mediaId < 1_000_000_000 && expectedTitle) {
+		const current = await invoke<LocalTitleDetail | null>('get_local_title_detail', { mediaId });
+		const normalize = (title: string) => title.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+		if (!current || normalize(current.media.title) !== normalize(expectedTitle)) {
+			invalidateCatalogPageCache();
+			window.dispatchEvent(new CustomEvent('library-changed'));
+			throw new Error('Your computer’s library has changed. Reopen this title from the library to play the correct video.');
+		}
+	}
 	return invoke<ResolvedMediaFile>('resolve_media_file', { mediaId });
 }
 

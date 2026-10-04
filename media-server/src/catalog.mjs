@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 
 const VIDEO = new Set(['avi','flv','m2ts','m4v','mkv','mov','mp4','mpeg','mpg','mts','ts','webm','wmv']);
 export const mime = ext => ({mkv:'video/x-matroska',webm:'video/webm',avi:'video/avi',mov:'video/quicktime',ts:'video/mp2t',m2ts:'video/mp2t',mts:'video/mp2t',mpeg:'video/mpeg',mpg:'video/mpeg',wmv:'video/x-ms-wmv',flv:'video/x-flv'}[ext] || 'video/mp4');
+export const fileIdentity = value => createHash('sha256').update(value.replace(/^\\\\\?\\UNC\\/i,'\\\\').replace(/^\\\\\?\\/,'').replaceAll('\\','/').toLowerCase()).digest('hex');
 
 export async function safeFile(root, relative) {
   const canonicalRoot = await realpath(root);
@@ -68,6 +69,19 @@ export class Catalog {
     const item = this.items.find(i => i.id === id);
     if (!item) return null;
     try { return {...item,...await safeFile(item.root,item.relative)}; } catch { return null; }
+  }
+  async matchingFile(id, identity) {
+    if (!/^[a-f0-9]{64}$/.test(identity || '')) return null;
+    const requested = await this.file(id);
+    if (requested && fileIdentity(requested.path) === identity) return requested;
+    // Separate DEV and installed catalogs may assign different numeric IDs.
+    // Search only validated library files, never arbitrary paths from a request.
+    for (const item of this.items) {
+      if (item.id === id) continue;
+      const candidate = await this.file(item.id);
+      if (candidate && fileIdentity(candidate.path) === identity) return candidate;
+    }
+    return null;
   }
   publicItems() { return this.items.map(({id,displayTitle,kind,year,poster,size,mime}) => ({id,title:displayTitle,kind,year,poster,size,mime})); }
 }

@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { XMLParser,XMLValidator } from 'fast-xml-parser';
 import { MediaServer,peerAllowed } from '../src/server.mjs';
 import { range,xml,envelope,CD,CM,scpd } from '../src/protocol.mjs';
-import { safeFile,Catalog } from '../src/catalog.mjs';
+import { safeFile,Catalog,fileIdentity } from '../src/catalog.mjs';
 import { discoveryMessage,targets } from '../src/ssdp.mjs';
 import { Transcoder } from '../src/transcode.mjs';
 import { promisify } from 'node:util';
@@ -46,6 +46,18 @@ test('catalog reads TMDb metadata and rejects escaping paths',async t=>{
   const f=await fixture();t.after(()=>rm(f.root,{recursive:true,force:true}));const catalog=new Catalog(f.dbPath);await catalog.refresh();
   assert.equal(catalog.items.find(i=>i.mediaId===10).title,'API & Title');assert.equal(catalog.items.find(i=>i.mediaId===10).displayTitle,'API & Title · S01E01');assert.equal(catalog.items.length,2);assert.equal(await catalog.file('file-11'),null);await assert.rejects(safeFile(f.media,'../private.mkv'));
   assert.ok(!('root' in catalog.publicItems()[0]));assert.ok(!('relative' in catalog.publicItems()[0]));
+});
+test('catalog matches the real file when another catalog reuses its numeric ID',async t=>{
+  const f=await fixture();t.after(()=>rm(f.root,{recursive:true,force:true}));
+  await writeFile(path.join(f.media,'other.mkv'),'another show');
+  const db=new DatabaseSync(f.dbPath);
+  db.exec("INSERT INTO media_items VALUES(12,1,'other.mkv','Other Show','series',2025,'other'); INSERT INTO media_files VALUES(1,'other.mkv','Other.S01E01.mkv','mkv',12,2);");db.close();
+  const catalog=new Catalog(f.dbPath);await catalog.refresh(true);
+  const expected=await catalog.file('file-12');
+  assert.equal((await catalog.matchingFile('file-10',fileIdentity(expected.path))).id,'file-12');
+  assert.equal(await catalog.matchingFile('file-10','0'.repeat(64)),null);
+  assert.equal(await catalog.matchingFile('file-10',''),null);
+  assert.equal(fileIdentity('C:\\Media\\Episode.mkv'),fileIdentity('\\\\?\\C:\\Media\\Episode.mkv'));
 });
 test('server browses series, streams original ranges, events and stops/restarts',async t=>{
   const f=await fixture();const before=await stat(f.dbPath);const server=new MediaServer({dbPath:f.dbPath,host:'127.0.0.1',netmask:'255.0.0.0',port:0,tools:path.join(f.root,'no-tools'),discoveryEnabled:false});

@@ -40,7 +40,8 @@ const admin=http.createServer(async(req,res)=>{
       if(req.headers['x-luma-control']!=='1'){res.writeHead(403);res.end();return;}
       const start=Number(url.searchParams.get('start')||0);
       if(!Number.isFinite(start)||start<0||start>86400){res.writeHead(400,{'Content-Type':'text/plain'});res.end('Invalid start position');return;}
-      const file=await media.catalog.file(mobileStream[1]);
+      const identity=req.headers['x-luma-media-identity'];
+      const file=typeof identity==='string' ? await media.catalog.matchingFile(mobileStream[1],identity) : await media.catalog.file(mobileStream[1]);
       if(!file){res.writeHead(404,{'Content-Type':'text/plain'});res.end('Media not found');return;}
       if(!media.transcoder.available){res.writeHead(503,{'Content-Type':'text/plain'});res.end('FFmpeg unavailable');return;}
       if(req.method==='HEAD'){
