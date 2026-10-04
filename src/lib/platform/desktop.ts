@@ -1,4 +1,5 @@
 import type { CatalogMedia, ContinueWatchingItem, LocalTitleDetail, OpenSubtitleSearchResult, PlaybackHistoryItem, ResolvedMediaFile, TmdbSearchResult, TmdbTrailer } from '$lib/types';
+import { nativeMobile, localMobileInvoke, getTorrentTarget, type DownloadTarget } from './mobile-connection';
 
 export type DesktopPlayer = 'mpv' | 'vlc';
 
@@ -21,16 +22,17 @@ export type TorrentTransfer = {
 
 export type TorrentSnapshot = { engine: string; downloadDirectory: string; transfers: TorrentTransfer[] };
 
-async function torrentInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+async function torrentInvoke<T>(command: string, args?: Record<string, unknown>, target:DownloadTarget = getTorrentTarget()): Promise<T> {
 	if (!isDesktopRuntime()) throw new Error('Torrent transfers require the desktop app.');
-	const { invoke } = await import('@tauri-apps/api/core');
+	if (nativeMobile && target === 'phone' && import.meta.env.VITE_LUMA_MOBILE_DEMO !== 'true') return localMobileInvoke<T>(command, args);
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<T>(command, args);
 }
 
 export const readTorrentSnapshot = () => torrentInvoke<TorrentSnapshot>('torrent_snapshot');
-export const addMagnet = (uri: string, destination?: string) => torrentInvoke<string>('torrent_add_magnet', { uri, destination });
+export const addMagnet = (uri: string, destination?: string, target?:DownloadTarget) => torrentInvoke<string>('torrent_add_magnet', { uri, destination }, target);
 export const addTorrentFile = (path: string, destination?: string) => torrentInvoke<string>('torrent_add_file', { path, destination });
-export const addTorrentData = (encoded: string, destination?: string) => torrentInvoke<string>('torrent_add_data', { encoded, destination });
+export const addTorrentData = (encoded: string, destination?: string, target?:DownloadTarget) => torrentInvoke<string>('torrent_add_data', { encoded, destination }, target);
 export const setTorrentPaused = (infoHash: string, paused: boolean) => torrentInvoke<void>('torrent_set_paused', { infoHash, paused });
 export const moveTorrentQueue = (infoHash: string, direction: number) => torrentInvoke<void>('torrent_move_queue', { infoHash, direction });
 export const setTorrentLimits = (download: number, upload: number) => torrentInvoke<void>('torrent_set_limits', { download, upload });
@@ -135,14 +137,14 @@ export function isDesktopRuntime(): boolean {
 export async function readDesktopBootstrap(): Promise<DesktopBootstrap | null> {
 	if (!isDesktopRuntime()) return null;
 
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<DesktopBootstrap>('desktop_bootstrap');
 }
 
 export async function readLibraryStatus(): Promise<LibraryStatus | null> {
 	if (!isDesktopRuntime()) return null;
 
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<LibraryStatus>('get_library_status');
 }
 
@@ -167,7 +169,7 @@ export async function readCatalogPage(
 	const entry: CatalogPageCacheEntry = {};
 	const pending = (async () => {
 		try {
-			const { invoke } = await import('@tauri-apps/api/core');
+			const { invoke } = await import('$lib/platform/invoke');
 			const page = await invoke<CatalogPage>('get_catalog_page', { offset, count, kind, query, sort });
 			if (catalogPageCache.get(cacheKey) === entry) {
 				catalogPageCache.set(cacheKey, { page });
@@ -193,7 +195,7 @@ export async function readLocalTitleDetail(mediaId: number, force = false): Prom
 	if (force) titleDetailCache.delete(mediaId);
 	let pending = titleDetailCache.get(mediaId);
 	if (!pending) {
-		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
+		pending = import('$lib/platform/invoke').then(({ invoke }) =>
 			invoke<LocalTitleDetail | null>('get_local_title_detail', { mediaId })
 		).catch((error) => {
 			titleDetailCache.delete(mediaId);
@@ -221,7 +223,7 @@ export async function readTitleLogo(mediaId: number): Promise<string | null> {
 		logoCache.set(mediaId, pending);
 	}
 	if (!pending) {
-		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
+		pending = import('$lib/platform/invoke').then(({ invoke }) =>
 			invoke<string | null>('get_title_logo', { mediaId })
 		).catch((error) => {
 			logoCache.delete(mediaId);
@@ -241,7 +243,7 @@ export async function readTitleTrailer(mediaId: number): Promise<TmdbTrailer | n
 	if (!isDesktopRuntime() || !Number.isSafeInteger(mediaId) || mediaId <= 0) return null;
 	let pending = trailerCache.get(mediaId);
 	if (!pending) {
-		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
+		pending = import('$lib/platform/invoke').then(({ invoke }) =>
 			invoke<TmdbTrailer | null>('get_title_trailer', { mediaId })
 		).then((trailer) => {
 			if (trailer) trailerCache.set(mediaId, Promise.resolve(trailer));
@@ -263,19 +265,19 @@ export async function readTitleTrailer(mediaId: number): Promise<TmdbTrailer | n
 
 export async function resolveMediaFile(mediaId: number): Promise<ResolvedMediaFile> {
 	if (!isDesktopRuntime()) throw new Error('Local playback is available in the desktop app.');
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<ResolvedMediaFile>('resolve_media_file', { mediaId });
 }
 
 export async function savePlaybackProgress(mediaId: number, positionSeconds: number, durationSeconds: number): Promise<void> {
 	if (!isDesktopRuntime()) return;
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<void>('save_playback_progress', { mediaId, positionSeconds, durationSeconds });
 }
 
 export async function recordPlaybackActivity(mediaId: number, markPreviousEpisodesWatched = false): Promise<void> {
 	if (!isDesktopRuntime()) return;
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	await invoke<void>('record_playback_activity', { mediaId, markPreviousEpisodesWatched });
 	titleDetailCache.clear();
 	window.dispatchEvent(new CustomEvent('media-library:playback-history-updated'));
@@ -283,17 +285,19 @@ export async function recordPlaybackActivity(mediaId: number, markPreviousEpisod
 
 export async function readPlaybackHistory(count = 12): Promise<PlaybackHistoryItem[]> {
 	if (!isDesktopRuntime()) return [];
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<PlaybackHistoryItem[]>('get_playback_history', { count });
 }
 
 export async function readContinueWatching(count = 12): Promise<ContinueWatchingItem[]> {
 	if (!isDesktopRuntime()) return [];
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<ContinueWatchingItem[]>('get_continue_watching', { count });
 }
 
 export async function localMediaUrl(path: string): Promise<string> {
+	if (import.meta.env.VITE_LUMA_MOBILE_DEMO === 'true' && path.startsWith('/mobile-demo/')) return path;
+	if (/^https?:\/\//i.test(path)) return path;
 	if (!isDesktopRuntime()) throw new Error('Local media files require the desktop app.');
 	const { convertFileSrc } = await import('@tauri-apps/api/core');
 	return convertFileSrc(path);
@@ -301,13 +305,13 @@ export async function localMediaUrl(path: string): Promise<string> {
 
 export async function setOpenSubtitlesApiKey(apiKey: string): Promise<void> {
 	if (!isDesktopRuntime()) throw new Error('OpenSubtitles integration is available in the desktop app.');
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<void>('set_opensubtitles_api_key', { apiKey });
 }
 
 export async function loginOpenSubtitles(username: string, password: string): Promise<void> {
 	if (!isDesktopRuntime()) throw new Error('OpenSubtitles integration is available in the desktop app.');
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<void>('login_opensubtitles', { username, password });
 }
 
@@ -318,19 +322,19 @@ export async function searchOpenSubtitles(
 	kind: 'movie' | 'series'
 ): Promise<OpenSubtitleSearchResult[]> {
 	if (!isDesktopRuntime()) throw new Error('OpenSubtitles integration is available in the desktop app.');
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<OpenSubtitleSearchResult[]>('search_opensubtitles', { query, language, year, kind });
 }
 
 export async function downloadOpenSubtitle(mediaId: number, fileId: number): Promise<string> {
 	if (!isDesktopRuntime()) throw new Error('OpenSubtitles integration is available in the desktop app.');
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<string>('download_opensubtitle', { mediaId, fileId });
 }
 
 export async function openMediaInDesktopPlayer(mediaId: number, player: DesktopPlayer): Promise<void> {
 	if (!isDesktopRuntime()) throw new Error('External playback is available in the desktop app.');
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<void>('open_media_in_desktop_player', { mediaId, player });
 }
 
@@ -348,22 +352,22 @@ export type NativePlaybackSnapshot = {
 };
 
 export async function startNativePlayer(mediaId: number, engine: DesktopPlayer, preferences: import('./playback-preferences').PlaybackPreferences): Promise<NativePlaybackSnapshot> {
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<NativePlaybackSnapshot>('start_native_player', { mediaId, engine, preferences });
 }
 
 export async function nativePlayerStatus(): Promise<NativePlaybackSnapshot> {
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<NativePlaybackSnapshot>('native_player_status');
 }
 
 export async function nativePlayerAction(action: 'play' | 'pause' | 'seek' | 'volume' | 'mute' | 'rate' | 'audio-track' | 'subtitle-track' | 'subtitle-size' | 'subtitle-position' | 'subtitle-font', value?: number): Promise<NativePlaybackSnapshot> {
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<NativePlaybackSnapshot>('native_player_action', { action, value });
 }
 
 export async function nativePlayerLoadSubtitle(path: string): Promise<NativePlaybackSnapshot> {
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<NativePlaybackSnapshot>('native_player_load_subtitle', { path });
 }
 
@@ -375,12 +379,12 @@ export async function chooseSubtitleFile(): Promise<string | null> {
 }
 
 export async function resizeNativePlayer(): Promise<void> {
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<void>('resize_native_player');
 }
 
 export async function stopNativePlayer(): Promise<void> {
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<void>('stop_native_player');
 }
 
@@ -395,7 +399,7 @@ export async function chooseMediaFolder(): Promise<string | null> {
 export async function scanLibrary(rootPath: string): Promise<ScanSummary> {
 	if (!isDesktopRuntime()) throw new Error('Local library scanning is available in the desktop app.');
 
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	const result = await invoke<ScanSummary>('scan_library', { rootPath });
 	invalidateCatalogPageCache();
 	return result;
@@ -404,7 +408,7 @@ export async function scanLibrary(rootPath: string): Promise<ScanSummary> {
 export async function rescanLibrary(): Promise<LibraryScanSummary> {
 	if (!isDesktopRuntime()) throw new Error('Local library scanning is available in the desktop app.');
 
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	const result = await invoke<LibraryScanSummary>('rescan_library');
 	invalidateCatalogPageCache();
 	return result;
@@ -413,13 +417,13 @@ export async function rescanLibrary(): Promise<LibraryScanSummary> {
 export async function testTmdbConnection(): Promise<void> {
 	if (!isDesktopRuntime()) throw new Error('TMDb is available in the desktop app.');
 
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<void>('test_tmdb_connection');
 }
 
 export async function searchTmdb(query: string): Promise<TmdbSearchResult[]> {
 	if (!isDesktopRuntime()) throw new Error('TMDb search is available in the desktop app.');
 
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<TmdbSearchResult[]>('search_tmdb', { query });
 }

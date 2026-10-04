@@ -1,5 +1,6 @@
 <script lang="ts">
 	import AppSelect from '$lib/components/AppSelect.svelte';
+	import MobileConnectionSettings from '$lib/components/MobileConnectionSettings.svelte';
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import SteppedRange from '$lib/components/SteppedRange.svelte';
@@ -101,12 +102,14 @@
 <svelte:head><title>Settings · Luma</title></svelte:head>
 
 <div class="settings-surface" data-native-backdrop={$nativeAcrylicStatus}>
+	{#if mobilePreview}<a class="settings-back" href="/" aria-label="Go back" onclick={(event) => { if (window.history.length > 1) { event.preventDefault(); window.history.back(); } }}><Icon name="arrow-left" size={20} /></a>{/if}
 	<div class="settings-page">
 	<div class="settings-heading">
 		<h1>Settings</h1>
 	</div>
 
 	<div class="settings-layout">
+		<MobileConnectionSettings />
 		<section class="settings-section" aria-labelledby="playback-heading">
 			<div class="settings-section__heading">
 				<h2 id="playback-heading">Playback</h2>
@@ -214,6 +217,7 @@
 </div>
 
 <style>
+	.settings-back { position:fixed; z-index:70; top:max(16px,env(safe-area-inset-top)); left:18px; display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(255,255,255,.16); border-radius:50%; color:var(--text-strong); background:rgba(8,12,17,.65); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); text-decoration:none; }
 	.setting-picker { flex:0 0 155px; min-width:0; }
 	@media(max-width:600px) { .setting-picker { flex-basis:138px; } }
 	.settings-surface { min-height: 100vh; background: #101419; }

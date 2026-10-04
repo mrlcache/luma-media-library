@@ -14,13 +14,14 @@
 	let trigger: HTMLButtonElement;
 	let menu: HTMLDivElement;
 	let open = $state(false);
+	const supportsPopover = typeof HTMLElement !== 'undefined' && 'showPopover' in HTMLElement.prototype;
 	let active = $state(-1);
 	let selected = $derived(options.find((option) => option.value === value));
 	const uid = $props.id();
 
 	function close() {
 		open = false;
-		if (menu?.matches(':popover-open')) menu.hidePopover();
+		if (supportsPopover && menu?.matches(':popover-open')) menu.hidePopover();
 		if (closeActiveMenu === close) closeActiveMenu = undefined;
 	}
 
@@ -35,7 +36,7 @@
 		if (!open || !menu?.isConnected) return;
 		const bounds = trigger.getBoundingClientRect();
 		menu.style.width = `${Math.min(Math.max(bounds.width, 160), window.innerWidth - 16)}px`;
-		menu.showPopover();
+		if (supportsPopover) menu.showPopover();
 		const height = menu.getBoundingClientRect().height;
 		const width = menu.getBoundingClientRect().width;
 		const below = bounds.bottom + 6;
@@ -94,7 +95,7 @@
 	<button bind:this={trigger} class="app-select__trigger" type="button" {disabled} aria-label={`${label}: ${selected?.label ?? ''}`} aria-haspopup="listbox" aria-expanded={open} aria-controls={uid} onclick={() => show()} onkeydown={keyboard}>
 		<span>{selected?.label ?? 'Select'}</span><Icon name="chevron-down" size={14} />
 	</button>
-	<div bind:this={menu} id={uid} class="app-select__menu" popover="manual" role="listbox" aria-label={label} aria-activedescendant={active >= 0 ? `${uid}-${active}` : undefined} tabindex="-1" onkeydown={keyboard} data-lenis-prevent>
+	<div bind:this={menu} id={uid} class="app-select__menu" class:fallback={!supportsPopover} hidden={!supportsPopover && !open} popover={supportsPopover ? 'manual' : undefined} role="listbox" aria-label={label} aria-activedescendant={active >= 0 ? `${uid}-${active}` : undefined} tabindex="-1" onkeydown={keyboard} data-lenis-prevent>
 		{#each options as option, index (option.value)}
 			<button id={`${uid}-${index}`} type="button" role="option" aria-selected={value === option.value} data-active={active === index} tabindex="-1" onpointerenter={() => active = index} onclick={() => choose(index)}><span>{option.label}</span>{#if value === option.value}<Icon name="check" size={13} />{/if}</button>
 		{/each}
@@ -102,6 +103,8 @@
 </div>
 
 <style>
+	.app-select__menu.fallback { z-index: 200; }
+	.app-select__menu[hidden] { display:none; }
 	.app-select { min-width:0; width:100%; font-size:.72rem; }
 	.app-select__trigger { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:36px; padding:0 12px; border:1px solid var(--line-subtle); border-radius:var(--radius-sm); color:var(--text-soft); background:var(--surface-1); font:inherit; text-align:left; cursor:pointer; }
 	.app-select__trigger span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }

@@ -104,6 +104,15 @@ struct ImageConfiguration {
 }
 
 impl TmdbState {
+    pub async fn genre_preview(&self, genre:u64, kind:&str) -> Result<Vec<TmdbSearchResult>,String> {
+        let endpoint=media_endpoint(kind)?;
+        let response=self.client.get(format!("{API_BASE}/discover/{endpoint}"))
+            .bearer_auth(self.read_token()?).query(&[("language","en-US"),("include_adult","false"),("sort_by","popularity.desc"),("with_genres",&genre.to_string())])
+            .send().await.map_err(|_|"Could not load genres from TMDb.".to_owned())?;
+        ensure_success(response.status())?;
+        let response=response.json::<SearchResponse>().await.map_err(|_|"TMDb returned unreadable genre results.".to_owned())?;
+        Ok(response.results.into_iter().filter(|item|!item.adult).filter_map(|item|discovery_item(item,Some(kind))).take(8).collect())
+    }
     pub async fn discovery_list(&self, endpoint: &str, kind: Option<&str>) -> Result<Vec<TmdbSearchResult>, String> {
         let response = self.client.get(format!("{API_BASE}/{endpoint}"))
             .bearer_auth(self.read_token()?).query(&[("language", "en-US"), ("include_adult", "false")])

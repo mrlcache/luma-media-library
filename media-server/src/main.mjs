@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync,existsSync,mkdirSync,writeFileSync } from 'node:fs';
 import { randomUUID,createHash } from 'node:crypto';
 import { MediaServer,lanInterfaces } from './server.mjs';
+import { createReleaseSearch } from '../../scripts/torrent-search-preview.mjs';
+const releaseSearch = createReleaseSearch();
 
 const workspace=path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const runtime=path.join(workspace,'.runtime');mkdirSync(runtime,{recursive:true});
@@ -35,6 +37,10 @@ const admin=http.createServer(async(req,res)=>{
     if(url.pathname==='/manrope.woff2'&&req.method==='GET'){const font=path.join(workspace,'web','manrope.woff2');if(existsSync(font)){res.writeHead(200,{'Content-Type':'font/woff2'});res.end(readFileSync(font));return;}}
     let result;
     if(url.pathname==='/api/dev-version'&&req.method==='GET')result={version:devVersion,enabled:Boolean(options.dev)};
+    else if(url.pathname==='/api/releases'&&req.method==='GET') {
+      if(req.headers['x-luma-control']!=='1'){res.writeHead(403);res.end();return;}
+      result=await releaseSearch(url.searchParams);
+    }
     else if(url.pathname==='/api/status'&&req.method==='GET')result=media.status();
     else if(url.pathname==='/api/library'&&req.method==='GET'){await media.catalog.refresh();result=media.catalog.publicItems();}
     else if(['/api/start','/api/stop'].includes(url.pathname)&&req.method==='POST'){

@@ -3,6 +3,8 @@
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
+	import { requestRelease } from '$lib/torrents/request';
+	import { nativeMobile, localMobileInvoke, getTorrentTarget, setTorrentTarget } from '$lib/platform/mobile-connection';
 	import { takePreparedDownload, type PendingDownload } from '$lib/torrents/pending-download';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import ArrowDownIcon from 'phosphor-svelte/lib/ArrowDownIcon';
@@ -12,6 +14,8 @@
 
 	const mobilePreview = isMobilePreview();
 	let downloadTarget = $state<'pc' | 'phone'>('pc');
+	let queueTarget = $state(getTorrentTarget());
+	let torrentFileInput = $state<HTMLInputElement>();
 	let pendingRelease = $state<PendingDownload | null>(null);
 	let addError = $state('');
 	let computerFolders = $state<string[]>([]);
@@ -53,7 +57,8 @@
 		if (!addOpen) return;
 		let cancelled = false;
 		foldersLoading = true; folderError = '';
-		void readLibraryStatus().then(status => {
+		const target = downloadTarget;
+		void (nativeMobile && target === 'phone' ? localMobileInvoke<{folders:string[]}>('get_library_status') : readLibraryStatus()).then(status => {
 			if (!cancelled) computerFolders = status?.folders ?? [];
 		}).catch(() => { if (!cancelled) folderError = 'Could not load your library folders.'; })
 			.finally(() => { if (!cancelled) foldersLoading = false; });
@@ -76,8 +81,10 @@
 	function errorMessage(error: unknown) { return error instanceof Error ? error.message : String(error); }
 
 	async function refresh() {
+		const target = getTorrentTarget();
 		try {
 			const snapshot = await readTorrentSnapshot();
+			if (target !== getTorrentTarget()) return;
 			transfers = snapshot.transfers.sort((a, b) => a.queuePosition - b.queuePosition);
 			downloadDirectory = snapshot.downloadDirectory;
 			if (!transfers.some((item) => item.infoHash === selectedId)) { selectedId = ''; detailsOpen = false; }
@@ -127,9 +134,9 @@
 	}
 
 	function addTorrent() {
-		if (mobilePreview && downloadTarget === 'phone') return;
 		const input = torrentInput.trim();
 		const release = pendingRelease;
+		const target = downloadTarget;
 		const destination = computerFolder || undefined;
 		if (!input && !release) return;
 		addError = '';
@@ -138,29 +145,41 @@
 				if (release) {
 					const hash = release.infoHash;
 					if (/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(hash)) {
-						selectedId = await addMagnet(`magnet:?xt=urn:${hash.length === 64 ? 'btmh:1220' : 'btih:'}${hash}&dn=${encodeURIComponent(release.name)}`, destination);
+						selectedId = await addMagnet(`magnet:?xt=urn:${hash.length === 64 ? 'btmh:1220' : 'btih:'}${hash}&dn=${encodeURIComponent(release.name)}`, destination, target);
 					} else if (release.downloadKey) {
-						const response = await fetch(`/__luma-preview/search?${new URLSearchParams({action:'resolve',key:release.downloadKey})}`);
-						const result = await response.json();
-						if (!response.ok) throw new Error(result.error || 'Could not resolve this release.');
-						if (!addOpen || pendingRelease !== release || (mobilePreview && downloadTarget === 'phone')) return;
-						if (result.magnet) selectedId = await addMagnet(result.magnet, destination);
-						else if (result.torrent) selectedId = await addTorrentData(result.torrent, destination);
+						const result = await requestRelease({action:'resolve',key:release.downloadKey});
+						if (!addOpen || pendingRelease !== release) return;
+						if (result.magnet) selectedId = await addMagnet(result.magnet, destination, target);
+						else if (result.torrent) selectedId = await addTorrentData(result.torrent, destination, target);
 						else throw new Error('No download is available for this release.');
 					} else throw new Error('No download is available for this release.');
-				} else selectedId = await addMagnet(input, destination);
+				} else selectedId = await addMagnet(input, destination, target);
+				if (mobilePreview) { setTorrentTarget(target); queueTarget = target; }
 				torrentInput = ''; pendingRelease = null; addOpen = false;
 			} catch (error) { addError = errorMessage(error); throw error; }
 		});
 	}
 
 	async function addFromFile() {
-		if (mobilePreview && downloadTarget === 'phone') return;
+		if (nativeMobile) { torrentFileInput?.click(); return; }
 		const destination = computerFolder || undefined;
 		try {
 			const path = await chooseTorrentFile();
 			if (path) await act(async () => { selectedId = await addTorrentFile(path, destination); pendingRelease = null; addOpen = false; });
 		} catch (error) { loadError = errorMessage(error); }
+	}
+	async function importTorrentFile(event:Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		const target = downloadTarget;
+		try {
+			if (file.size > 5_000_000) throw new Error('Torrent metadata is too large.');
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			let binary = ''; for (let offset=0;offset<bytes.length;offset+=8192) binary += String.fromCharCode(...bytes.subarray(offset,offset+8192));
+			await act(async () => { selectedId = await addTorrentData(btoa(binary),computerFolder || undefined,target); setTorrentTarget(target); queueTarget = target; pendingRelease = null; addOpen = false; });
+		} catch(error) { addError = errorMessage(error); }
+		finally { input.value = ''; }
 	}
 
 	function removeSelected() {
@@ -172,6 +191,7 @@
 </script>
 
 <svelte:head><title>Torrents · Luma</title></svelte:head>
+{#if nativeMobile}<input bind:this={torrentFileInput} type="file" accept=".torrent,application/x-bittorrent" hidden onchange={importTorrentFile} />{/if}
 
 <div class="torrent-surface" data-native-backdrop={$nativeAcrylicStatus}>
 	<div class="torrent-page">
@@ -204,6 +224,7 @@
 		</header>
 
 		<section class="overview" aria-label="Transfer overview">
+			{#if mobilePreview}<div class="queue-device"><AppSelect value={queueTarget} label="Show downloads on" options={[{value:'pc',label:'Computer'},{value:'phone',label:'This phone'}]} onchange={(value) => { queueTarget = value; setTorrentTarget(value); selectedId = ''; transfers = []; void refresh(); }} /></div>{/if}
 			<div class="summary-rate"><ArrowDownIcon size={17} /><span>Download</span><strong>{formatRate(totalDown)}</strong></div>
 			<div class="summary-rate"><ArrowUpIcon size={17} /><span>Upload</span><strong>{formatRate(totalUp)}</strong></div>
 			<span class="summary-activity">{activeDownloads} downloading <span>·</span> {seedingCount} seeding</span>
@@ -280,7 +301,7 @@
 			<div class="download-destination">
 				<span>Save to folder</span>
 				{#if mobilePreview && downloadTarget === 'phone'}
-					<AppSelect value="downloads" label="Phone download folder" options={[{value:'downloads',label:'Downloads'}]} />
+					<AppSelect bind:value={computerFolder} label="Phone download folder" options={folderOptions} disabled={busy || foldersLoading} />
 				{:else}
 					<AppSelect bind:value={computerFolder} label="Computer download folder" options={folderOptions} disabled={busy || foldersLoading} />
 					{#if folderError}<p class="destination-preview" role="status">{folderError}</p>{/if}
@@ -289,12 +310,13 @@
 			{#if pendingRelease}<div class="selected-release"><Icon name="download" size={18} /><span>{pendingRelease.name}</span></div>
 			{:else}<label>Magnet link<input bind:value={torrentInput} placeholder="Paste a magnet link" /></label>{/if}
 			{#if addError}<p class="destination-preview" role="alert">{addError}</p>{/if}
-			<div class="modal-actions">{#if !pendingRelease}<button type="button" disabled={busy || (mobilePreview && downloadTarget === 'phone')} onclick={() => void addFromFile()}>Choose .torrent file</button>{/if}<button type="button" onclick={() => (addOpen = false)}>Cancel</button><button type="submit" disabled={(!torrentInput.trim() && !pendingRelease) || busy || (mobilePreview && downloadTarget === 'phone')}>{busy ? 'Adding…' : 'Add to queue'}</button></div>
+			<div class="modal-actions">{#if !pendingRelease}<button type="button" disabled={busy} onclick={() => void addFromFile()}>Choose .torrent file</button>{/if}<button type="button" onclick={() => (addOpen = false)}>Cancel</button><button type="submit" disabled={(!torrentInput.trim() && !pendingRelease) || busy}>{busy ? 'Adding…' : 'Add to queue'}</button></div>
 		</form>
 	</div>
 {/if}
 
 <style>
+	.queue-device { max-width:140px; }
 	.torrent-surface { height: 100vh; height: 100dvh; overflow: hidden; background: #101419; }
 	:global(html[data-runtime='desktop']) .torrent-surface { background: var(--acrylic-content-tint); }
 	:global(html[data-runtime='desktop'] .torrent-surface[data-native-backdrop='unavailable']) { background: var(--acrylic-content-fallback); }

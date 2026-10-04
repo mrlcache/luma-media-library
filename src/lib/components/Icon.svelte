@@ -1,8 +1,10 @@
 <script lang="ts">
 	import HouseIcon from 'phosphor-svelte/lib/HouseIcon';
+	import UserIcon from 'phosphor-svelte/lib/UserIcon';
 	import HeartIcon from 'phosphor-svelte/lib/HeartIcon';
 	import BroadcastIcon from 'phosphor-svelte/lib/BroadcastIcon';
 	import DeviceMobileIcon from 'phosphor-svelte/lib/DeviceMobileIcon';
+	import DesktopIcon from 'phosphor-svelte/lib/DesktopIcon';
 	import SquaresFourIcon from 'phosphor-svelte/lib/SquaresFourIcon';
 	import FilmSlateIcon from 'phosphor-svelte/lib/FilmSlateIcon';
 	import TelevisionIcon from 'phosphor-svelte/lib/TelevisionIcon';
@@ -18,12 +20,14 @@
 	import BookmarkSimpleIcon from 'phosphor-svelte/lib/BookmarkSimpleIcon';
 	import CheckIcon from 'phosphor-svelte/lib/CheckIcon';
 	import SpeakerHighIcon from 'phosphor-svelte/lib/SpeakerHighIcon';
+	import SunIcon from 'phosphor-svelte/lib/SunIcon';
 	import CornersOutIcon from 'phosphor-svelte/lib/CornersOutIcon';
 	import ClosedCaptioningIcon from 'phosphor-svelte/lib/ClosedCaptioningIcon';
 	import WaveformIcon from 'phosphor-svelte/lib/WaveformIcon';
 	import InfoIcon from 'phosphor-svelte/lib/InfoIcon';
 	import SlidersHorizontalIcon from 'phosphor-svelte/lib/SlidersHorizontalIcon';
 	import ArrowClockwiseIcon from 'phosphor-svelte/lib/ArrowClockwiseIcon';
+	import ArrowCounterClockwiseIcon from 'phosphor-svelte/lib/ArrowCounterClockwiseIcon';
 	import DownloadSimpleIcon from 'phosphor-svelte/lib/DownloadSimpleIcon';
 	import FolderIcon from 'phosphor-svelte/lib/FolderIcon';
 	import CodeIcon from 'phosphor-svelte/lib/CodeIcon';
@@ -31,9 +35,11 @@
 
 	export type IconName =
 		| 'home'
+		| 'profile'
 		| 'heart'
 		| 'cast'
 		| 'phone'
+		| 'computer'
 		| 'library'
 		| 'film'
 		| 'tv'
@@ -50,12 +56,15 @@
 		| 'bookmark'
 		| 'check'
 		| 'volume'
+		| 'sun'
 		| 'fullscreen'
 		| 'captions'
 		| 'audio'
 		| 'info'
 		| 'sliders'
 		| 'refresh'
+		| 'rewind-ten'
+		| 'forward-ten'
 		| 'download'
 		| 'folder'
 		| 'code';
@@ -67,9 +76,11 @@
 
 	const icons = {
 		home: HouseIcon,
+		profile: UserIcon,
 		heart: HeartIcon,
 		cast: BroadcastIcon,
 		phone: DeviceMobileIcon,
+		computer: DesktopIcon,
 		library: SquaresFourIcon,
 		film: FilmSlateIcon,
 		tv: TelevisionIcon,
@@ -86,12 +97,15 @@
 		bookmark: BookmarkSimpleIcon,
 		check: CheckIcon,
 		volume: SpeakerHighIcon,
+		sun: SunIcon,
 		fullscreen: CornersOutIcon,
 		captions: ClosedCaptioningIcon,
 		audio: WaveformIcon,
 		info: InfoIcon,
 		sliders: SlidersHorizontalIcon,
 		refresh: ArrowClockwiseIcon,
+		'rewind-ten': ArrowCounterClockwiseIcon,
+		'forward-ten': ArrowClockwiseIcon,
 		download: DownloadSimpleIcon,
 		folder: FolderIcon,
 		code: CodeIcon

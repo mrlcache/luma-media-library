@@ -18,6 +18,7 @@ mod opensubtitles;
 mod tmdb;
 mod recommendations;
 mod torrent_engine;
+mod mobile_bridge;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -588,6 +589,10 @@ pub fn run() {
                     .map_err(std::io::Error::other)?,
             );
             app.manage(hss_backdrop::BackdropState::default());
+            app.manage(mobile_bridge::BridgeState::new(app_data_dir.clone()));
+            if let Err(error) = app.state::<mobile_bridge::BridgeState>().restore(app.handle().clone()) {
+                eprintln!("Mobile connection unavailable: {error}");
+            }
             app.manage(native_player::NativePlayerState::default());
             let resource_dir = app.path().resource_dir().unwrap_or_else(|_| app_data_dir.clone());
             let torrent_state = torrent_engine::TorrentState::new(&app_data_dir, &resource_dir);
@@ -632,6 +637,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_mobile_preview,
+            mobile_bridge::get_mobile_bridge_info,
+            mobile_bridge::set_mobile_bridge_enabled,
+            mobile_bridge::enable_mobile_bridge,
+            mobile_bridge::discover_cast_devices,
+            mobile_bridge::cast_media,
+            mobile_bridge::release_search,
+            mobile_bridge::get_mobile_pair_requests,
+            mobile_bridge::approve_mobile_pair,
+            mobile_bridge::get_search_browse,
             desktop_bootstrap,
             artwork::load_remote_artwork,
             get_library_status,

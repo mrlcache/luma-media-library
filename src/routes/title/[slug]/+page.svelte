@@ -198,7 +198,7 @@
 		</div>
 	</section>
 
-	{#if import.meta.env.DEV}
+	{#if import.meta.env.DEV || import.meta.env.VITE_LUMA_MOBILE_DEMO === 'true'}
 		<section id="downloads" class="downloads-section" class:downloads-section--optional={hasDownloadedScope || mobilePreview} class:downloads-section--collapsed={(hasDownloadedScope || mobilePreview) && !otherVersionsOpen} aria-label={hasDownloadedScope ? 'Other versions' : 'Downloads'}>
 			{#if hasDownloadedScope || mobilePreview}
 				<button class="other-versions-toggle" type="button" aria-expanded={otherVersionsOpen} aria-controls="download-versions" onclick={() => otherVersionsOpen = !otherVersionsOpen}>{hasDownloadedScope ? 'Other versions' : 'Downloads'}<Icon name={otherVersionsOpen ? 'chevron-down' : 'chevron-right'} size={13} /></button>
@@ -235,8 +235,8 @@
 							{#if episode.watched}<span class="episode-status"><Icon name="check" size={12} />Watched</span>{/if}
 						</div>
 						{#if episode.file && !data.transfer}<button class="episode-select" type="button" aria-label={`Play ${label}, ${episode.title}`} onclick={() => playEpisode(episode.file!.mediaId)}></button>
-						{:else if import.meta.env.DEV && episode.episode !== null}<button class="episode-select" type="button" aria-label={`Download ${label}, ${episode.title}`} onclick={() => episodeDownload = episode}></button>{/if}
-						{#if import.meta.env.DEV && episode.episode !== null}
+						{:else if (import.meta.env.DEV || import.meta.env.VITE_LUMA_MOBILE_DEMO === 'true') && episode.episode !== null}<button class="episode-select" type="button" aria-label={`Download ${label}, ${episode.title}`} onclick={() => episodeDownload = episode}></button>{/if}
+						{#if (import.meta.env.DEV || import.meta.env.VITE_LUMA_MOBILE_DEMO === 'true') && episode.episode !== null}
 							<EpisodeActions label={`${label}, ${episode.title}`} onOtherVersions={() => episodeDownload = episode} />
 						{/if}
 					</article>

@@ -9,6 +9,10 @@ let snapshot: { time: number; feed: DiscoveryFeed } | null = null;
 let pending: Promise<DiscoveryFeed> | null = null;
 const titles = new Map<string, TmdbSearchResult>();
 const assets = new Map<string, Promise<unknown>>();
+export function resetDiscovery() {
+	snapshot = null; pending = null; titles.clear(); assets.clear(); preparedLogos.clear(); decodedImages.clear();
+	try { localStorage.removeItem(storageKey); } catch { /* Session reset still works. */ }
+}
 
 function trimCache<T>(cache: Map<string, T>, limit: number) {
 	while (cache.size > limit) {
@@ -37,7 +41,7 @@ export async function readDiscovery(force = false): Promise<DiscoveryFeed> {
 	if (!force && snapshot && Date.now() - snapshot.time < ttl) return snapshot.feed;
 	if (pending) return pending;
 	if (!isDesktopRuntime()) throw new Error('Open Luma desktop to load recommendations.');
-	pending = import('@tauri-apps/api/core').then(async ({ invoke }) => {
+	pending = import('$lib/platform/invoke').then(async ({ invoke }) => {
 		for (let attempt = 0; ; attempt++) {
 			try { return await invoke<DiscoveryFeed>('get_discovery_feed'); }
 			catch (error) {
@@ -65,7 +69,7 @@ export async function readDiscoveryTitle(slug: string): Promise<MediaItem | null
 	const cached = titles.get(slug);
 	if (cached) return discoveryMedia(cached);
 	if (!isDesktopRuntime()) return null;
-	const { invoke } = await import('@tauri-apps/api/core');
+	const { invoke } = await import('$lib/platform/invoke');
 	const item = await invoke<TmdbSearchResult>('get_discovery_title', { id: Number(match[2]), kind: match[1] });
 	titles.set(slug,item);
 	trimCache(titles, 128);
@@ -76,7 +80,7 @@ async function asset<T>(media: MediaItem, type: 'logo' | 'trailer'): Promise<T |
 	const key = `${media.id}:${type}`;
 	let request = assets.get(key);
 	if (!request) {
-		request = import('@tauri-apps/api/core').then(({ invoke }) => invoke<T | null>(`get_discovery_${type}`, {id: media.tmdbId, kind: media.kind})).catch((error) => { assets.delete(key); throw error; });
+		request = import('$lib/platform/invoke').then(({ invoke }) => invoke<T | null>(`get_discovery_${type}`, {id: media.tmdbId, kind: media.kind})).catch((error) => { assets.delete(key); throw error; });
 		assets.set(key, request);
 		trimCache(assets, 16);
 	} else {

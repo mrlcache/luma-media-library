@@ -3,6 +3,7 @@
 	import Icon from './Icon.svelte';
 	import { goto } from '$app/navigation';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
+	import { requestRelease } from '$lib/torrents/request';
 	import { prepareDownload, takePreparedDownload } from '$lib/torrents/pending-download';
 	import { addMagnet, addTorrentData, isDesktopRuntime } from '$lib/platform/desktop';
 	import { normalizeRelease, releaseMatches, releaseQuery, sortReleases, type ReleaseScope, type ReleaseSort, type TorrentRelease } from '$lib/torrents/releases';
@@ -31,10 +32,7 @@
 	const normalizeTitle = (title: string) => title.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
 	async function request(params: Record<string, string>, signal?: AbortSignal) {
-		const response = await fetch(`/__luma-preview/search?${new URLSearchParams(params)}`, { signal });
-		const data = await response.json();
-		if (!response.ok) throw new Error(data.error || 'Search could not be completed.');
-		return data;
+		return requestRelease(params,signal);
 	}
 
 	$effect(() => {
@@ -51,6 +49,11 @@
 
 	async function search(item: MediaItem, target: ReleaseScope, current: number, signal: AbortSignal) {
 		try {
+			if (import.meta.env.VITE_LUMA_MOBILE_DEMO === 'true') {
+				const { demoReleases } = await import('$lib/platform/mobile-demo');
+				if (!signal.aborted && current === generation) releases = demoReleases(item.title, target);
+				return;
+			}
 			let id = item.tmdbId;
 			if (!id) {
 				const data = await request({ action: 'titles', query: item.title }, signal);

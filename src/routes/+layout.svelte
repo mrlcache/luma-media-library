@@ -5,6 +5,8 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import CastMenu from '$lib/components/CastMenu.svelte';
+	import ProfileMenu from '$lib/components/ProfileMenu.svelte';
+	import MobilePairing from '$lib/components/MobilePairing.svelte';
 	import PlayerHost from '$lib/components/PlayerHost.svelte';
 	import { PLAYER_CONTEXT, PLAYBACK_HISTORY_UPDATED_EVENT } from '$lib/player-context';
 	import { isDesktopRuntime, readDesktopBootstrap } from '$lib/platform/desktop';
@@ -153,7 +155,7 @@
 		isActive: (url) => url.pathname === '/media-server'
 	};
 	const mobileNavItems = mobilePreview
-		? [navItems[0], { ...navItems[1], isActive: (url: URL) => url.pathname === '/library' }, navItems[4], settingsItem]
+		? [navItems[0], { ...navItems[1], isActive: (url: URL) => url.pathname === '/library' }, {label:'Search',href:'/search',icon:'search' as IconName,isActive:(url:URL)=>url.pathname==='/search'}, navItems[4]]
 		: [...navItems, ...(dev ? [mediaServerItem] : [])];
 
 	onMount(() => {
@@ -287,6 +289,7 @@
 			</div>
 
 
+			<a class="sidebar-search" class:active={page.url.pathname === '/search'} href="/search" aria-current={page.url.pathname === '/search' ? 'page' : undefined}><Icon name="search" size={19} /><span>Search</span></a>
 			<nav class="sidebar-nav" aria-label="Primary navigation">
 				{#each navItems as item}
 					<a
@@ -334,9 +337,11 @@
 		<div class="workspace">
 			<main class="content-area" bind:this={contentArea}><div class="route-content">{@render children()}</div></main>
 		</div>
-		{#if !/^\/(torrents|settings)(\/|$)/.test(page.url.pathname)}
-			{#key page.url.pathname}<CastMenu />{/key}
+		{#if !/^\/(torrents|settings)(\/|$)/.test(page.url.pathname) && !(mobilePreview && page.url.pathname === '/search')}
+			{#key page.url.pathname}<CastMenu mediaId={activeMedia && /^\d+$/.test(activeMedia.id) ? Number(activeMedia.id) : /^\d+$/.test(page.params.slug ?? '') ? Number(page.params.slug) : undefined} />{/key}
 		{/if}
+		{#if mobilePreview && page.url.pathname !== '/search'}{#key page.url.pathname}<ProfileMenu />{/key}{/if}
+		<MobilePairing />
 
 		<nav class="mobile-nav" aria-label="Primary navigation">
 			{#each mobileNavItems as item}
@@ -476,6 +481,8 @@
 
 
 	.sidebar-nav { display: grid; gap: 8px; margin-top: 17px; }
+	.sidebar-search { display:flex; align-items:center; gap:12px; margin-top:24px; padding:12px 14px; border:1px solid rgba(219,233,243,.15); border-radius:9px; color:var(--text-muted); background:rgba(5,9,14,.28); text-decoration:none; font-size:.8rem; transition:background 140ms,border-color 140ms; }
+	.sidebar-search:hover, .sidebar-search.active { border-color:rgba(219,233,243,.35); color:var(--text-strong); background:rgba(164,189,206,.08); }
 	.sidebar-nav .sidebar-link { border-radius: 14px; }
 	.sidebar-link {
 		display: flex;

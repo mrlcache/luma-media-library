@@ -45,6 +45,7 @@ export function findTvMazeEpisodeDetails(
 }
 
 export async function readTvMazeEpisodes(title: string, year: number | null): Promise<TvMazeEpisodeDetails[]> {
+	if (import.meta.env.VITE_LUMA_MOBILE_DEMO === 'true') return (await import('$lib/platform/mobile-demo')).demoEpisodes(title);
 	if (!title.trim()) return [];
 	return [...(await cachedShowEpisodes(title, year)).values()].sort((a, b) => a.season - b.season || a.episode - b.episode);
 }

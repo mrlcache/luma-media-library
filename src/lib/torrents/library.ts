@@ -29,6 +29,7 @@ export function startTorrentLibraryUpdates() {
 	let busy = false;
 	let release: (() => void) | undefined;
 	let latest: TorrentTransfer[] = [];
+	const completed=new Set<string>();
 	const publish = () => { if (!stopped) libraryTransfers.set(latest.map((item) => ({ ...item, metadata: metadataCache.get(item.infoHash) }))); };
 	async function resolveMetadata(item: TorrentTransfer) {
 		if (!isDesktopRuntime() || metadataCache.has(item.infoHash) || pendingMetadata.has(item.infoHash)) return;
@@ -51,7 +52,12 @@ export function startTorrentLibraryUpdates() {
 		busy = true;
 		try {
 			if (!isDesktopRuntime()) return;
-			const transfers = (await readTorrentSnapshot()).transfers.filter((item) => item.progress < 1);
+			const snapshot = (await readTorrentSnapshot()).transfers;
+			if(snapshot.some(item=>item.progress>=1 && !completed.has(item.infoHash))){
+				for(const item of snapshot)if(item.progress>=1)completed.add(item.infoHash);
+				invalidateCatalogPageCache();window.dispatchEvent(new Event('luma-library-changed'));
+			}
+			const transfers = snapshot.filter((item) => item.progress < 1);
 			latest = transfers;
 			publish();
 			// Limit concurrent metadata requests while the transfer list keeps updating.

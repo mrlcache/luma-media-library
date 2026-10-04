@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, stat, mkdir, copyFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,14 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = join(repoRoot, 'native', 'libtorrent-bridge');
 const bridgeBuild = join(bridgeRoot, 'build');
 const bridgeDll = join(bridgeBuild, 'Release', 'media_libtorrent_bridge.dll');
+
+// Bundle the runtime and resolver so release search also works after installation.
+const releaseRuntime = join(repoRoot, 'src-tauri', 'target', 'release-service');
+await mkdir(releaseRuntime, {recursive:true});
+await copyFile(process.execPath, join(releaseRuntime,'node.exe'));
+for(const file of ['release-service.mjs','torrent-search-preview.mjs','prowlarr-preview.mjs']) {
+    await copyFile(join(repoRoot,'scripts',file),join(releaseRuntime,file));
+}
 
 function run(command, args) {
 	return new Promise((resolvePromise, rejectPromise) => {

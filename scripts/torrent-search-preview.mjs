@@ -2,9 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { searchProwlarr, resolveProwlarrRelease } from './prowlarr-preview.mjs';
 
-// Temporary local search proxy, registered only by the Vite development server.
-/** @returns {import('vite').Plugin} */
-export function torrentSearchPreview() {
+// Shared release resolver used by development previews and the desktop service.
+export function createReleaseSearch() {
 	const cache = new Map();
 	/** @param {string} url @param {boolean} json @param {Record<string, string>} headers @returns {Promise<any>} */
 	async function request(url, json = true, headers = {}) {
@@ -18,7 +17,7 @@ export function torrentSearchPreview() {
 	/** @param {string} path @param {Record<string, string>} params */
 	async function tmdb(path, params = {}) {
 		let token;
-		try { token = (await readFile(join(process.env.APPDATA || '', 'local.media.platform', 'tmdb_read_access_token'), 'utf8')).trim(); }
+		try { token = (await readFile(join(process.env.LUMA_APP_DATA || join(process.env.APPDATA || '', 'local.media.platform'), 'tmdb_read_access_token'), 'utf8')).trim(); }
 		catch { throw new Error('Configure a chave do TMDb nas configurações do Luma.'); }
 		if (!token) throw new Error('A chave do TMDb está vazia.');
 		return request(`https://api.themoviedb.org/3/${path}?${new URLSearchParams(params)}`, true, { Authorization: `Bearer ${token}` });
@@ -76,6 +75,20 @@ export function torrentSearchPreview() {
 		}
 		throw new Error('Fonte desconhecida.');
 	}
+	return async (/** @type {URLSearchParams} */ params) => {
+		if (params.get('action') === 'resolve') return handle(params);
+		const key=params.toString();
+		const saved=cache.get(key);
+		if(saved && saved.until>Date.now()) return saved.data;
+		const data=await handle(params);
+		if(cache.size>=32)cache.delete(cache.keys().next().value);
+		cache.set(key,{data,until:Date.now()+60000});
+		return data;
+	};
+}
+/** @returns {import('vite').Plugin} */
+export function torrentSearchPreview() {
+	const search=createReleaseSearch();
 	return {
 		name: 'luma-torrent-search-preview', apply: 'serve',
 		configureServer(server) {
@@ -86,14 +99,7 @@ export function torrentSearchPreview() {
 				res.setHeader('Cache-Control', 'no-store');
 				if (req.method !== 'GET') { res.statusCode = 405; return res.end(JSON.stringify({ error: 'Método inválido.' })); }
 				try {
-					if (url.searchParams.get('action') === 'resolve') return res.end(JSON.stringify(await handle(url.searchParams)));
-					const key = url.searchParams.toString();
-					const saved = cache.get(key);
-					if (saved && saved.until > Date.now()) return res.end(JSON.stringify(saved.data));
-					const data = await handle(url.searchParams);
-					if (cache.size >= 32) cache.delete(cache.keys().next().value);
-					cache.set(key, { data, until: Date.now() + 60000 });
-					res.end(JSON.stringify(data));
+					res.end(JSON.stringify(await search(url.searchParams)));
 				} catch (error) { res.statusCode = 502; res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'A pesquisa falhou.' })); }
 			});
 		}

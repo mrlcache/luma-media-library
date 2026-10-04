@@ -5,6 +5,10 @@
 <script lang="ts">
 	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { onMount, tick } from 'svelte';
+	import { dev } from '$app/environment';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
+	import {readPlayerLevels, setPlayerLevel, resetPlayerLevels} from '$lib/platform/player-device';
+	import {nativeMobile} from '$lib/platform/mobile-connection';
 	import Icon from '$lib/components/Icon.svelte';
 	import SteppedRange from '$lib/components/SteppedRange.svelte';
 	import { suspendNativeAcrylicForPlayback } from '$lib/platform/native-acrylic';
@@ -34,8 +38,11 @@
 	import { readPlaybackPreferences, updatePlaybackPreference, type SubtitleFont } from '$lib/platform/playback-preferences';
 	import { usePlayer } from '$lib/player-context';
 
-	type Props = { media: MediaItem; onClose: () => void };
-	let { media, onClose }: Props = $props();
+	type Props = { media: MediaItem; onClose: () => void; visualPreview?: boolean };
+	let { media, onClose, visualPreview = false }: Props = $props();
+	function isVisualPreview() { return dev && visualPreview; }
+	const mobilePlayer = isMobilePreview() || isVisualPreview();
+	let previewOnly = $derived(dev && visualPreview);
 	const player = usePlayer();
 
 	let overlay: HTMLDivElement;
@@ -44,13 +51,20 @@
 	let isPlaying = $state(false);
 	let controlsVisible = $state(true);
 	let mediaReady = $state(false);
-	let currentTime = $state(0);
-	let duration = $state(0);
+	let currentTime = $state(isVisualPreview() ? 854 : 0);
+	let duration = $state(isVisualPreview() ? 3120 : 0);
 	let volume = $state(72);
 	let isMuted = $state(false);
-	let isLoading = $state(true);
+	let isLoading = $state(!isVisualPreview());
 	let playbackError = $state('');
 	let playerMenuOpen = $state(false);
+	let speedMenuOpen = $state(false);
+	let brightness = $state(100);
+	let gestureFeedback = $state<'brightness' | 'volume' | 'back' | 'forward' | null>(null);
+	let gestureFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
+	let gesture: { pointerId: number; side: 'brightness' | 'volume'; x: number; y: number; time: number; value: number; moved: boolean } | null = null;
+	let lastTap: { side: 'brightness' | 'volume'; time: number; x: number; y: number } | null = null;
+	$effect(() => () => { if (gestureFeedbackTimer) clearTimeout(gestureFeedbackTimer); });
 	let desktopPlayerBusy = $state(false);
 	let selectedDesktopPlayer = $state<DesktopPlayer>('mpv');
 	let activeEngine = $state<DesktopPlayer | null>(null);
@@ -220,6 +234,7 @@
 	}
 
 	async function togglePlayback() {
+		if (previewOnly) { isPlaying = !isPlaying; return; }
 		if (activeEngine) {
 			try { applyNativeSnapshot(await nativePlayerAction(isPlaying ? 'pause' : 'play')); }
 			catch (error) { playbackError = error instanceof Error ? error.message : 'Playback could not start.'; }
@@ -235,6 +250,7 @@
 	}
 
 	function seekBy(amount: number) {
+		if (previewOnly) { currentTime = Math.min(duration, Math.max(0, currentTime + amount)); return; }
 		if (activeEngine) {
 			void nativePlayerAction('seek', Math.min(duration || Number.MAX_SAFE_INTEGER, Math.max(0, currentTime + amount))).then(applyNativeSnapshot).catch(console.warn);
 			revealControls();
@@ -252,9 +268,15 @@
 	}
 
 	function setVolume(event: Event) {
-		volume = Number((event.currentTarget as HTMLInputElement).value);
+		applyVolume(Number((event.currentTarget as HTMLInputElement).value));
+	}
+
+	function applyVolume(value: number) {
+		volume = Math.round(Math.min(100, Math.max(0, value)));
+		isMuted = volume === 0;
+		if (!previewOnly) setPlayerLevel('volume', volume);
 		if (activeEngine) void nativePlayerAction('volume', volume).then(applyNativeSnapshot).catch(console.warn);
-		if (video) { video.volume = volume / 100; video.muted = volume === 0; isMuted = video.muted; }
+		if (video) { video.volume = nativeMobile ? 1 : volume / 100; video.muted = volume === 0; isMuted = video.muted; }
 		revealControls();
 	}
 
@@ -267,6 +289,7 @@
 
 	function seekToPercent(event: Event) {
 		if (duration <= 0) return;
+		if (previewOnly) { currentTime = duration * Number((event.currentTarget as HTMLInputElement).value) / 100; return; }
 		if (activeEngine) {
 			void nativePlayerAction('seek', duration * Number((event.currentTarget as HTMLInputElement).value) / 100).then(applyNativeSnapshot).catch(console.warn);
 			revealControls();
@@ -512,6 +535,7 @@
 		const isRange = target instanceof HTMLInputElement && target.type === 'range';
 
 		if (event.key === 'Escape' && subtitlePanelOpen) { subtitlePanelOpen = false; return; }
+		if (event.key === 'Escape' && speedMenuOpen) { speedMenuOpen = false; return; }
 		if (event.key === 'Escape' && playerMenuOpen) { playerMenuOpen = false; return; }
 		if (event.key === 'Escape' && !document.fullscreenElement) void closePlayer();
 		if (event.code === 'Space' && !isRange) {
@@ -527,6 +551,49 @@
 		if (playerMenuOpen && !(event.target instanceof Element && event.target.closest('.player-options-anchor'))) {
 			playerMenuOpen = false;
 		}
+		if (speedMenuOpen && !(event.target instanceof Element && event.target.closest('.mobile-player-speed'))) speedMenuOpen = false;
+	}
+
+	function showGestureFeedback(value: typeof gestureFeedback) {
+		if (gestureFeedbackTimer) clearTimeout(gestureFeedbackTimer);
+		gestureFeedback = value;
+		gestureFeedbackTimer = setTimeout(() => { gestureFeedback = null; }, 850);
+	}
+
+	function startMobileGesture(event: PointerEvent, side: 'brightness' | 'volume') {
+		if (!event.isPrimary || event.button !== 0 || subtitlePanelOpen || playerMenuOpen || speedMenuOpen) return;
+		const target = event.currentTarget as HTMLElement;
+		target.setPointerCapture(event.pointerId);
+		gesture = {pointerId: event.pointerId, side, x: event.clientX, y: event.clientY, time: performance.now(), value: side === 'brightness' ? brightness : volume, moved: false};
+		revealControls();
+	}
+
+	function moveMobileGesture(event: PointerEvent) {
+		if (!gesture || gesture.pointerId !== event.pointerId) return;
+		const distance = gesture.y - event.clientY;
+		if (!gesture.moved && Math.abs(distance) < 10) return;
+		gesture.moved = true;
+		lastTap = null;
+		const value = gesture.value + distance / Math.max(120, playerStage.clientHeight * .45) * 100;
+		if (gesture.side === 'brightness') {
+			brightness = Math.round(Math.min(100, Math.max(0, value)));
+			if (!previewOnly) setPlayerLevel('brightness', brightness);
+		}
+		else applyVolume(value);
+		showGestureFeedback(gesture.side);
+	}
+
+	function endMobileGesture(event: PointerEvent) {
+		if (!gesture || gesture.pointerId !== event.pointerId) return;
+		const current = gesture;
+		gesture = null;
+		if (current.moved || performance.now() - current.time > 500 || Math.hypot(event.clientX - current.x, event.clientY - current.y) > 18) { lastTap = null; return; }
+		const now = performance.now();
+		if (lastTap && lastTap.side === current.side && now - lastTap.time < 320 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 70) {
+			seekBy(current.side === 'brightness' ? -10 : 10);
+			showGestureFeedback(current.side === 'brightness' ? 'back' : 'forward');
+			lastTap = null;
+		} else lastTap = {side: current.side, time: now, x: event.clientX, y: event.clientY};
 	}
 
 	function onPlaybackError() {
@@ -539,6 +606,7 @@
 	}
 
 	async function closePlayer() {
+		if (previewOnly) { onClose(); return; }
 		if (document.fullscreenElement === playerStage) {
 			try { await document.exitFullscreen(); } catch { /* The stage is removed immediately after closing. */ }
 		}
@@ -559,6 +627,7 @@
 	}
 
 	onMount(() => {
+		if (previewOnly) { isLoading = false; currentTime = 854; duration = 3120; return; }
 		playerDisposed = false;
 		suspendNativeAcrylicForPlayback(true);
 		selectedDesktopPlayer = readPreferredDesktopPlayer();
@@ -587,6 +656,7 @@
 			playbackError = 'This item is not connected to a local media file.';
 			return () => { document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
 		}
+		void readPlayerLevels().then(levels=>{ if(levels && !playerDisposed){volume=Math.round(levels.volume); brightness=Math.round(levels.brightness);} }).catch(console.warn);
 		void resolveMediaFile(mediaId)
 			.then(async (source) => {
 				if (playerDisposed) return;
@@ -606,7 +676,11 @@
 				subtitleTracks = tracks;
 				activeSubtitle = preferredSubtitleIndex(tracks);
 				await tick();
-				await startSelectedEngine();
+				if (import.meta.env.VITE_LUMA_MOBILE === 'true') {
+					video.src = await localMediaUrl(source.path);
+					video.load();
+					await video.play();
+				} else await startSelectedEngine();
 			})
 			.catch((error) => {
 				if (playerDisposed) return;
@@ -615,6 +689,7 @@
 			});
 		return () => {
 			playerDisposed = true;
+			resetPlayerLevels();
 			document.removeEventListener('fullscreenchange', handleFullscreenChange);
 			window.removeEventListener('resize', handleResize);
 			if (timeoutId) clearTimeout(timeoutId);
@@ -636,6 +711,8 @@
 
 <div
 	class="player-overlay"
+	class:player-overlay--mobile={mobilePlayer}
+	class:player-overlay--preview={previewOnly}
 	class:player-overlay--native={activeEngine !== null}
 	bind:this={overlay}
 	role="dialog"
@@ -669,6 +746,22 @@
 				<track kind="subtitles" src={track.url} srclang={track.language} label={track.label} onload={(event) => onTrackLoad(event, index)} />
 			{/each}
 		</video>
+		{#if mobilePlayer}
+			<div class="mobile-player-dimmer" style={`opacity: ${nativeMobile && !previewOnly ? 0 : (100 - brightness) / 100 * .85}`}></div>
+			<div class="mobile-player-gestures" aria-label="Player gestures">
+				{#each ['brightness', 'volume'] as side}
+					<button type="button" class="mobile-player-gesture" aria-label={side === 'brightness' ? 'Swipe up or down for brightness; double tap to go back ten seconds' : 'Swipe up or down for volume; double tap to go forward ten seconds'} onpointerdown={(event) => startMobileGesture(event, side as 'brightness' | 'volume')} onpointermove={moveMobileGesture} onpointerup={endMobileGesture} onpointercancel={() => { gesture = null; lastTap = null; }}>
+						<span class="mobile-player-level" class:mobile-player-level--visible={controlsVisible || gestureFeedback === side} aria-hidden="true"><Icon name={side === 'brightness' ? 'sun' : 'volume'} size={17} /><span class="mobile-player-level__rail"><span style={`height: ${side === 'brightness' ? brightness : isMuted ? 0 : volume}%`}></span></span></span>
+					</button>
+				{/each}
+			</div>
+			{#if gestureFeedback}
+				<div class="mobile-player-feedback" class:mobile-player-feedback--left={gestureFeedback === 'brightness' || gestureFeedback === 'back'} role="status">
+					<Icon name={gestureFeedback === 'brightness' ? 'sun' : gestureFeedback === 'volume' ? 'volume' : gestureFeedback === 'back' ? 'rewind-ten' : 'forward-ten'} size={24} />
+					<span>{gestureFeedback === 'brightness' ? `${brightness}%` : gestureFeedback === 'volume' ? `${volume}%` : '10 s'}</span>
+				</div>
+			{/if}
+		{/if}
 
 		{#if isLoading}
 			<div class="player-message" role="status"><span class="player-loading__spinner"></span><span>Opening media…</span></div>
@@ -679,7 +772,7 @@
 		<div class:player-ui--hidden={!controlsVisible && isPlaying} class="player-ui">
 			<div class="player-topbar">
 				<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="Close player"  onclick={closePlayer}>
-					<Icon name="close" size={20} />
+					<Icon name={mobilePlayer ? 'arrow-left' : 'close'} size={20} />
 				</button>
 
 				<div class="player-now-playing">
@@ -692,16 +785,30 @@
 						<Icon name="more" size={20} />
 					</button>
 					{#if playerMenuOpen}
+						{#if mobilePlayer}
+							<div class="player-options" role="group" aria-label="Playback options">
+								{#if audioTracks.length > 1}<span class="player-options__label">Audio</span><AppSelect value={activeAudio} label="Audio track" options={audioTracks.map(track => ({value:track.index,label:track.label}))} onchange={selectAudio} />{/if}
+								<button type="button" onclick={toggleMuted}>{isMuted ? 'Unmute' : 'Mute'}</button>
+							</div>
+						{:else}
 						<div class="player-options" role="group" aria-label="Playback engine selection">
 							<span class="player-options__label">Playback engine</span>
 							<AppSelect bind:value={selectedDesktopPlayer} label="Playback engine" options={[{value:"mpv",label:"libmpv"},{value:"vlc",label:"libVLC"}]} onchange={setDesktopPlayer} />
 							<p>{selectedDesktopPlayer === 'mpv' ? 'Uses libmpv with its GPU video renderer.' : 'Uses libVLC inside this player.'}</p>
 							<button type="button" disabled={desktopPlayerBusy || selectedDesktopPlayer === activeEngine} onclick={switchEngine}>{desktopPlayerBusy ? 'Switching…' : `Use ${desktopPlayerLabel()}`}</button>
 						</div>
+						{/if}
 					{/if}
 				</div>
 			</div>
 
+			{#if mobilePlayer}
+				<div class="mobile-player-transport">
+					<button class="mobile-player-skip" type="button" aria-label="Go back ten seconds" onclick={() => seekBy(-10)}><Icon name="rewind-ten" size={30} /><span>10</span></button>
+					<button class="mobile-player-play" type="button" aria-label={isPlaying ? 'Pause' : 'Play'} onclick={togglePlayback}><Icon name={isPlaying ? 'pause' : 'play'} size={30} weight="fill" /></button>
+					<button class="mobile-player-skip" type="button" aria-label="Forward ten seconds" onclick={() => seekBy(10)}><Icon name="forward-ten" size={30} /><span>10</span></button>
+				</div>
+			{/if}
 			<div class="player-control-deck" style="corner-shape: squircle">
 				<div class="player-timeline">
 					<div class="player-timeline__meta"><span>{elapsedLabel}</span><span>{remainingLabel}</span></div>
@@ -719,6 +826,16 @@
 					/>
 				</div>
 
+				{#if mobilePlayer}
+					<div class="mobile-player-tools">
+						<button type="button" class:active={subtitlePanelOpen} onclick={() => { subtitlePanelOpen = !subtitlePanelOpen; playerMenuOpen = false; speedMenuOpen = false; }}><Icon name="captions" size={21} /><span>Subtitles</span></button>
+						<div class="mobile-player-speed">
+							<button type="button" class:active={speedMenuOpen} aria-expanded={speedMenuOpen} aria-label={`Speed: ${playbackRate}×`} onclick={() => { speedMenuOpen = !speedMenuOpen; playerMenuOpen = false; subtitlePanelOpen = false; }}><span class="mobile-player-speed__value">{playbackRate}×</span><span>Speed</span></button>
+							{#if speedMenuOpen}<div class="mobile-player-speed__menu" role="group" aria-label="Playback speed">{#each [0.75,1,1.25,1.5,2] as rate}<button type="button" class:active={playbackRate === rate} aria-pressed={playbackRate === rate} onclick={() => { setPlaybackRate(rate); speedMenuOpen = false; }}>{rate}×</button>{/each}</div>{/if}
+						</div>
+						<button type="button" onclick={toggleFullscreen}><Icon name="fullscreen" size={21} /><span>Fullscreen</span></button>
+					</div>
+				{:else}
 				<div class="player-transport">
 					<div class="player-transport__group">
 						<button class="player-primary-button" type="button" style="corner-shape: squircle" aria-label={isPlaying ? 'Pause' : 'Play'}  onclick={togglePlayback}>
@@ -747,10 +864,11 @@
 						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Toggle fullscreen"  onclick={toggleFullscreen}><Icon name="fullscreen" size={18} /></button>
 					</div>
 				</div>
+				{/if}
 			</div>
 		</div>
 
-		{#if !isPlaying}
+		{#if !isPlaying && !mobilePlayer}
 			{#if !playbackError}<button class="player-center-play" type="button" style="corner-shape: squircle" aria-label="Play" onclick={togglePlayback}>
 				<Icon name="play" size={28} weight="fill" />
 			</button>{/if}
@@ -988,6 +1106,59 @@
 		.subtitle-online__row { grid-template-columns: minmax(0,1fr); }
 	}
 
+	/* Handset controls are laid out for touch, independently of the desktop deck. */
+	.player-overlay--mobile .player-topbar { align-items: center; gap: 14px; padding: max(18px, env(safe-area-inset-top)) 18px 80px; }
+	.player-overlay--mobile .player-now-playing { position: static; flex: 1; min-width: 0; width: auto; text-align: left; transform: none; }
+	.player-overlay--mobile .player-now-playing strong { display: block; overflow: hidden; font-size: .9rem; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+	.player-overlay--mobile .player-now-playing > span { display: block; margin-bottom: 3px; font-size: .65rem; color: rgba(229,238,244,.55); }
+	.player-overlay--mobile .player-glass-button { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; background: rgba(27,37,47,.46); }
+	.player-overlay--mobile .player-control-deck { left: 0; right: 0; bottom: 0; padding: 64px 22px max(22px, env(safe-area-inset-bottom)); border: 0; border-radius: 0; background: linear-gradient(0deg,rgba(7,12,18,.98),rgba(7,12,18,.75) 65%,transparent); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+	.player-overlay--mobile .player-timeline { gap: 0; }
+	.player-overlay--mobile .player-timeline__meta { order: 2; font-size: .69rem; color: rgba(237,242,247,.68); }
+	.player-overlay--mobile .player-range { height: 36px; touch-action: none; }
+	.player-overlay--mobile .player-range::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -7px; }
+	.player-overlay--mobile .player-range::-moz-range-thumb { width: 18px; height: 18px; }
+	.mobile-player-transport { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: clamp(22px,7vw,44px); pointer-events: none; }
+	.mobile-player-transport button { display: grid; position: relative; place-items: center; padding: 0; border: 1px solid rgba(228,239,247,.15); cursor: pointer; pointer-events: auto; }
+	.mobile-player-play { width: 70px; height: 70px; border-radius: 50%; color: #101820; background: rgba(236,244,248,.95); box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+	.mobile-player-skip { width: 54px; height: 54px; border-radius: 50%; color: #edf4f7; background: rgba(20,31,42,.52); backdrop-filter: blur(16px); }
+	.mobile-player-skip span { position: absolute; top: 23px; font-size: 9px; font-weight: 750; line-height: 1; }
+	.mobile-player-tools { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; margin-top: 22px; }
+	.mobile-player-tools button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; min-width: 0; min-height: 54px; border: 0; border-radius: 12px; color: rgba(230,239,246,.7); background: transparent; font: inherit; font-size: .64rem; cursor: pointer; }
+	.mobile-player-tools button.active { color: #e7f5fc; background: rgba(146,184,204,.12); }
+	.mobile-player-speed { position: relative; min-width: 0; }
+	.mobile-player-speed > button { width: 100%; }
+	.mobile-player-speed__value { font-size: 1rem; line-height: 21px; font-weight: 650; }
+	.mobile-player-speed__menu { position: absolute; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%); width: 150px; padding: 6px; border: 1px solid rgba(228,239,247,.15); border-radius: 14px; background: rgba(17,27,38,.96); backdrop-filter: blur(20px); box-shadow: 0 12px 32px rgba(0,0,0,.3); }
+	.mobile-player-speed__menu button { width: 100%; min-height: 44px; font-size: .8rem; }
+	.mobile-player-dimmer { position: absolute; inset: 0; z-index: 1; background: #000; pointer-events: none; }
+	.mobile-player-gestures { position: absolute; inset: 0; z-index: 2; display: grid; grid-template-columns: 1fr 1fr; }
+	.mobile-player-gesture { position: relative; min-width: 0; padding: 0; border: 0; background: transparent; touch-action: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+	.mobile-player-level { position: absolute; top: 50%; left: 15px; display: flex; flex-direction: column; align-items: center; gap: 12px; color: rgba(235,243,249,.7); transform: translateY(-50%); opacity: 0; transition: opacity 150ms; pointer-events: none; }
+	.mobile-player-gesture:last-child .mobile-player-level { left: auto; right: 15px; }
+	.mobile-player-level--visible { opacity: 1; }
+	.mobile-player-level__rail { position: relative; width: 3px; height: 90px; overflow: hidden; border-radius: 8px; background: rgba(234,243,249,.18); }
+	.mobile-player-level__rail > span { position: absolute; bottom: 0; width: 100%; border-radius: inherit; background: rgba(234,243,249,.85); }
+	.mobile-player-feedback { position: absolute; top: 35%; right: 20%; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 16px; background: rgba(17,27,38,.85); color: #edf4f7; pointer-events: none; }
+	.mobile-player-feedback--left { right: auto; left: 20%; }
+	.player-overlay--mobile .player-options { top: 54px; width: min(280px,calc(100vw - 36px)); padding: 18px; gap: 12px; background: rgba(17,27,38,.96); }
+	.player-overlay--mobile .player-options > button { min-height: 44px; }
+	.player-overlay--mobile .subtitle-panel { left: 10px; right: 10px; bottom: max(10px,env(safe-area-inset-bottom)); width: auto; max-height: min(75dvh,640px); border-radius: 22px; background: rgba(16,25,35,.96); }
+	.player-overlay--mobile .subtitle-panel__header { padding: 16px 18px; }
+	.player-overlay--mobile .subtitle-panel__header button { width: 40px; height: 40px; }
+	.player-overlay--mobile .subtitle-panel__tracks button,
+	.player-overlay--mobile .subtitle-panel__actions button { min-height: 44px; }
+	.player-overlay--mobile .subtitle-panel__appearance :global(input[type='range']) { min-height: 40px; }
+	.player-overlay--preview .player-video { display: none; }
+	.player-overlay--preview .player-stage__image { inset: 0; background-size: contain; background-repeat: no-repeat; filter: brightness(.8); transform: none; }
+	@media (orientation: landscape) and (max-height: 520px) {
+		.player-overlay--mobile .player-topbar { padding: max(12px,env(safe-area-inset-top)) 20px 50px; }
+		.player-overlay--mobile .player-control-deck { padding: 30px 24px max(12px,env(safe-area-inset-bottom)); }
+		.mobile-player-tools { display: flex; justify-content: flex-end; margin-top: 8px; gap: 14px; }
+		.mobile-player-tools button { flex-direction: row; min-height: 40px; padding: 0 8px; }
+		.mobile-player-play { width: 60px; height: 60px; }
+		.player-overlay--mobile .subtitle-panel { left: auto; width: min(380px,calc(100% - 20px)); max-height: calc(100dvh - 20px); }
+	}
 	@media (prefers-reduced-transparency: reduce) {
 		.player-control-deck,
 		.player-glass-button { background: #161a1f; -webkit-backdrop-filter: none; backdrop-filter: none; }

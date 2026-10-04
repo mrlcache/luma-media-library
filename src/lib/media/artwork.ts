@@ -19,7 +19,7 @@ const cachedArtwork = new Map<string, Promise<string>>();
 async function fetchArtworkThroughDesktop(url: string): Promise<string> {
 	let pending = cachedArtwork.get(url);
 	if (!pending) {
-		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
+		pending = import('$lib/platform/invoke').then(({ invoke }) =>
 			invoke<string>('load_remote_artwork', { url })
 		).catch((error) => {
 			cachedArtwork.delete(url);

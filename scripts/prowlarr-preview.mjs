@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
-const configPath = fileURLToPath(new URL('../.artifacts/tools/prowlarr/data/config.xml', import.meta.url));
+const configPath = process.env.LUMA_PROWLARR_CONFIG || fileURLToPath(new URL('../.artifacts/tools/prowlarr/data/config.xml', import.meta.url));
 const downloads = new Map();
 
 /** Resolve only an opaque release returned by this connector; credentials stay in the proxy.
