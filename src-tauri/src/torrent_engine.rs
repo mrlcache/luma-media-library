@@ -9,6 +9,8 @@ use std::{ffi::{c_char, c_void, CString}, path::{Path, PathBuf}, sync::{Arc, Mut
 type Create = unsafe extern "C" fn(*const c_char, *const c_char, *mut c_char, i32) -> *mut c_void;
 type Destroy = unsafe extern "C" fn(*mut c_void);
 type Add = unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_char, i32, *mut c_char, i32) -> i32;
+type AddTo = unsafe extern "C" fn(*mut c_void, *const c_char, i32, *const c_char, *mut c_char, i32, *mut c_char, i32) -> i32;
+type SavePath = unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_char, i32, *mut c_char, i32) -> i32;
 type List = unsafe extern "C" fn(*mut c_void, *mut RawTransfer, i32, *mut c_char, i32) -> i32;
 type Files = unsafe extern "C" fn(*mut c_void, *const c_char, *mut RawFile, i32, *mut c_char, i32) -> i32;
 type Paused = unsafe extern "C" fn(*mut c_void, *const c_char, i32, *mut c_char, i32) -> i32;
@@ -73,6 +75,8 @@ struct TorrentEngine {
     destroy: Destroy,
     add_magnet: Add,
     add_file: Add,
+    add_to: AddTo,
+    save_path: SavePath,
     list: List,
     files: Files,
     set_paused: Paused,
@@ -103,6 +107,8 @@ impl TorrentEngine {
             let destroy: Destroy = symbol(&library, b"mt_destroy\0")?;
             let add_magnet: Add = symbol(&library, b"mt_add_magnet\0")?;
             let add_file: Add = symbol(&library, b"mt_add_torrent_file\0")?;
+            let add_to: AddTo = symbol(&library, b"mt_add_to\0")?;
+            let save_path: SavePath = symbol(&library, b"mt_save_path\0")?;
             let list: List = symbol(&library, b"mt_list\0")?;
             let files: Files = symbol(&library, b"mt_files\0")?;
             let set_paused: Paused = symbol(&library, b"mt_set_paused\0")?;
@@ -115,7 +121,7 @@ impl TorrentEngine {
             let mut error = [0 as c_char; 512];
             let handle = create(state.as_ptr(), download.as_ptr(), error.as_mut_ptr(), error.len() as i32);
             if handle.is_null() { return Err(error_text(&error)); }
-            Ok(Self { _library: library, handle: handle as usize, destroy, add_magnet, add_file,
+            Ok(Self { _library: library, handle: handle as usize, destroy, add_magnet, add_file, add_to, save_path,
                 list, files, set_paused, move_queue, set_limits, remove, save })
         }
     }
@@ -179,13 +185,29 @@ impl TorrentEngine {
         Ok(paths)
     }
 
-    fn add(&self, value: &str, file: bool) -> Result<String, String> {
+    fn destination(&self, hash: &str) -> Result<PathBuf, String> {
+        let hash = CString::new(hash).map_err(|_| "Invalid torrent ID.".to_owned())?;
+        let mut path = [0 as c_char; 4096];
+        let mut error = [0 as c_char; 512];
+        let result = unsafe { (self.save_path)(self.handle as *mut c_void, hash.as_ptr(), path.as_mut_ptr(), 4096, error.as_mut_ptr(), 512) };
+        check(result, &error)?;
+        Ok(PathBuf::from(char_array(&path)))
+    }
+
+    fn add(&self, value: &str, file: bool, destination: Option<&Path>) -> Result<String, String> {
         let value = CString::new(value).map_err(|_| "Invalid torrent link or path.".to_owned())?;
         let mut info_hash = [0 as c_char; 65];
         let mut error = [0 as c_char; 512];
         let method = if file { self.add_file } else { self.add_magnet };
-        let result = unsafe { method(self.handle as *mut c_void, value.as_ptr(), info_hash.as_mut_ptr(),
-            info_hash.len() as i32, error.as_mut_ptr(), error.len() as i32) };
+        let result = if let Some(destination) = destination {
+            let destination = std::fs::canonicalize(destination).map_err(|error| format!("Download folder is unavailable: {error}"))?;
+            if !destination.is_dir() { return Err("A download folder is required.".into()); }
+            let destination = c_path(&destination)?;
+            unsafe { (self.add_to)(self.handle as *mut c_void, value.as_ptr(), i32::from(file), destination.as_ptr(), info_hash.as_mut_ptr(), info_hash.len() as i32, error.as_mut_ptr(), error.len() as i32) }
+        } else {
+            unsafe { method(self.handle as *mut c_void, value.as_ptr(), info_hash.as_mut_ptr(),
+                info_hash.len() as i32, error.as_mut_ptr(), error.len() as i32) }
+        };
         check(result, &error)?;
         Ok(char_array(&info_hash))
     }
@@ -256,7 +278,7 @@ fn load_bridge(resource_directory: &Path) -> Result<Library, String> {
         }
     }
     if cfg!(debug_assertions) {
-        candidates.push(Path::new(env!("CARGO_MANIFEST_DIR"))
+        candidates.insert(0, Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..").join("native").join("libtorrent-bridge").join("build")
             .join("Release").join("media_libtorrent_bridge.dll"));
     }
@@ -314,7 +336,7 @@ impl TorrentState {
                     let Ok(snapshot) = engine.snapshot(&download_directory) else { continue; };
                     snapshot.transfers.into_iter().filter(|item| item.progress >= 1.0 && item.size_bytes > 0 && item.error.is_empty() && item.status != "Checking" && !imported.contains(&item.info_hash))
                         .filter_map(|item| match engine.completed_files(&item.info_hash) {
-                            Ok(paths) => Some((item.info_hash, paths)),
+                            Ok(paths) => engine.destination(&item.info_hash).ok().map(|destination| (item.info_hash, destination, paths)),
                             Err(error) => { eprintln!("Torrent library import will retry: {error}"); None }
                         }).collect::<Vec<_>>()
                 };
@@ -323,8 +345,8 @@ impl TorrentState {
                 if library.scanning.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed).is_err() { continue; }
                 let guard = crate::ScanGuard(library.scanning.clone());
                 let mut changed = false;
-                for (hash, paths) in completed {
-                    match media_core::LibraryStore::open(&library.db_path).and_then(|mut store| store.import_completed_files(&download_directory, &paths)) {
+                for (hash, destination, paths) in completed {
+                    match media_core::LibraryStore::open(&library.db_path).and_then(|mut store| store.import_completed_files(&destination, &paths)) {
                         Ok(count) => { imported.insert(hash); changed |= count > 0; }
                         Err(error) => eprintln!("Torrent library import will retry: {error}"),
                     }
@@ -359,17 +381,17 @@ pub async fn torrent_snapshot(state: tauri::State<'_, TorrentState>) -> Result<T
 }
 
 #[tauri::command]
-pub async fn torrent_add_magnet(state: tauri::State<'_, TorrentState>, uri: String) -> Result<String, String> {
-    run(state, move |engine, _| engine.add(&uri, false)).await
+pub async fn torrent_add_magnet(state: tauri::State<'_, TorrentState>, uri: String, destination: Option<String>) -> Result<String, String> {
+    run(state, move |engine, _| engine.add(&uri, false, destination.as_deref().map(Path::new))).await
 }
 
 #[tauri::command]
-pub async fn torrent_add_file(state: tauri::State<'_, TorrentState>, path: String) -> Result<String, String> {
-    run(state, move |engine, _| engine.add(&path, true)).await
+pub async fn torrent_add_file(state: tauri::State<'_, TorrentState>, path: String, destination: Option<String>) -> Result<String, String> {
+    run(state, move |engine, _| engine.add(&path, true, destination.as_deref().map(Path::new))).await
 }
 
 #[tauri::command]
-pub async fn torrent_add_data(state: tauri::State<'_, TorrentState>, encoded: String) -> Result<String, String> {
+pub async fn torrent_add_data(state: tauri::State<'_, TorrentState>, encoded: String, destination: Option<String>) -> Result<String, String> {
     use base64::Engine;
     use std::io::Write;
     if encoded.len() > 6_666_668 { return Err("Torrent metadata is too large.".into()); }
@@ -384,7 +406,7 @@ pub async fn torrent_add_data(state: tauri::State<'_, TorrentState>, encoded: St
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| error.to_string())?;
         let result = file.write_all(&bytes).map_err(|error| error.to_string());
         drop(file);
-        let result = result.and_then(|_| engine.add(&path.to_string_lossy(), true));
+        let result = result.and_then(|_| engine.add(&path.to_string_lossy(), true, destination.as_deref().map(Path::new)));
         let _ = std::fs::remove_file(&path);
         result
     }).await

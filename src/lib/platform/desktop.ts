@@ -28,9 +28,9 @@ async function torrentInvoke<T>(command: string, args?: Record<string, unknown>)
 }
 
 export const readTorrentSnapshot = () => torrentInvoke<TorrentSnapshot>('torrent_snapshot');
-export const addMagnet = (uri: string) => torrentInvoke<string>('torrent_add_magnet', { uri });
-export const addTorrentFile = (path: string) => torrentInvoke<string>('torrent_add_file', { path });
-export const addTorrentData = (encoded: string) => torrentInvoke<string>('torrent_add_data', { encoded });
+export const addMagnet = (uri: string, destination?: string) => torrentInvoke<string>('torrent_add_magnet', { uri, destination });
+export const addTorrentFile = (path: string, destination?: string) => torrentInvoke<string>('torrent_add_file', { path, destination });
+export const addTorrentData = (encoded: string, destination?: string) => torrentInvoke<string>('torrent_add_data', { encoded, destination });
 export const setTorrentPaused = (infoHash: string, paused: boolean) => torrentInvoke<void>('torrent_set_paused', { infoHash, paused });
 export const moveTorrentQueue = (infoHash: string, direction: number) => torrentInvoke<void>('torrent_move_queue', { infoHash, direction });
 export const setTorrentLimits = (download: number, upload: number) => torrentInvoke<void>('torrent_set_limits', { download, upload });
@@ -67,6 +67,7 @@ export type DesktopBootstrap = {
 };
 
 export type LibraryStatus = {
+	folders: string[];
 	rootCount: number;
 	fileCount: number;
 	matchedCount: number;

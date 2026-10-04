@@ -47,6 +47,10 @@ typedef struct mt_file {
 MT_API mt_engine* mt_create(char const* state_directory, char const* download_directory,
     char* error, int32_t error_capacity);
 MT_API void mt_destroy(mt_engine* engine);
+MT_API int32_t mt_add_to(mt_engine* engine, char const* value, int32_t is_file, char const* destination,
+    char* info_hash, int32_t hash_capacity, char* error, int32_t error_capacity);
+MT_API int32_t mt_save_path(mt_engine* engine, char const* info_hash, char* path, int32_t capacity,
+    char* error, int32_t error_capacity);
 MT_API int32_t mt_add_magnet(mt_engine* engine, char const* uri,
     char* info_hash, int32_t hash_capacity, char* error, int32_t error_capacity);
 MT_API int32_t mt_add_torrent_file(mt_engine* engine, char const* path,

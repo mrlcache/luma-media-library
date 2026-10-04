@@ -62,6 +62,7 @@ pub struct LibraryState {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryStatus {
+    pub folders: Vec<String>,
     pub root_count: u64,
     pub file_count: u64,
     pub matched_count: u64,
@@ -1009,7 +1010,13 @@ impl LibraryStore {
             )
             .map_err(|error| format!("Could not read the last library scan time: {error}"))?;
 
+        let mut folder_statement = self.connection.prepare("SELECT canonical_path FROM library_roots ORDER BY id")
+            .map_err(|error| format!("Could not read library folders: {error}"))?;
+        let folders = folder_statement.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not read library folders: {error}"))?
+            .collect::<Result<Vec<_>, _>>().map_err(|error| format!("Could not read library folders: {error}"))?;
         Ok(LibraryStatus {
+            folders,
             root_count: root_count.max(0) as u64,
             file_count: file_count.max(0) as u64,
             matched_count: matched_count.max(0) as u64,
@@ -1857,6 +1864,10 @@ mod tests {
         let page = store.catalog_page(0, 20).expect("catalog");
 
         assert_eq!(summary.root_count, 2);
+        assert_eq!(store.status(false).unwrap().folders, vec![
+            std::fs::canonicalize(&first_root).unwrap().to_string_lossy().into_owned(),
+            std::fs::canonicalize(&second_root).unwrap().to_string_lossy().into_owned(),
+        ]);
         assert_eq!(summary.file_count, 3);
         assert_eq!(page.total, 3);
         assert_eq!(page.items.len(), 3);

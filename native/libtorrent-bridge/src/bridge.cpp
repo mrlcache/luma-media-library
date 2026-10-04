@@ -129,7 +129,7 @@ void restore_all(mt_engine& engine) {
 
 int32_t add_torrent(mt_engine& engine, lt::add_torrent_params params,
     char* info_hash, int32_t hash_capacity) {
-    params.save_path = engine.download_directory;
+    if (params.save_path.empty()) params.save_path = engine.download_directory;
     auto const handle = engine.session.add_torrent(std::move(params));
     copy_text(info_hash, hash_capacity, hash_key(handle));
     save_all(engine);
@@ -164,6 +164,28 @@ void mt_destroy(mt_engine* engine) {
     if (!engine) return;
     try { save_all(*engine); } catch (...) { /* explicit mt_save reports failures */ }
     delete engine;
+}
+
+int32_t mt_add_to(mt_engine* engine, char const* value, int32_t is_file, char const* destination,
+    char* info_hash, int32_t hash_capacity, char* error, int32_t error_capacity) {
+    return guarded([&] {
+        if (!destination || !*destination || !fs::is_directory(fs::u8path(destination)))
+            throw std::invalid_argument("A valid download folder is required.");
+        if (!value || !*value || (!is_file && std::strncmp(value, "magnet:?", 8) != 0))
+            throw std::invalid_argument("A magnet link or .torrent file is required.");
+        auto params = is_file ? lt::load_torrent_buffer(read_file(fs::u8path(value))) : lt::parse_magnet_uri(value);
+        params.save_path = destination;
+        return add_torrent(require_engine(engine), std::move(params), info_hash, hash_capacity);
+    }, error, error_capacity);
+}
+
+int32_t mt_save_path(mt_engine* engine, char const* info_hash, char* path, int32_t capacity,
+    char* error, int32_t error_capacity) {
+    return guarded([&] {
+        auto const handle = find_torrent(require_engine(engine), info_hash);
+        copy_text(path, capacity, handle.status().save_path);
+        return 0;
+    }, error, error_capacity);
 }
 
 int32_t mt_add_magnet(mt_engine* engine, char const* uri,

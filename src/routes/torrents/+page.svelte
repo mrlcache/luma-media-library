@@ -8,16 +8,24 @@
 	import ArrowDownIcon from 'phosphor-svelte/lib/ArrowDownIcon';
 	import ArrowUpIcon from 'phosphor-svelte/lib/ArrowUpIcon';
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
-	import { addMagnet, addTorrentData, addTorrentFile, chooseTorrentFile, moveTorrentQueue, readTorrentSnapshot, removeTorrent, setTorrentLimits, setTorrentPaused, type TorrentTransfer } from '$lib/platform/desktop';
+	import { addMagnet, addTorrentData, addTorrentFile, chooseTorrentFile, readLibraryStatus, moveTorrentQueue, readTorrentSnapshot, removeTorrent, setTorrentLimits, setTorrentPaused, type TorrentTransfer } from '$lib/platform/desktop';
 
 	const mobilePreview = isMobilePreview();
 	let downloadTarget = $state<'pc' | 'phone'>('pc');
 	let pendingRelease = $state<PendingDownload | null>(null);
 	let addError = $state('');
+	let computerFolders = $state<string[]>([]);
+	let computerFolder = $state('');
+	let foldersLoading = $state(false);
+	let folderError = $state('');
+	let downloadDirectory = $state('');
+	let folderOptions = $derived([
+		{value:'',label:downloadDirectory ? `Downloads · ${downloadDirectory.replace(/^\\\\\?\\/, '')}` : 'Default downloads folder'},
+		...computerFolders.map(path => ({value:path,label:path.replace(/^\\\\\?\\/, '')}))
+	]);
 	let transfers = $state<TorrentTransfer[]>([]);
 	let loadError = $state('');
 	let busy = $state(false);
-	let downloadDirectory = $state('');
 	const filters = ['All', 'Downloading', 'Seeding', 'Paused', 'Queued'] as const;
 	let activeFilter = $state<(typeof filters)[number]>('All');
 	let query = $state('');
@@ -39,7 +47,17 @@
 	let totalDown = $derived(transfers.reduce((sum, item) => sum + item.downloadRate, 0));
 	let totalUp = $derived(transfers.reduce((sum, item) => sum + item.uploadRate, 0));
 	$effect(() => {
-		if (!addOpen) { pendingRelease = null; addError = ''; downloadTarget = 'pc'; }
+		if (!addOpen) { pendingRelease = null; addError = ''; downloadTarget = 'pc'; computerFolder = ''; }
+	});
+	$effect(() => {
+		if (!addOpen) return;
+		let cancelled = false;
+		foldersLoading = true; folderError = '';
+		void readLibraryStatus().then(status => {
+			if (!cancelled) computerFolders = status?.folders ?? [];
+		}).catch(() => { if (!cancelled) folderError = 'Could not load your library folders.'; })
+			.finally(() => { if (!cancelled) foldersLoading = false; });
+		return () => { cancelled = true; };
 	});
 
 	function formatBytes(bytes: number) {
@@ -112,6 +130,7 @@
 		if (mobilePreview && downloadTarget === 'phone') return;
 		const input = torrentInput.trim();
 		const release = pendingRelease;
+		const destination = computerFolder || undefined;
 		if (!input && !release) return;
 		addError = '';
 		void act(async () => {
@@ -119,17 +138,17 @@
 				if (release) {
 					const hash = release.infoHash;
 					if (/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(hash)) {
-						selectedId = await addMagnet(`magnet:?xt=urn:${hash.length === 64 ? 'btmh:1220' : 'btih:'}${hash}&dn=${encodeURIComponent(release.name)}`);
+						selectedId = await addMagnet(`magnet:?xt=urn:${hash.length === 64 ? 'btmh:1220' : 'btih:'}${hash}&dn=${encodeURIComponent(release.name)}`, destination);
 					} else if (release.downloadKey) {
 						const response = await fetch(`/__luma-preview/search?${new URLSearchParams({action:'resolve',key:release.downloadKey})}`);
 						const result = await response.json();
 						if (!response.ok) throw new Error(result.error || 'Could not resolve this release.');
 						if (!addOpen || pendingRelease !== release || (mobilePreview && downloadTarget === 'phone')) return;
-						if (result.magnet) selectedId = await addMagnet(result.magnet);
-						else if (result.torrent) selectedId = await addTorrentData(result.torrent);
+						if (result.magnet) selectedId = await addMagnet(result.magnet, destination);
+						else if (result.torrent) selectedId = await addTorrentData(result.torrent, destination);
 						else throw new Error('No download is available for this release.');
 					} else throw new Error('No download is available for this release.');
-				} else selectedId = await addMagnet(input);
+				} else selectedId = await addMagnet(input, destination);
 				torrentInput = ''; pendingRelease = null; addOpen = false;
 			} catch (error) { addError = errorMessage(error); throw error; }
 		});
@@ -137,9 +156,10 @@
 
 	async function addFromFile() {
 		if (mobilePreview && downloadTarget === 'phone') return;
+		const destination = computerFolder || undefined;
 		try {
 			const path = await chooseTorrentFile();
-			if (path) await act(async () => { selectedId = await addTorrentFile(path); pendingRelease = null; addOpen = false; });
+			if (path) await act(async () => { selectedId = await addTorrentFile(path, destination); pendingRelease = null; addOpen = false; });
 		} catch (error) { loadError = errorMessage(error); }
 	}
 
@@ -251,13 +271,21 @@
 			{#if mobilePreview}
 				<div class="download-destination">
 					<span>Download to</span>
-					<AppSelect bind:value={downloadTarget} label="Download destination" options={[{value:'pc',label:'Computer'},{value:'phone',label:'This phone'}]} />
+					<AppSelect bind:value={downloadTarget} label="Download destination" disabled={busy} options={[{value:'pc',label:'Computer'},{value:'phone',label:'This phone'}]} />
 					{#if downloadTarget === 'phone'}
 						<div class="destination-notice"><Icon name="info" size={18} /><p>This download stays on your phone. It won’t be copied to your computer or available through your media server.</p></div>
-						<p class="destination-preview">Phone downloads aren’t available in this preview yet.</p>
 					{:else}<p class="destination-preview">The file will be saved on your computer and available through your media server.</p>{/if}
 				</div>
 			{/if}
+			<div class="download-destination">
+				<span>Save to folder</span>
+				{#if mobilePreview && downloadTarget === 'phone'}
+					<AppSelect value="downloads" label="Phone download folder" options={[{value:'downloads',label:'Downloads'}]} />
+				{:else}
+					<AppSelect bind:value={computerFolder} label="Computer download folder" options={folderOptions} disabled={busy || foldersLoading} />
+					{#if folderError}<p class="destination-preview" role="status">{folderError}</p>{/if}
+				{/if}
+			</div>
 			{#if pendingRelease}<div class="selected-release"><Icon name="download" size={18} /><span>{pendingRelease.name}</span></div>
 			{:else}<label>Magnet link<input bind:value={torrentInput} placeholder="Paste a magnet link" /></label>{/if}
 			{#if addError}<p class="destination-preview" role="alert">{addError}</p>{/if}
