@@ -692,6 +692,7 @@ pub fn run() {
         .plugin(player_device::init())
         .setup(|app| {
             app.manage(local_downloads::LocalDownloadsState::default());
+            app.manage(pairing::PairingState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -706,7 +707,8 @@ pub fn run() {
             player_device::mobile_player_levels,
             pairing::discover_luma_computers,
             pairing::request_mobile_pair,
-            pairing::check_mobile_pair
+            pairing::check_mobile_pair,
+            pairing::cancel_mobile_pair
         ])
         .run(tauri::generate_context!())
         .expect("Could not start Luma mobile");
