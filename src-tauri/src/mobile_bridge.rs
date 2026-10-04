@@ -1153,7 +1153,7 @@ fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: 
     } else {
         client.get(&url)
     };
-    let mut response = match request.header("X-Luma-Control", "1").header("X-Luma-Media-Identity", identity).send() {
+    let mut response = match request.header("X-Luma-Control", "1").header("X-Luma-Media-Identity", &identity).send() {
         Ok(response) => response,
         Err(error) => {
             let body = serde_json::json!({"error":format!("Could not start mobile media conversion: {error}")}).to_string();
@@ -1170,6 +1170,10 @@ fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: 
             .read_to_string(&mut detail);
         let body = serde_json::json!({"error":detail.trim()}).to_string();
         reply(s, code, &body, "application/json");
+        return;
+    }
+    if response.headers().get("X-Luma-Media-Identity").and_then(|value| value.to_str().ok()) != Some(identity.as_str()) {
+        reply(s, 409, "{\"error\":\"The media service is outdated or selected a different file. Restart Luma before trying again.\"}", "application/json");
         return;
     }
     let Some(content_type) = response

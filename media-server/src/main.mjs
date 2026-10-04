@@ -43,6 +43,7 @@ const admin=http.createServer(async(req,res)=>{
       const identity=req.headers['x-luma-media-identity'];
       const file=typeof identity==='string' ? await media.catalog.matchingFile(mobileStream[1],identity) : await media.catalog.file(mobileStream[1]);
       if(!file){res.writeHead(404,{'Content-Type':'text/plain'});res.end('Media not found');return;}
+      if(typeof identity==='string')res.setHeader('X-Luma-Media-Identity',identity);
       if(!media.transcoder.available){res.writeHead(503,{'Content-Type':'text/plain'});res.end('FFmpeg unavailable');return;}
       if(req.method==='HEAD'){
         const plan=await media.transcoder.plan(file,'mp4');
