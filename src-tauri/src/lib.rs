@@ -652,6 +652,7 @@ pub fn run() {
             open_mobile_preview,
             mobile_bridge::get_mobile_bridge_info,
             mobile_bridge::set_mobile_bridge_enabled,
+            mobile_bridge::set_mobile_bridge_port,
             mobile_bridge::enable_mobile_bridge,
             mobile_bridge::discover_cast_devices,
             mobile_bridge::cast_media,

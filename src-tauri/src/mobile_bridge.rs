@@ -5,12 +5,17 @@ use std::{
     io::{self, Read, Seek, Write},
     net::{TcpListener, TcpStream, UdpSocket},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 
-const PORT: u16 = 47631;
+const DEFAULT_PORT: u16 = 47631;
+const DISCOVERY_PORT: u16 = 47631;
+const MIN_BRIDGE_PORT: u16 = 1024;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const ADMIN_ORIGIN: &str = "http://127.0.0.1:8940";
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
@@ -49,12 +54,16 @@ struct CastDevice {
 struct BridgeConfig {
     enabled: bool,
     listening: bool,
+    discovery_started: bool,
+    port: u16,
+    listener_stop: Option<Arc<AtomicBool>>,
     token: String,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeInfo {
     enabled: bool,
+    port: u16,
     base_url: Option<String>,
     token: Option<String>,
 }
@@ -68,10 +77,18 @@ impl BridgeState {
             .filter(|s| s.len() >= 32)
             .unwrap_or_else(new_token);
         let _ = std::fs::write(&token_path, &token);
+        let port = std::fs::read_to_string(token_path.with_extension("port"))
+            .ok()
+            .and_then(|value| value.trim().parse::<u16>().ok())
+            .filter(|port| *port >= MIN_BRIDGE_PORT)
+            .unwrap_or(DEFAULT_PORT);
         Self {
             inner: Arc::new(Mutex::new(BridgeConfig {
                 enabled: false,
                 listening: false,
+                discovery_started: false,
+                port,
+                listener_stop: None,
                 token,
             })),
             token_path,
@@ -86,32 +103,77 @@ impl BridgeState {
             .lock()
             .map_err(|_| "Mobile bridge state is unavailable.".to_owned())?;
         if enabled && !cfg.listening {
-            let listener = TcpListener::bind(("0.0.0.0", PORT))
-                .map_err(|e| format!("Could not start the mobile bridge on port {PORT}: {e}"))?;
-            listener.set_nonblocking(false).ok();
-            let shared = self.inner.clone();
-            std::thread::Builder::new()
-                .name("luma-mobile-bridge".into())
-                .spawn(move || serve(listener, app, shared))
-                .map_err(|e| format!("Could not start mobile bridge: {e}"))?;
-            cfg.listening = true;
-            let discovery_state = self.inner.clone();
-            let _ = std::thread::Builder::new().name("luma-lan-discovery".into()).spawn(move || {
-                let Ok(socket) = UdpSocket::bind(("0.0.0.0", PORT)) else { return; };
-                let mut packet = [0u8;512];
-                while let Ok((count,peer)) = socket.recv_from(&mut packet) {
-                    if packet[..count] != *b"LUMA_DISCOVER_V1" || !discovery_state.lock().map(|s|s.enabled).unwrap_or(false) {continue;}
-                    let message=serde_json::json!({"service":"luma","name":std::env::var("COMPUTERNAME").unwrap_or_else(|_|"Luma Desktop".into()),"port":PORT}).to_string();
-                    let _=socket.send_to(message.as_bytes(),peer);
+            let listener = bind_bridge_listener(cfg.port)?;
+            let discovery_socket = if cfg.discovery_started {
+                None
+            } else {
+                Some(
+                    UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)).map_err(|e| {
+                        format!("Could not start LAN discovery on port {DISCOVERY_PORT}: {e}")
+                    })?,
+                )
+            };
+            let stop = spawn_bridge_listener(listener, app, self.inner.clone())?;
+            if let Some(socket) = discovery_socket {
+                if let Err(error) = spawn_discovery_listener(socket, self.inner.clone()) {
+                    stop.store(true, Ordering::Release);
+                    return Err(error);
                 }
-            });
+                cfg.discovery_started = true;
+            }
+            cfg.listener_stop = Some(stop);
+            cfg.listening = true;
         }
-        cfg.enabled = enabled;
         std::fs::write(
             self.token_path.with_extension("enabled"),
             if enabled { "1" } else { "0" },
         )
         .map_err(|e| format!("Could not save mobile bridge preference: {e}"))?;
+        cfg.enabled = enabled;
+        Ok(info(&cfg))
+    }
+    pub fn set_port(
+        &self,
+        app: tauri::AppHandle,
+        requested_port: u32,
+    ) -> Result<BridgeInfo, String> {
+        if !(MIN_BRIDGE_PORT as u32..=u16::MAX as u32).contains(&requested_port) {
+            return Err(format!(
+                "Choose a mobile connection port between {MIN_BRIDGE_PORT} and {}.",
+                u16::MAX
+            ));
+        }
+        let port = requested_port as u16;
+        let mut cfg = self
+            .inner
+            .lock()
+            .map_err(|_| "Mobile bridge state is unavailable.".to_owned())?;
+        if port == cfg.port {
+            return Ok(info(&cfg));
+        }
+
+        // Keep the current listener alive until the replacement has bound and
+        // started. A failed change therefore leaves existing connections up.
+        let replacement = if cfg.listening {
+            let listener = bind_bridge_listener(port)?;
+            Some(spawn_bridge_listener(listener, app, self.inner.clone())?)
+        } else {
+            None
+        };
+        if let Err(error) =
+            std::fs::write(self.token_path.with_extension("port"), port.to_string())
+        {
+            if let Some(stop) = &replacement {
+                stop.store(true, Ordering::Release);
+            }
+            return Err(format!("Could not save mobile connection port: {error}"));
+        }
+        cfg.port = port;
+        if let Some(replacement) = replacement {
+            if let Some(previous) = cfg.listener_stop.replace(replacement) {
+                previous.store(true, Ordering::Release);
+            }
+        }
         Ok(info(&cfg))
     }
     pub fn restore(&self, app: tauri::AppHandle) -> Result<(), String> {
@@ -189,6 +251,7 @@ impl BridgeState {
     pub fn info(&self) -> BridgeInfo {
         self.inner.lock().map(|c| info(&c)).unwrap_or(BridgeInfo {
             enabled: false,
+            port: DEFAULT_PORT,
             base_url: None,
             token: None,
         })
@@ -241,6 +304,14 @@ pub fn set_mobile_bridge_enabled(
     app: tauri::AppHandle,
 ) -> Result<BridgeInfo, String> {
     state.set(app, enabled)
+}
+#[tauri::command]
+pub fn set_mobile_bridge_port(
+    port: u32,
+    state: tauri::State<'_, BridgeState>,
+    app: tauri::AppHandle,
+) -> Result<BridgeInfo, String> {
+    state.set_port(app, port)
 }
 #[tauri::command]
 pub fn enable_mobile_bridge(
@@ -415,6 +486,59 @@ fn sign_device(key: &str, location: &str) -> String {
         .map(|b| format!("{b:02x}"))
         .collect()
 }
+fn bind_bridge_listener(port: u16) -> Result<TcpListener, String> {
+    let listener = TcpListener::bind(("0.0.0.0", port))
+        .map_err(|e| format!("Could not bind the mobile bridge to port {port}: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("Could not prepare the mobile bridge on port {port}: {e}"))?;
+    Ok(listener)
+}
+fn spawn_bridge_listener(
+    listener: TcpListener,
+    app: tauri::AppHandle,
+    state: Arc<Mutex<BridgeConfig>>,
+) -> Result<Arc<AtomicBool>, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = stop.clone();
+    std::thread::Builder::new()
+        .name("luma-mobile-bridge".into())
+        .spawn(move || serve(listener, app, state, worker_stop))
+        .map_err(|e| format!("Could not start mobile bridge listener: {e}"))?;
+    Ok(stop)
+}
+fn spawn_discovery_listener(
+    socket: UdpSocket,
+    state: Arc<Mutex<BridgeConfig>>,
+) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("luma-lan-discovery".into())
+        .spawn(move || {
+            let mut packet = [0u8; 512];
+            while let Ok((count, peer)) = socket.recv_from(&mut packet) {
+                if packet[..count] != *b"LUMA_DISCOVER_V1" {
+                    continue;
+                }
+                let Ok(config) = state.lock() else {
+                    continue;
+                };
+                if !config.enabled {
+                    continue;
+                }
+                let port = config.port;
+                drop(config);
+                let message = serde_json::json!({
+                    "service": "luma",
+                    "name": std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Luma Desktop".into()),
+                    "port": port,
+                })
+                .to_string();
+                let _ = socket.send_to(message.as_bytes(), peer);
+            }
+        })
+        .map_err(|e| format!("Could not start LAN discovery listener: {e}"))?;
+    Ok(())
+}
 fn cast(
     state: &BridgeState,
     app: &tauri::AppHandle,
@@ -443,15 +567,16 @@ fn cast(
         .unwrap_or_default()
         .as_secs()
         + 21600;
-    let token = state
-        .inner
-        .lock()
-        .map_err(|_| "Mobile bridge state is unavailable.".to_owned())?
-        .token
-        .clone();
+    let (token, port) = {
+        let config = state
+            .inner
+            .lock()
+            .map_err(|_| "Mobile bridge state is unavailable.".to_owned())?;
+        (config.token.clone(), config.port)
+    };
     let host = lan_ip();
     let media_url = format!(
-        "http://{host}:{PORT}/api/v1/media/{media_id}?expires={exp}&signature={}",
+        "http://{host}:{port}/api/v1/media/{media_id}?expires={exp}&signature={}",
         sign(&token, media_id, exp)
     );
     let title = path
@@ -507,7 +632,8 @@ fn cast(
 fn info(c: &BridgeConfig) -> BridgeInfo {
     BridgeInfo {
         enabled: c.enabled,
-        base_url: c.enabled.then(|| format!("http://{}:{PORT}", lan_ip())),
+        port: c.port,
+        base_url: c.enabled.then(|| format!("http://{}:{}", lan_ip(), c.port)),
         token: c.enabled.then(|| c.token.clone()),
     }
 }
@@ -526,27 +652,38 @@ fn new_token() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn serve(listener: TcpListener, app: tauri::AppHandle, state: Arc<Mutex<BridgeConfig>>) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+fn serve(
+    listener: TcpListener,
+    app: tauri::AppHandle,
+    state: Arc<Mutex<BridgeConfig>>,
+    stop: Arc<AtomicBool>,
+) {
+    use std::sync::atomic::AtomicUsize;
     let requests = Arc::new(AtomicUsize::new(0));
-    for incoming in listener.incoming() {
-        if let Ok(mut stream) = incoming {
-            if requests.fetch_add(1, Ordering::Relaxed) >= 16 {
-                requests.fetch_sub(1, Ordering::Relaxed);
-                continue;
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                if requests.fetch_add(1, Ordering::Relaxed) >= 16 {
+                    requests.fetch_sub(1, Ordering::Relaxed);
+                    continue;
+                }
+                let a = app.clone();
+                let s = state.clone();
+                let counter = requests.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("luma-mobile-request".into())
+                    .spawn(move || {
+                        handle(&mut stream, &a, &s);
+                        counter.fetch_sub(1, Ordering::Relaxed);
+                    });
+                if spawned.is_err() {
+                    requests.fetch_sub(1, Ordering::Relaxed);
+                }
             }
-            let a = app.clone();
-            let s = state.clone();
-            let counter = requests.clone();
-            let spawned = std::thread::Builder::new()
-                .name("luma-mobile-request".into())
-                .spawn(move || {
-                    handle(&mut stream, &a, &s);
-                    counter.fetch_sub(1, Ordering::Relaxed);
-                });
-            if spawned.is_err() {
-                requests.fetch_sub(1, Ordering::Relaxed);
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
+            Err(_) => break,
         }
     }
 }

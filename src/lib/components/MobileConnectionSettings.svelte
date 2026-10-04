@@ -5,17 +5,19 @@
 	import { homeSnapshot } from '$lib/media/home-state';
 	import { invalidateCatalogPageCache, isDesktopRuntime } from '$lib/platform/desktop';
 	import { resetDiscovery } from '$lib/media/discovery';
+	type DesktopBridgeInfo = { enabled: boolean; baseUrl: string | null; token: string | null; port: number };
 	let url = $state('');
+	let port = $state(47631);
 	let token = $state('');
 	let paired = $state(false);
 	let busy = $state(false);
 	let message = $state('');
-	let desktopInfo = $state<{enabled:boolean;baseUrl:string;token:string} | null>(null);
+	let desktopInfo = $state<DesktopBridgeInfo | null>(null);
 	onMount(() => {
 		if (!isDesktopRuntime()) return;
 		const refresh = () => { void readMobileConnection().then(value => { url = value.url ?? ''; paired = value.paired; }).catch(error => message = String(error)); };
 		if (nativeMobile) { refresh(); window.addEventListener('luma-connection-changed',refresh); }
-		else void invoke<typeof desktopInfo>('get_mobile_bridge_info').then(value => desktopInfo = value).catch(() => { message = 'Restart the updated Luma desktop to enable mobile connections.'; });
+		else void invoke<DesktopBridgeInfo>('get_mobile_bridge_info').then(value => { desktopInfo = value; port = value.port; }).catch(() => { message = 'Restart the updated Luma desktop to enable mobile connections.'; });
 		return () => window.removeEventListener('luma-connection-changed',refresh);
 	});
 	async function connect() {
@@ -32,8 +34,18 @@
 	}
 	async function enable() {
 		busy = true; message = '';
-		try { desktopInfo = await invoke('enable_mobile_bridge', {enabled:true}); }
+		try { const info = await invoke<DesktopBridgeInfo>('enable_mobile_bridge', {enabled:true}); desktopInfo = info; port = info.port; }
 		catch (error) { message = String(error); }
+		finally { busy = false; }
+	}
+	async function savePort() {
+		if (!Number.isInteger(port) || port < 1024 || port > 65535) { message = 'Choose a port between 1024 and 65535.'; return; }
+		busy = true; message = '';
+		try {
+			const info = await invoke<DesktopBridgeInfo>('set_mobile_bridge_port', {port});
+			desktopInfo = info; port = info.port;
+			message = info.enabled ? 'Port updated. Reconnect phones using the new address.' : 'Port saved.';
+		} catch (error) { message = String(error); }
 		finally { busy = false; }
 	}
 	async function disconnect() {
@@ -60,11 +72,16 @@
 			<label>Connection key<input bind:value={token} type="password" placeholder={paired ? 'Saved key · leave blank to keep it' : 'Key from your computer'} autocomplete="off" /></label>
 			<button type="button" disabled={busy || !url.trim()} onclick={connect}>{busy ? 'Connecting…' : paired ? 'Save and test' : 'Connect'}</button>
 			{#if paired}<button class="disconnect-button" type="button" disabled={busy} onclick={disconnect}>Disconnect</button>{/if}
-		{:else if desktopInfo?.enabled}
-			<label>Computer address<input value={desktopInfo.baseUrl} readonly /></label>
-			<label>Connection key<input value={desktopInfo.token} readonly type="password" /></label>
-			<button type="button" onclick={() => { if (desktopInfo) void navigator.clipboard.writeText(desktopInfo.token).then(() => message = 'Key copied.').catch(() => message = 'Select the connection key to copy it.'); }}>Copy connection key</button>
-		{:else}<button type="button" disabled={busy} onclick={enable}>{busy ? 'Starting…' : 'Enable mobile connection'}</button>{/if}
+		{:else}
+			{#if desktopInfo?.enabled}
+				<label>Computer address<input value={desktopInfo.baseUrl ?? ''} readonly /></label>
+				<label>Connection key<input value={desktopInfo.token ?? ''} readonly type="password" /></label>
+				<button type="button" onclick={() => { if (desktopInfo) void navigator.clipboard.writeText(desktopInfo.token ?? '').then(() => message = 'Key copied.').catch(() => message = 'Select the connection key to copy it.'); }}>Copy connection key</button>
+			{/if}
+			<label>Computer port<input bind:value={port} type="number" min="1024" max="65535" step="1" /></label>
+			<button type="button" disabled={busy} onclick={savePort}>Save port</button>
+			{#if !desktopInfo?.enabled}<button type="button" disabled={busy} onclick={enable}>{busy ? 'Starting…' : 'Enable mobile connection'}</button>{/if}
+		{/if}
 		{#if message}<p class="connection-feedback" role="status">{message}</p>{/if}
 	</div>
 </section>
