@@ -899,7 +899,12 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
                     }
                 },
             };
-            stream_compatible(stream, app, id, start, method == "HEAD");
+            let quality = fields.get("quality").copied().unwrap_or("auto");
+            if !matches!(quality, "auto" | "480p" | "720p" | "1080p") {
+                reply(stream, 400, "Unsupported quality", "text/plain");
+                return;
+            }
+            stream_compatible(stream, app, id, start, method == "HEAD", quality);
         } else if path == base && method == "GET" {
             stream_media(stream, app, id, &data[..split]);
         } else if let Some(index) = path
@@ -1110,7 +1115,7 @@ fn stream_media(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, headers: &[u
         }
     }
 }
-fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: f64, head: bool) {
+fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: f64, head: bool, quality: &str) {
     use sha2::{Digest, Sha256};
     let state = app.state::<media_core::LibraryState>();
     let expected_path = match media_core::LibraryStore::open(&state.db_path)
@@ -1147,7 +1152,7 @@ fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: 
             return;
         }
     };
-    let url = format!("{ADMIN_ORIGIN}/api/mobile-stream/file-{id}?start={start}");
+    let url = format!("{ADMIN_ORIGIN}/api/mobile-stream/file-{id}?start={start}&quality={quality}");
     let request = if head {
         client.head(&url)
     } else {
@@ -1203,10 +1208,15 @@ fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: 
     let code = status.as_u16();
     let reason = if code == 206 { "Partial Content" } else { "OK" };
     let mut header = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Luma-Duration\r\nConnection: close\r\n"
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Luma-Duration, X-Luma-Bitrate-Limit, X-Luma-Source-Bitrate\r\nConnection: close\r\n"
     );
     if let Some(duration) = duration {
         header.push_str(&format!("X-Luma-Duration: {duration}\r\n"));
+    }
+    for name in ["X-Luma-Bitrate-Limit", "X-Luma-Source-Bitrate"] {
+        if let Some(value) = response.headers().get(name).and_then(|value| value.to_str().ok()).filter(|value| value.parse::<u64>().is_ok()) {
+            header.push_str(&format!("{name}: {value}\r\n"));
+        }
     }
     if let Some(length) = response.content_length() {
         header.push_str(&format!("Content-Length: {length}\r\n"));

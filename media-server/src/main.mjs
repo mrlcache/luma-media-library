@@ -5,6 +5,7 @@ import { readFileSync,existsSync,mkdirSync,writeFileSync } from 'node:fs';
 import { randomUUID,createHash } from 'node:crypto';
 import { MediaServer,lanInterfaces } from './server.mjs';
 import { createReleaseSearch } from '../../scripts/torrent-search-preview.mjs';
+import { mobileQualities } from './transcode.mjs';
 const releaseSearch = createReleaseSearch();
 
 const workspace=path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -39,6 +40,8 @@ const admin=http.createServer(async(req,res)=>{
     if(mobileStream&&['GET','HEAD'].includes(req.method)){
       if(req.headers['x-luma-control']!=='1'){res.writeHead(403);res.end();return;}
       const start=Number(url.searchParams.get('start')||0);
+      const quality=url.searchParams.get('quality')||'auto';
+      if(quality!=='auto' && !Object.hasOwn(mobileQualities,quality)){res.writeHead(400);res.end('Unsupported quality');return;}
       if(!Number.isFinite(start)||start<0||start>86400){res.writeHead(400,{'Content-Type':'text/plain'});res.end('Invalid start position');return;}
       const identity=req.headers['x-luma-media-identity'];
       const file=typeof identity==='string' ? await media.catalog.matchingFile(mobileStream[1],identity) : await media.catalog.file(mobileStream[1]);
@@ -46,10 +49,12 @@ const admin=http.createServer(async(req,res)=>{
       if(typeof identity==='string')res.setHeader('X-Luma-Media-Identity',identity);
       if(!media.transcoder.available){res.writeHead(503,{'Content-Type':'text/plain'});res.end('FFmpeg unavailable');return;}
       if(req.method==='HEAD'){
-        const plan=await media.transcoder.plan(file,'mp4');
+        const plan=await media.transcoder.plan(file,'mp4',quality);
+        res.setHeader('X-Luma-Bitrate-Limit',String(plan.profile?.bitrate || 0));
+        res.setHeader('X-Luma-Source-Bitrate',String(plan.sourceBitrate));
         res.writeHead(200,{'Content-Type':'video/mp4','X-Luma-Duration':String(plan.duration),'Cache-Control':'no-store','Access-Control-Allow-Origin':'*','Access-Control-Expose-Headers':'X-Luma-Duration'});res.end();return;
       }
-      return await media.transcoder.stream(file,req,res,start,'mp4');
+      return await media.transcoder.stream(file,req,res,start,'mp4',quality);
     }
     let result;
     if(url.pathname==='/api/dev-version'&&req.method==='GET')result={version:devVersion,enabled:Boolean(options.dev)};

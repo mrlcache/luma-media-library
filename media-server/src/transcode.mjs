@@ -4,6 +4,11 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 const exec = promisify(execFile);
+export const mobileQualities = Object.freeze({
+  '480p': { width: 854, height: 480, bitrate: 1_200_000 },
+  '720p': { width: 1280, height: 720, bitrate: 2_500_000 },
+  '1080p': { width: 1920, height: 1080, bitrate: 5_000_000 },
+});
 export class Transcoder {
   constructor(tools) {
     this.ffmpeg = process.env.LUMA_FFMPEG || path.join(tools,'ffmpeg.exe');
@@ -11,7 +16,8 @@ export class Transcoder {
     this.active = new Set(); this.pending = 0; this.generation = 0; this.available = existsSync(this.ffmpeg) && existsSync(this.ffprobe);
     this.lastError = null; this.probes = new Map();
   }
-  async plan(file,output = 'mpegts') {
+  async plan(file,output = 'mpegts',quality = 'auto') {
+    if (quality !== 'auto' && !Object.hasOwn(mobileQualities,quality)) throw new Error('Unsupported quality');
     if (!this.available) throw new Error('FFmpeg is not installed in the server workspace');
     const key = `${file.id}:${file.info.size}:${file.info.mtimeMs}`;
     let data = this.probes.get(key);
@@ -22,26 +28,31 @@ export class Transcoder {
     const video = data.streams.find(s=>s.codec_type === 'video');
     if (!video) throw new Error('No video stream');
     const audio = data.streams.find(s=>s.codec_type === 'audio');
-    const copyVideo = video.codec_name === 'h264' && ['yuv420p','yuvj420p'].includes(video.pix_fmt)
+    const profile = output === 'mp4' ? mobileQualities[quality] : null;
+    const copyVideo = !profile && video.codec_name === 'h264' && ['yuv420p','yuvj420p'].includes(video.pix_fmt)
       && (output !== 'mp4' || (Number(video.width) <= 1920 && Number(video.height) <= 1080));
     const copyAudio = !audio || audio.codec_name === 'aac';
     // Do not silently discard HDR. Tone mapping needs a separate tested profile.
     if (['smpte2084','arib-std-b67'].includes(video.color_transfer) && !copyVideo) throw new Error('HDR conversion is not enabled; use the original file');
-    return {mode:copyVideo && copyAudio ? 'remux' : copyVideo ? 'audio-transcode' : 'transcode',copyVideo,copyAudio,duration:Number(data.format?.duration || 0)};
+    return {mode:copyVideo && copyAudio ? 'remux' : copyVideo ? 'audio-transcode' : 'transcode',copyVideo,copyAudio,duration:Number(data.format?.duration || 0),profile:profile || null,sourceBitrate:Number(data.format?.bit_rate || 0)};
   }
-  async stream(file,req,res,offset = 0,output = 'mpegts') {
+  async stream(file,req,res,offset = 0,output = 'mpegts',quality = 'auto') {
     if (!['mpegts','mp4'].includes(output)) throw new Error('Unsupported output format');
     if (this.active.size + this.pending >= 2) {res.writeHead(503,{'Retry-After':'5'});res.end('Transcoder busy');return;}
     const generation = this.generation;
     this.pending++;
     let plan;
-    try { plan = await this.plan(file,output); } finally { this.pending--; }
+    try { plan = await this.plan(file,output,quality); } finally { this.pending--; }
     if (res.destroyed || generation !== this.generation) return;
     const args = ['-nostdin','-hide_banner','-loglevel','error'];
     if (offset > 0) args.push('-ss',String(offset));
     args.push('-i',file.path,'-map','0:v:0','-map','0:a:0?','-sn','-dn');
     if (plan.copyVideo) args.push('-c:v','copy');
-    else if (output === 'mp4') args.push('-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','-vf',"scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2");
+    else if (output === 'mp4') {
+      const profile=plan.profile || mobileQualities['720p'];
+      args.push('-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','-vf',`scale=w='min(${profile.width},iw)':h='min(${profile.height},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`);
+      if(plan.profile)args.push('-maxrate',String(profile.bitrate),'-bufsize',String(profile.bitrate*2));
+    }
     else args.push('-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p','-vf','scale=trunc(iw/2)*2:trunc(ih/2)*2');
     if (plan.copyAudio) args.push('-c:a','copy');
     else args.push('-c:a','aac','-b:a',output === 'mp4' ? '160k' : '192k','-ac','2');

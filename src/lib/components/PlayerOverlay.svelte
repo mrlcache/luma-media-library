@@ -65,6 +65,14 @@
 	let playerMenuOpen = $state(false);
 	let mobileSourceUrl = $state('');
 	let transcoding = $state(false);
+	let transcodeQuality = $state('auto');
+	let sourceBitrate = $state(0);
+	const qualityOptions = [
+		{ value: 'auto', label: 'Automatic' },
+		{ value: '480p', label: '480p · up to 1.2 Mbps' },
+		{ value: '720p', label: '720p · up to 2.5 Mbps' },
+		{ value: '1080p', label: '1080p · up to 5 Mbps' },
+	];
 	let transcodeOffset = 0;
 	let mobilePendingSeek:number|null = null;
 	const originalCueTimes = new WeakMap<TextTrackCue,[number,number]>();
@@ -655,10 +663,12 @@
 			const url=new URL(mobileSourceUrl);
 			if(transcoding){
 				url.pathname += '/compatible';url.searchParams.set('start',String(Math.max(0,position)));
+				url.searchParams.set('quality',transcodeQuality);
 				const metadata=await fetch(url,{method:'HEAD',cache:'no-store'});
 				if(!metadata.ok)throw new Error('Could not start transcoding on your computer. Check that Luma is updated and FFmpeg is available.');
 				const length=Number(metadata.headers.get('X-Luma-Duration'));
 				if(Number.isFinite(length)&&length>0)duration=length;
+				sourceBitrate=Number(metadata.headers.get('X-Luma-Source-Bitrate')) || 0;
 			}
 			if(attempt!==mobileLoadAttempt||playerDisposed)return;
 			transcodeOffset=transcoding?position:0;resumePosition=transcoding?0:position;mobilePendingSeek=transcoding?null:position;
@@ -670,6 +680,13 @@
 		if(!canTranscode)return;
 		transcoding=!transcoding;playerMenuOpen=false;
 		if(previewOnly)return;
+		await loadMobileStream(currentTime || resumePosition);
+	}
+	async function changeTranscodeQuality(quality: string) {
+		transcodeQuality = quality;
+		if (!canTranscode || previewOnly) return;
+		transcoding = true;
+		playerMenuOpen = false;
 		await loadMobileStream(currentTime || resumePosition);
 	}
 
@@ -848,6 +865,11 @@
 							<div class="player-options" role="group" aria-label="Playback options">
 								<button type="button" role="switch" aria-checked={transcoding} disabled={!canTranscode || isLoading} onclick={toggleTranscoding}>Transcoding <span>{transcoding?'On':'Off'}</span></button>
 								<p>{canTranscode?'Convert unsupported formats on your computer.':'Transcoding is available for media streamed from your computer.'}</p>
+								{#if canTranscode}
+									<span class="player-options__label">Quality · video bitrate</span>
+									<AppSelect value={transcodeQuality} label="Streaming quality" options={qualityOptions} disabled={isLoading} onchange={changeTranscodeQuality}/>
+									{#if sourceBitrate > 0}<p>Original bitrate: {(sourceBitrate / 1_000_000).toFixed(1)} Mbps</p>{/if}
+								{/if}
 								{#if audioTracks.length>1}<AppSelect value={activeAudio} label="Audio track" options={audioTracks.map(track=>({value:track.index,label:track.label}))} onchange={selectAudio}/>{/if}
 							</div>
 						{:else}
