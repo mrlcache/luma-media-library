@@ -1,5 +1,8 @@
 <script lang="ts">
 	import HouseIcon from 'phosphor-svelte/lib/HouseIcon';
+	import HeartIcon from 'phosphor-svelte/lib/HeartIcon';
+	import BroadcastIcon from 'phosphor-svelte/lib/BroadcastIcon';
+	import DeviceMobileIcon from 'phosphor-svelte/lib/DeviceMobileIcon';
 	import SquaresFourIcon from 'phosphor-svelte/lib/SquaresFourIcon';
 	import FilmSlateIcon from 'phosphor-svelte/lib/FilmSlateIcon';
 	import TelevisionIcon from 'phosphor-svelte/lib/TelevisionIcon';
@@ -24,12 +27,17 @@
 	import DownloadSimpleIcon from 'phosphor-svelte/lib/DownloadSimpleIcon';
 	import FolderIcon from 'phosphor-svelte/lib/FolderIcon';
 	import CodeIcon from 'phosphor-svelte/lib/CodeIcon';
+	import HardDrivesIcon from 'phosphor-svelte/lib/HardDrivesIcon';
 
 	export type IconName =
 		| 'home'
+		| 'heart'
+		| 'cast'
+		| 'phone'
 		| 'library'
 		| 'film'
 		| 'tv'
+		| 'server'
 		| 'search'
 		| 'settings'
 		| 'more'
@@ -59,9 +67,13 @@
 
 	const icons = {
 		home: HouseIcon,
+		heart: HeartIcon,
+		cast: BroadcastIcon,
+		phone: DeviceMobileIcon,
 		library: SquaresFourIcon,
 		film: FilmSlateIcon,
 		tv: TelevisionIcon,
+		server: HardDrivesIcon,
 		search: MagnifyingGlassIcon,
 		settings: GearSixIcon,
 		more: DotsThreeIcon,

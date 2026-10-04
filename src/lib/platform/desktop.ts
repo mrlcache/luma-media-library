@@ -30,6 +30,7 @@ async function torrentInvoke<T>(command: string, args?: Record<string, unknown>)
 export const readTorrentSnapshot = () => torrentInvoke<TorrentSnapshot>('torrent_snapshot');
 export const addMagnet = (uri: string) => torrentInvoke<string>('torrent_add_magnet', { uri });
 export const addTorrentFile = (path: string) => torrentInvoke<string>('torrent_add_file', { path });
+export const addTorrentData = (encoded: string) => torrentInvoke<string>('torrent_add_data', { encoded });
 export const setTorrentPaused = (infoHash: string, paused: boolean) => torrentInvoke<void>('torrent_set_paused', { infoHash, paused });
 export const moveTorrentQueue = (infoHash: string, direction: number) => torrentInvoke<void>('torrent_move_queue', { infoHash, direction });
 export const setTorrentLimits = (download: number, upload: number) => torrentInvoke<void>('torrent_set_limits', { download, upload });
@@ -108,6 +109,17 @@ const catalogPageCache = new Map<string, CatalogPageCacheEntry>();
 const catalogPageCacheLimit = 8;
 const titleDetailCache = new Map<number, Promise<LocalTitleDetail | null>>();
 
+/** Return an already loaded view without a loading frame when navigating back to it. */
+export function peekCatalogPage(
+	offset = 0,
+	count = 48,
+	kind?: 'movie' | 'series',
+	query?: string,
+	sort?: string
+): CatalogPage | undefined {
+	return catalogPageCache.get(JSON.stringify([offset, count, kind, query, sort]))?.page;
+}
+
 export function invalidateCatalogPageCache() {
 	catalogPageCache.clear();
 	titleDetailCache.clear();
@@ -175,8 +187,9 @@ export async function readCatalogPage(
 	return pending;
 }
 
-export async function readLocalTitleDetail(mediaId: number): Promise<LocalTitleDetail | null> {
+export async function readLocalTitleDetail(mediaId: number, force = false): Promise<LocalTitleDetail | null> {
 	if (!isDesktopRuntime()) return null;
+	if (force) titleDetailCache.delete(mediaId);
 	let pending = titleDetailCache.get(mediaId);
 	if (!pending) {
 		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
@@ -197,10 +210,15 @@ export async function readLocalTitleDetail(mediaId: number): Promise<LocalTitleD
 
 const trailerCache = new Map<number, Promise<TmdbTrailer | null>>();
 const logoCache = new Map<number, Promise<string | null>>();
+const logoCacheLimit = 32;
 
 export async function readTitleLogo(mediaId: number): Promise<string | null> {
 	if (!isDesktopRuntime() || !Number.isSafeInteger(mediaId) || mediaId <= 0) return null;
 	let pending = logoCache.get(mediaId);
+	if (pending) {
+		logoCache.delete(mediaId);
+		logoCache.set(mediaId, pending);
+	}
 	if (!pending) {
 		pending = import('@tauri-apps/api/core').then(({ invoke }) =>
 			invoke<string | null>('get_title_logo', { mediaId })
@@ -209,6 +227,11 @@ export async function readTitleLogo(mediaId: number): Promise<string | null> {
 			throw error;
 		});
 		logoCache.set(mediaId, pending);
+		while (logoCache.size > logoCacheLimit) {
+			const oldest = logoCache.keys().next().value;
+			if (oldest === undefined) break;
+			logoCache.delete(oldest);
+		}
 	}
 	return pending;
 }
@@ -249,10 +272,12 @@ export async function savePlaybackProgress(mediaId: number, positionSeconds: num
 	return invoke<void>('save_playback_progress', { mediaId, positionSeconds, durationSeconds });
 }
 
-export async function recordPlaybackActivity(mediaId: number): Promise<void> {
+export async function recordPlaybackActivity(mediaId: number, markPreviousEpisodesWatched = false): Promise<void> {
 	if (!isDesktopRuntime()) return;
 	const { invoke } = await import('@tauri-apps/api/core');
-	return invoke<void>('record_playback_activity', { mediaId });
+	await invoke<void>('record_playback_activity', { mediaId, markPreviousEpisodesWatched });
+	titleDetailCache.clear();
+	window.dispatchEvent(new CustomEvent('media-library:playback-history-updated'));
 }
 
 export async function readPlaybackHistory(count = 12): Promise<PlaybackHistoryItem[]> {

@@ -1,14 +1,17 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import AppSelect from '$lib/components/AppSelect.svelte';
+	import { onMount, untrack } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { recoverRemoteArtwork } from '$lib/media/artwork';
 	import CatalogSkeletonGrid from '$lib/components/CatalogSkeletonGrid.svelte';
 	import EmptyLibraryCard from '$lib/components/EmptyLibraryCard.svelte';
 	import LocalCatalogGrid from '$lib/components/LocalCatalogGrid.svelte';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
-	import { isDesktopRuntime, readCatalogPage, searchTmdb } from '$lib/platform/desktop';
+	import { isDesktopRuntime, peekCatalogPage, readCatalogPage, searchTmdb } from '$lib/platform/desktop';
 	import type { CatalogMedia, TmdbSearchResult } from '$lib/types';
 	import type { MediaKind } from '$lib/types';
+	import { libraryTransfers, transferKind, transferTitle, transferCard, type LibraryCard } from '$lib/torrents/library';
+	import { favorites, favoriteCard, cardMedia, isFavorite, sameFavorite } from '$lib/media/favorites';
 
 	type Props = { heading?: string; initialType?: 'all' | MediaKind; initialQuery?: string };
 	let { heading = 'Library', initialType = 'all', initialQuery = '' }: Props = $props();
@@ -16,10 +19,16 @@
 	let query = $state('');
 	let selectedType = $state<'all' | MediaKind>('all');
 	let sort = $state('Recently added');
+	let favoritesOnly = $state(false);
+	let favoriteLocalItems = $state<CatalogMedia[]>([]);
+	let favoriteLookupVersion = $state(0);
+	let filteredFavorites = $derived($favorites.filter(({media}) =>
+		(selectedType === 'all' || media.kind === selectedType)
+		&& `${media.title} ${media.year} ${media.genres.join(' ')}`.toLowerCase().includes(query.trim().toLowerCase())));
 	let tmdbResults = $state<TmdbSearchResult[]>([]);
 	let tmdbLoading = $state(false);
 	let tmdbError = $state('');
-	let desktopCatalog = $state(false);
+	let desktopCatalog = $state(isDesktopRuntime());
 	let catalogItems = $state<CatalogMedia[]>([]);
 	let catalogTotal = $state(0);
 	let catalogLoading = $state(true);
@@ -27,13 +36,52 @@
 	let catalogRequest = 0;
 	const isGlobalSearch = $derived(heading === 'Search');
 	const catalogPageSize = 48;
+	let visibleTransfers = $derived($libraryTransfers.filter((item) =>
+		(selectedType === 'all' || transferKind(item) === selectedType)
+		&& transferTitle(item).toLowerCase().includes(query.trim().toLowerCase())
+	).sort((a, b) => sort === 'Title' ? transferTitle(a).localeCompare(transferTitle(b)) : b.queuePosition - a.queuePosition));
+	let displayItems = $derived.by(() => {
+		const key = (item: LibraryCard) => `${item.kind}:${item.title.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')}:${item.year ?? ''}`;
+		const combined = new Map<string, LibraryCard>(catalogItems.map((item) => [key(item), item]));
+		for (const entry of filteredFavorites) {
+			const saved = favoriteCard(entry);
+			const downloaded = favoriteLocalItems.find((item) => sameFavorite(cardMedia(item), entry.media));
+			const card = downloaded ?? saved;
+			if (!combined.has(key(card))) combined.set(key(card), card);
+		}
+		for (const item of visibleTransfers.map(transferCard)) {
+			const existing = combined.get(key(item));
+			if (!existing) combined.set(key(item), item);
+			else if (item.transfer && item.transfer.progress < 1) combined.set(key(item), { ...existing, transfer: item.transfer });
+		}
+		return [...combined.values()].filter((item) => !favoritesOnly || isFavorite($favorites, cardMedia(item))).sort((a, b) => {
+			if (sort === 'Title') return a.title.localeCompare(b.title);
+			if (sort === 'Rating') return (b.voteAverage ?? 0) - (a.voteAverage ?? 0);
+			return (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0);
+		});
+	});
 
 	$effect.pre(() => {
 		query = initialQuery;
 		selectedType = initialType;
 	});
 
-	let catalogCountLabel = $derived(`${catalogTotal} ${catalogTotal === 1 ? 'title' : 'titles'}`);
+	$effect.pre(() => {
+		if (!desktopCatalog || isGlobalSearch) return;
+		const cached = peekCatalogPage(0, catalogPageSize,
+			selectedType === 'all' ? undefined : selectedType, query.trim() || undefined, sort);
+		untrack(() => {
+			// Invalidate the previous view before its pending request can paint under a new heading.
+			catalogRequest += 1;
+			catalogItems = cached?.items ?? [];
+			catalogTotal = cached?.total ?? 0;
+			catalogLoading = !cached;
+			catalogError = '';
+		});
+	});
+
+	let libraryTotal = $derived(favoritesOnly ? displayItems.length : catalogTotal + displayItems.filter((item) => typeof item.id !== 'number').length);
+	let catalogCountLabel = $derived(`${libraryTotal} ${libraryTotal === 1 ? 'title' : 'titles'}`);
 	let filteredTmdbResults = $derived(
 		tmdbResults
 			.filter((item) => selectedType === 'all' || item.kind === selectedType)
@@ -51,13 +99,37 @@
 	function resetFilters() {
 		query = '';
 		selectedType = 'all';
+		favoritesOnly = false;
 	}
+
+	$effect(() => {
+		const entries = $favorites;
+		void favoriteLookupVersion;
+		if (!desktopCatalog || isGlobalSearch) return;
+		let cancelled = false;
+		// Resolve saved titles separately from pagination so a downloaded favorite
+		// keeps its play action even when it is outside the loaded catalog page.
+		void (async () => {
+			const found: CatalogMedia[] = [];
+			for (const entry of entries) {
+				if (cancelled) return;
+				try {
+					const page = await readCatalogPage(0, 48, entry.media.kind, entry.media.title, 'Title');
+					const match = page?.items.find((item) => sameFavorite(cardMedia(item), entry.media));
+					if (match) found.push(match);
+				} catch { /* Saved metadata remains available if the local catalog is offline. */ }
+			}
+			if (!cancelled) favoriteLocalItems = found;
+		})();
+		return () => { cancelled = true; };
+	});
 
 	async function requestCatalogPage(reset = true) {
 		if (!desktopCatalog || isGlobalSearch) return;
 		const request = ++catalogRequest;
 		const offset = reset ? 0 : catalogItems.length;
-		catalogLoading = true;
+		catalogLoading = reset ? !peekCatalogPage(0, catalogPageSize,
+			selectedType === 'all' ? undefined : selectedType, query.trim() || undefined, sort) : true;
 		catalogError = '';
 		try {
 			const page = await readCatalogPage(
@@ -129,15 +201,17 @@
 		const acrylicRequester = Symbol('Library surface');
 		desktopCatalog = isDesktopRuntime();
 		requestNativeAcrylic(acrylicRequester, true);
-		return () => requestNativeAcrylic(acrylicRequester, false);
+		const update = () => { favoriteLookupVersion += 1; void requestCatalogPage(true); };
+		window.addEventListener('luma-library-changed', update);
+		return () => { catalogRequest += 1; window.removeEventListener('luma-library-changed', update); requestNativeAcrylic(acrylicRequester, false); };
 	});
 </script>
 
 <svelte:head><title>{heading} · Luma</title></svelte:head>
 
 <div class="library-surface" data-native-backdrop={$nativeAcrylicStatus}>
-	<div class="library-page">
-	<header class="library-heading">
+	<div class="library-page" class:library-page--collection={!isGlobalSearch}>
+	<header class="library-heading" class:library-heading--collection={!isGlobalSearch}>
 		<h1>{heading}</h1>
 		<p class="library-heading__meta">{isGlobalSearch ? 'Movies and series · TMDb' : desktopCatalog ? catalogCountLabel : 'Local collection'}</p>
 	</header>
@@ -155,15 +229,11 @@
 				<button type="button" class:active={selectedType === 'movie'} aria-pressed={selectedType === 'movie'} onclick={() => selectType('movie')}>Movies</button>
 				<button type="button" class:active={selectedType === 'series'} aria-pressed={selectedType === 'series'} onclick={() => selectType('series')}>Series</button>
 			</div>
-			<label class="sort-control">
+			<div class="sort-control">
 				<span>Sort by</span>
-				<select bind:value={sort} aria-label="Sort library">
-					<option>Recently added</option>
-					<option>Title</option>
-					<option>Rating</option>
-				</select>
-				<Icon name="chevron-down" size={14} />
-			</label>
+				<AppSelect bind:value={sort} label="Sort library" variant="plain" options={[{value:"Recently added",label:"Recently added"},{value:"Title",label:"Title"},{value:"Rating",label:"Rating"}]} />
+			</div>
+			{#if !isGlobalSearch}<button type="button" class="favorites-filter" class:active={favoritesOnly} aria-pressed={favoritesOnly} onclick={() => favoritesOnly = !favoritesOnly}><Icon name="heart" size={14} weight={favoritesOnly ? 'fill' : 'regular'} />Favorites</button>{/if}
 	</div>
 	</div>
 
@@ -171,7 +241,9 @@
 		{#if isGlobalSearch}
 			<strong>{query.trim().length < 2 ? 'Search TMDb' : tmdbLoading ? 'Searching…' : `${filteredTmdbResults.length} ${filteredTmdbResults.length === 1 ? 'result' : 'results'}`}</strong>
 		{:else if desktopCatalog && !(catalogLoading && catalogItems.length === 0)}
-			<strong>{`${catalogTotal} ${catalogTotal === 1 ? 'result' : 'results'}`}</strong>
+			<strong>{`${libraryTotal} ${libraryTotal === 1 ? 'result' : 'results'}`}</strong>
+		{:else if desktopCatalog}
+			<strong>Loading your library…</strong>
 		{:else}
 			<strong>Open the desktop app</strong>
 		{/if}
@@ -206,11 +278,13 @@
 			<div class="empty-state"><Icon name="search" size={21} /><h2>No titles found</h2><p>Try a different title.</p></div>
 		{/if}
 	{:else if desktopCatalog}
-		{#if catalogError && catalogItems.length === 0}
+		{#if favoritesOnly && displayItems.length === 0}
+			<EmptyLibraryCard title={query ? 'No favorites found' : 'No favorites yet'} description={query ? 'Try a different search or type filter.' : 'Use the heart on a title to save it here, including titles you have not downloaded.'} centered />
+		{:else if catalogError && displayItems.length === 0}
 			<EmptyLibraryCard title="Library unavailable" description={catalogError} role="status" centered />
-		{:else if catalogLoading && catalogItems.length === 0}
+		{:else if catalogLoading && displayItems.length === 0}
 			<CatalogSkeletonGrid count={12} label="Loading your library" />
-		{:else if catalogTotal === 0 && !query.trim()}
+		{:else if catalogTotal === 0 && displayItems.length === 0 && !query.trim()}
 			<EmptyLibraryCard
 				title={selectedType === 'all' ? 'Your library is empty' : `No ${selectedType === 'movie' ? 'movies' : 'series'} in your library`}
 				description={selectedType === 'all'
@@ -219,11 +293,11 @@
 				showSettingsLink
 				centered
 			/>
-		{:else if catalogItems.length > 0}
+		{:else if displayItems.length > 0}
 			<div aria-busy={catalogLoading}>
-				<LocalCatalogGrid items={catalogItems} />
+				<LocalCatalogGrid items={displayItems} />
 			</div>
-			{#if catalogItems.length < catalogTotal}
+			{#if !favoritesOnly && catalogItems.length < catalogTotal}
 				<div class="catalog-more"><button class="button button--secondary" type="button" disabled={catalogLoading} onclick={() => void requestCatalogPage(false)}>{catalogLoading ? 'Loading…' : 'Load more titles'}</button></div>
 			{/if}
 		{:else}
@@ -236,6 +310,9 @@
 </div>
 
 <style>
+	.favorites-filter { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:0 0 3px; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--text-muted); font-size:.7rem; font-weight:590; cursor:pointer; }
+	.favorites-filter:hover { color:var(--text-soft); }
+	.favorites-filter.active { border-bottom-color:var(--accent); color:var(--text-strong); }
 	.library-surface { min-height: 100vh; background: #101419; }
 	:global(html[data-runtime='desktop']) .library-surface { background: var(--acrylic-content-tint); }
 	:global(html[data-runtime='desktop'] .library-surface[data-native-backdrop='unavailable']) { background: var(--acrylic-content-fallback); }
@@ -250,14 +327,12 @@
 	.library-search input::-webkit-search-cancel-button { display: none; }
 	.search-clear { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; color: var(--text-muted); background: transparent; cursor: pointer; }
 	.search-clear:hover { color: var(--text-strong); background: var(--surface-2); }
-	.library-controls__right { display: flex; align-items: center; gap: 25px; }
+	.library-controls__right { display: flex; flex-shrink: 0; align-items: center; gap: 25px; }
 	.filter-group { display: inline-flex; align-items: center; gap: 19px; }
 	.filter-group button { min-height: 30px; padding: 0 0 3px; border: 0; border-bottom: 2px solid transparent; color: var(--text-muted); font-size: 0.7rem; font-weight: 590; cursor: pointer; background: transparent; transition: color 140ms ease, border-color 140ms ease; }
 	.filter-group button:hover { color: var(--text-soft); }
 	.filter-group button.active { border-bottom-color: var(--accent); color: var(--text-strong); }
 	.sort-control { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 0.7rem; }
-	.sort-control select { appearance: none; padding: 4px 18px 4px 0; border: 0; outline: none; color: var(--text-soft); font-size: 0.7rem; background: transparent; cursor: pointer; }
-	.sort-control :global(svg) { margin-left: -17px; pointer-events: none; }
 	.result-line { display: flex; align-items: center; gap: 8px; min-height: 1em; margin: 19px 0 17px; color: var(--text-soft); font-size: 0.72rem; }
 	.result-line strong { color: var(--text-strong); font-weight: 620; }
 	.result-line__query { color: var(--accent-soft); }
@@ -276,9 +351,19 @@
 	.button--secondary { border-color: var(--line-subtle); color: var(--text-soft); background: var(--surface-2); }
 	.button--secondary:hover { border-color: var(--line-strong); color: var(--text-strong); background: var(--surface-3); }
 	.catalog-more { display: flex; justify-content: center; padding: 0 0 34px; }
-	@media (max-width: 880px) { .library-page { padding-right: 28px; padding-left: 28px; } .library-heading { align-items: start; flex-direction: column; gap: 9px; } .library-controls { align-items: stretch; flex-direction: column; gap: 17px; } .library-search { max-width: none; } .library-controls__right { justify-content: space-between; } }
+	/* Break against the space left by the sidebar, before controls begin to compete. */
+	@media (min-width: 761px) and (max-width: 1280px) {
+		.library-page { padding-inline: 32px; }
+		.library-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 26px; }
+		.library-search { max-width: none; min-height: 34px; }
+		.library-controls__right { justify-content: space-between; gap: 16px; min-width: 0; }
+		.filter-group { gap: 20px; }
+	}
+	@media (max-width: 880px) { .library-page { padding-right: 28px; padding-left: 28px; } .library-heading { gap: 16px; } .library-controls { align-items: stretch; flex-direction: column; gap: 12px; } .library-search { max-width: none; } .library-controls__right { justify-content: space-between; gap: 16px; } }
 	@media (max-width: 560px) { .library-page { min-height: 100vh; min-height: 100dvh; padding: 32px 18px 48px; } .library-heading__meta { margin: 0; } .library-controls { margin-top: 26px; padding-top: 13px; } .library-controls__right { align-items: stretch; flex-direction: column; gap: 14px; } .filter-group { justify-content: space-between; gap: 15px; } .filter-group button { flex: 1; } .sort-control { justify-content: space-between; } }
 	@media (prefers-reduced-motion: reduce) { .filter-group button, .button { transition: none; } }
+	:global(html:not([data-mobile-preview='true'])) .library-heading--collection { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+	:global(html:not([data-mobile-preview='true'])) .library-page--collection .library-controls { margin-top: 0; border-top: 0; padding-top: 0; }
 	@media (prefers-reduced-transparency: reduce) {
 		:global(html[data-runtime='desktop']) .library-surface { background: #0c0f13; }
 	}

@@ -157,6 +157,15 @@ pub struct LocalEpisodeFile {
 pub struct LocalTitleDetail {
     pub media: CatalogMedia,
     pub files: Vec<LocalEpisodeFile>,
+    pub watched_before: Option<EpisodePosition>,
+    pub tmdb_id: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpisodePosition {
+    pub season: u16,
+    pub episode: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,6 +203,23 @@ pub struct LibraryStore {
 }
 
 impl LibraryStore {
+    /// One entry per TMDb title, across the complete active library (not a catalog page).
+    pub fn recommendation_profile(&self) -> Result<Vec<(u64, String, String, Option<i64>)>, String> {
+        let mut statement = self.connection.prepare(
+            "SELECT metadata.tmdb_id, metadata.kind, MAX(COALESCE(NULLIF(metadata.title, ''), items.local_title, files.display_name)), MAX(activity.updated_at)
+             FROM media_metadata AS metadata
+             JOIN media_items AS items ON items.id = metadata.media_id
+             JOIN media_files AS files ON files.root_id = items.root_id AND files.relative_path = items.relative_path
+             JOIN library_roots AS roots ON roots.id = files.root_id AND files.generation = roots.current_generation
+             LEFT JOIN playback_activity AS activity ON activity.media_id = items.id
+             WHERE metadata.tmdb_id > 0 AND metadata.kind IN ('movie', 'series')
+             GROUP BY metadata.kind, metadata.tmdb_id
+             ORDER BY MAX(activity.updated_at) DESC, MAX(files.modified_at) DESC"
+        ).map_err(|error| format!("Could not read recommendation profile: {error}"))?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, i64>(0)? as u64, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .map_err(|error| format!("Could not read recommendation profile: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
+    }
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -370,6 +396,14 @@ impl LibraryStore {
             )
             .map_err(|error| format!("Could not preserve existing playback history: {error}"))?;
 
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS series_watched_before (
+                series_key TEXT PRIMARY KEY,
+                season INTEGER NOT NULL,
+                episode INTEGER NOT NULL
+            );"
+        ).map_err(|error| format!("Could not prepare series watch status: {error}"))?;
+
         Ok(Self { connection })
     }
 
@@ -404,6 +438,58 @@ impl LibraryStore {
             )
             .map_err(|error| format!("Could not update playback history: {error}"))?;
         Ok(())
+    }
+
+    pub fn mark_previous_episodes_watched(&mut self, media_id: i64) -> Result<(), String> {
+        let selected: Option<(String, String, String)> = self.connection.query_row(
+            "SELECT files.display_name, items.relative_path,
+                    CASE WHEN metadata.tmdb_id IS NOT NULL
+                         THEN COALESCE(metadata.kind, '') || ':' || metadata.tmdb_id
+                         ELSE 'series:' || items.local_key || ':' || COALESCE(items.local_year, '') END
+             FROM media_items AS items
+             JOIN media_files AS files ON files.root_id = items.root_id AND files.relative_path = items.relative_path
+             JOIN library_roots AS roots ON roots.id = files.root_id AND files.generation = roots.current_generation
+             LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
+             WHERE items.id = ?1 AND COALESCE(metadata.kind, items.local_kind) = 'series'",
+            [media_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        ).optional().map_err(|error| format!("Could not identify the selected episode: {error}"))?;
+        let Some((name, path, series_key)) = selected else { return Ok(()); };
+        let (Some(season), Some(episode)) = episode_position(&name, &path) else { return Ok(()); };
+        // Persist a boundary, including earlier episodes which have not been downloaded yet.
+        // Rewatching an earlier episode must not undo previously inferred watched status.
+        let transaction = self.connection.transaction().map_err(|error| error.to_string())?;
+        transaction.execute(
+            "INSERT INTO series_watched_before(series_key, season, episode) VALUES (?1, ?2, ?3)
+             ON CONFLICT(series_key) DO UPDATE SET season = excluded.season, episode = excluded.episode
+             WHERE excluded.season > season OR (excluded.season = season AND excluded.episode > episode)",
+            params![series_key, season, episode]
+        ).map_err(|error| format!("Could not save earlier episodes' watched status: {error}"))?;
+        let earlier_ids = {
+            let mut statement = transaction.prepare(
+                "SELECT items.id, files.display_name, items.relative_path
+                 FROM media_items AS items
+                 JOIN media_files AS files ON files.root_id = items.root_id AND files.relative_path = items.relative_path
+                 JOIN library_roots AS roots ON roots.id = files.root_id AND files.generation = roots.current_generation
+                 LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
+                 WHERE CASE WHEN metadata.tmdb_id IS NOT NULL
+                            THEN COALESCE(metadata.kind, '') || ':' || metadata.tmdb_id
+                            ELSE 'series:' || items.local_key || ':' || COALESCE(items.local_year, '') END = ?1"
+            ).map_err(|error| error.to_string())?;
+            let rows = statement.query_map([&series_key], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+                .map_err(|error| error.to_string())?;
+            let mut ids = Vec::new();
+            for row in rows {
+                let (id, name, path) = row.map_err(|error| error.to_string())?;
+                if let (Some(s), Some(e)) = episode_position(&name, &path) {
+                    if (s, e) < (season, episode) { ids.push(id); }
+                }
+            }
+            ids
+        };
+        for id in earlier_ids {
+            transaction.execute("DELETE FROM playback_progress WHERE media_id = ?1", [id]).map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())
     }
 
     pub fn playback_history(
@@ -795,7 +881,7 @@ impl LibraryStore {
             .prepare(files_query)
             .map_err(|error| format!("Could not prepare the episode list: {error}"))?;
         let rows = statement
-            .query_map([group_key], |row| {
+            .query_map([&group_key], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -827,7 +913,12 @@ impl LibraryStore {
                 episode,
             });
         }
-        Ok(Some(LocalTitleDetail { media, files }))
+        let watched_before = self.connection.query_row(
+            "SELECT season, episode FROM series_watched_before WHERE series_key = ?1",
+            [&group_key], |row| Ok(EpisodePosition { season: row.get(0)?, episode: row.get(1)? })
+        ).optional().map_err(|error| format!("Could not read series watch status: {error}"))?;
+        let tmdb_id = self.tmdb_target(media.id)?.map(|(id, _)| id);
+        Ok(Some(LocalTitleDetail { media, files, watched_before, tmdb_id }))
     }
 
     pub fn tmdb_target(&self, media_id: i64) -> Result<Option<(u64, String)>, String> {
@@ -1017,6 +1108,20 @@ impl LibraryStore {
                             looked_up_at,
                         ])
                         .map_err(|error| format!("Could not save media metadata: {error}"))?;
+                    if metadata.is_some_and(|item| item.kind == "series") {
+                        transaction.execute(
+                            "INSERT INTO series_watched_before(series_key, season, episode)
+                             SELECT 'series:' || metadata.tmdb_id, watched.season, watched.episode
+                             FROM media_items AS items
+                             JOIN media_metadata AS metadata ON metadata.media_id = items.id
+                             JOIN series_watched_before AS watched
+                               ON watched.series_key = 'series:' || items.local_key || ':' || COALESCE(items.local_year, '')
+                             WHERE items.id = ?1
+                             ON CONFLICT(series_key) DO UPDATE SET season = excluded.season, episode = excluded.episode
+                             WHERE excluded.season > season OR (excluded.season = season AND excluded.episode > episode)",
+                            [media_id]
+                        ).map_err(|error| format!("Could not preserve series watch status: {error}"))?;
+                    }
                 }
             }
         }
@@ -1089,6 +1194,50 @@ impl LibraryStore {
             }
         }
         result
+    }
+
+    /// Import only the completed files supplied by the torrent engine, without walking folders.
+    pub fn import_completed_files(&mut self, download_root: &Path, paths: &[PathBuf]) -> Result<u64, String> {
+        let download_root = std::fs::canonicalize(download_root).map_err(|error| format!("Could not open torrent downloads: {error}"))?;
+        let roots: Vec<(i64, PathBuf, i64)> = {
+            let mut statement = self.connection.prepare("SELECT id, canonical_path, current_generation FROM library_roots")
+                .map_err(|error| error.to_string())?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, PathBuf::from(row.get::<_, String>(1)?), row.get(2)?)))
+                .map_err(|error| error.to_string())?;
+            rows.collect::<Result<_, _>>().map_err(|error| error.to_string())?
+        };
+        let mut imported = 0;
+        for path in paths {
+            if !is_video_file(path) { continue; }
+            let path = std::fs::canonicalize(path).map_err(|error| format!("Could not open completed torrent file: {error}"))?;
+            if !path.starts_with(&download_root) { return Err("Torrent file is outside the download folder.".into()); }
+            let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+            if !metadata.is_file() { continue; }
+            let (root_id, root, generation) = if let Some((id, root, generation)) = roots.iter()
+                .filter(|(_, root, _)| path.starts_with(root)).max_by_key(|(_, root, _)| root.components().count()) {
+                (*id, root.clone(), *generation)
+            } else {
+                let root = download_root.to_string_lossy();
+                self.connection.execute("INSERT INTO library_roots(canonical_path) VALUES (?1) ON CONFLICT(canonical_path) DO NOTHING", [root.as_ref()]).map_err(|error| error.to_string())?;
+                let (id, generation) = self.connection.query_row("SELECT id, current_generation FROM library_roots WHERE canonical_path = ?1", [root.as_ref()], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).map_err(|error| error.to_string())?;
+                (id, download_root.clone(), generation)
+            };
+            let relative_path = path.strip_prefix(&root).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
+            let file_name = path.file_stem().and_then(|value| value.to_str()).unwrap_or("Untitled").to_owned();
+            let parsed = parse_media_name(&file_name, &relative_path);
+            let local_title = parsed.as_ref().map(|name| name.query.clone()).unwrap_or_else(|| file_name.clone());
+            let local_key = parsed.as_ref().map(|name| name.normalized.clone()).filter(|key| !key.is_empty()).unwrap_or_else(|| normalize_title(&local_title));
+            let record = MediaFileRecord {
+                local_kind: parsed.as_ref().map(|name| name.kind.clone()).unwrap_or_else(|| infer_media_kind(&file_name, &relative_path).to_owned()),
+                local_year: parsed.and_then(|name| name.year), local_title, local_key, relative_path, display_name: file_name,
+                extension: path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase(),
+                size_bytes: metadata.len().min(i64::MAX as u64) as i64,
+                modified_at: metadata.modified().ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok()).map(|duration| duration.as_secs().min(i64::MAX as u64) as i64),
+            };
+            write_batch(&mut self.connection, root_id, generation, &[record])?;
+            imported += 1;
+        }
+        Ok(imported)
     }
 
     pub fn rescan_roots(&mut self) -> Result<LibraryScanSummary, String> {
@@ -1432,6 +1581,46 @@ fn is_video_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{LibraryStore, MediaMetadata, MetadataLookup};
+
+    #[test]
+    fn torrent_import_indexes_only_supplied_files_and_preserves_existing_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("downloads");
+        std::fs::create_dir(&root).unwrap();
+        let first = root.join("First.mp4");
+        std::fs::write(&first, b"video").unwrap();
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        store.import_completed_files(&root, &[first.clone()]).unwrap();
+        let id = store.catalog_page(0, 10).unwrap().items[0].id;
+        store.record_playback_activity(id).unwrap();
+        std::fs::write(root.join("Unfinished.mkv"), b"partial").unwrap();
+        store.import_completed_files(&root, &[first]).unwrap();
+        let page = store.catalog_page(0, 10).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].id, id);
+        assert_eq!(store.playback_history(10).unwrap().len(), 1);
+        let outside = temporary.path().join("Outside.mp4");
+        std::fs::write(&outside, b"video").unwrap();
+        assert!(store.import_completed_files(&root, &[outside]).is_err());
+        assert_eq!(store.catalog_page(0, 10).unwrap().total, 1);
+    }
+
+    #[test]
+    fn torrent_import_reuses_existing_parent_root_without_rescanning() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        let downloads = root.join("downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        std::fs::write(root.join("Existing.mp4"), b"video").unwrap();
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        let completed = downloads.join("New.mkv");
+        std::fs::write(&completed, b"video").unwrap();
+        store.import_completed_files(&downloads, &[completed.clone()]).unwrap();
+        store.import_completed_files(&downloads, &[completed]).unwrap();
+        assert_eq!(store.status(false).unwrap().root_count, 1);
+        assert_eq!(store.catalog_page(0, 10).unwrap().total, 2);
+    }
     use rusqlite::Connection;
 
     #[test]
@@ -1683,6 +1872,55 @@ mod tests {
             store.rescan_roots().expect_err("no folders configured"),
             "Choose a folder before refreshing the library."
         );
+    }
+
+    #[test]
+    fn earlier_episodes_watch_boundary_persists_and_isolates_series() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("videos");
+        for (show, names) in [
+            ("Quiet Show (2022)", vec!["S01E01.mkv", "S01E03.mkv", "S02E01.mkv"]),
+            ("Other Show (2022)", vec!["S01E01.mkv"]),
+        ] {
+            std::fs::create_dir_all(root.join(show)).unwrap();
+            for name in names { std::fs::write(root.join(show).join(name), b"video").unwrap(); }
+        }
+        let db = temporary.path().join("library.sqlite3");
+        let mut store = LibraryStore::open(&db).unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        let page = store.catalog_page(0, 20).unwrap();
+        let series_id = page.items.iter().find(|item| item.title == "Quiet Show").unwrap().id;
+        let other_id = page.items.iter().find(|item| item.title == "Other Show").unwrap().id;
+        let detail = store.catalog_detail(series_id).unwrap().unwrap();
+        let first = detail.files.iter().find(|file| file.episode == Some(1) && file.season == Some(1)).unwrap().media_id;
+        let third = detail.files.iter().find(|file| file.episode == Some(3)).unwrap().media_id;
+        let next_season = detail.files.iter().find(|file| file.season == Some(2)).unwrap().media_id;
+        store.save_playback_progress(first, 120.0, 600.0).unwrap();
+        store.save_playback_progress(third, 120.0, 600.0).unwrap();
+        store.save_playback_progress(other_id, 120.0, 600.0).unwrap();
+        store.mark_previous_episodes_watched(third).unwrap();
+        assert_eq!(store.playback_position(first).unwrap(), None);
+        assert_eq!(store.playback_position(third).unwrap(), Some(120.0));
+        assert_eq!(store.playback_position(other_id).unwrap(), Some(120.0));
+        assert!(store.catalog_detail(other_id).unwrap().unwrap().watched_before.is_none());
+        let boundary = store.catalog_detail(series_id).unwrap().unwrap().watched_before.unwrap();
+        assert_eq!((boundary.season, boundary.episode), (1, 3));
+        store.mark_previous_episodes_watched(next_season).unwrap();
+        store.mark_previous_episodes_watched(first).unwrap();
+        drop(store);
+        let mut store = LibraryStore::open(&db).unwrap();
+        std::fs::write(root.join("Quiet Show (2022)").join("S01E02.mkv"), b"new download").unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        let boundary = store.catalog_detail(series_id).unwrap().unwrap().watched_before.unwrap();
+        assert_eq!((boundary.season, boundary.episode), (2, 1));
+        let candidates = store.metadata_candidates(20).unwrap();
+        store.save_metadata_lookups(&[MetadataLookup {
+            media_ids: candidates.iter().filter(|item| item.relative_path.contains("Quiet Show")).map(|item| item.media_id).collect(),
+            metadata: Some(MediaMetadata { tmdb_id: 1234, kind: "series".to_owned(), title: "Quiet Show".to_owned(), year: Some(2022),
+                overview: String::new(), vote_average: None, poster_url: None, backdrop_url: None }),
+        }]).unwrap();
+        let boundary = store.catalog_detail(series_id).unwrap().unwrap().watched_before.unwrap();
+        assert_eq!((boundary.season, boundary.episode), (2, 1));
     }
 
     #[test]

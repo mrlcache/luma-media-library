@@ -5,16 +5,17 @@
 	import EmptyLibraryCard from '$lib/components/EmptyLibraryCard.svelte';
 	import MediaRow from '$lib/components/MediaRow.svelte';
 	import PosterCard from '$lib/components/PosterCard.svelte';
-	import { isDesktopRuntime, readCatalogPage, readContinueWatching, readPlaybackHistory, readTitleLogo, readTitleTrailer } from '$lib/platform/desktop';
+	import { isDesktopRuntime, readCatalogPage, readContinueWatching, readPlaybackHistory } from '$lib/platform/desktop';
 	import { recoverRemoteArtwork, tmdbImageSize } from '$lib/media/artwork';
 	import { loadYouTubeIframeApi, type YouTubePlayer } from '$lib/media/youtube-iframe';
-	import { PLAYBACK_HISTORY_UPDATED_EVENT, usePlayer } from '$lib/player-context';
+	import { PLAYBACK_HISTORY_UPDATED_EVENT } from '$lib/player-context';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
 	import { rightEdgeHint } from '$lib/scroll/right-edge-hint';
 	import type { CatalogMedia, ContinueWatchingItem, MediaItem, PlaybackHistoryItem, TmdbTrailer } from '$lib/types';
+	import { cachedDiscovery, discoveryMedia, readDiscovery, prepareDiscoveryLogo, readDiscoveryTrailer } from '$lib/media/discovery';
+	import { homeSnapshot } from '$lib/media/home-state';
 
-	const player = usePlayer();
 	let homeContent: HTMLDivElement;
 	let heroElement = $state<HTMLElement>();
 	let heroInView = $state(false);
@@ -31,10 +32,16 @@
 	let heroVideoIframe = $state<HTMLIFrameElement>();
 	let backgroundPlayer: YouTubePlayer | null = null;
 	let desktopCatalog = $state(isDesktopRuntime());
-	let catalogItems = $state<CatalogMedia[]>([]);
-	let resumeItems = $state<ContinueWatchingItem[]>([]);
-	let playbackHistoryItems = $state<PlaybackHistoryItem[]>([]);
-	let catalogLoading = $state(true);
+	let catalogItems = $state<CatalogMedia[]>(homeSnapshot.catalog);
+	let resumeItems = $state<ContinueWatchingItem[]>(homeSnapshot.resume);
+	let playbackHistoryItems = $state<PlaybackHistoryItem[]>(homeSnapshot.history);
+	let catalogLoading = $state(!homeSnapshot.ready);
+	let discovery = $state(cachedDiscovery());
+	let discoveryLoading = $state(!cachedDiscovery());
+	let discoveryError = $state('');
+	let heroIndex = $state(homeSnapshot.heroIndex);
+	let heroPaused = $state(false);
+	let retryDiscovery = () => {};
 	let catalogError = $state('');
 	let reduceMotionEnabled = $state(false);
 
@@ -87,16 +94,13 @@
 	}
 
 	let libraryItems = $derived(catalogItems.map(toMediaItem));
-	let recentlyWatchedItems = $derived(playbackHistoryItems.map(toMediaItem));
 	let continueWatchingItems = $derived.by(() => {
 		const entries = new Map<string, { media: MediaItem; updatedAt: number }>();
 		const keyFor = (item: ContinueWatchingItem | PlaybackHistoryItem) =>
 			`${item.kind ?? 'movie'}:${item.year ?? 0}:${item.title.trim().toLowerCase()}`;
 
-		for (const item of playbackHistoryItems) {
-			entries.set(keyFor(item), { media: toMediaItem(item), updatedAt: item.updatedAt });
-		}
 		for (const item of resumeItems) {
+			if (item.durationSeconds <= 0 || item.positionSeconds <= 0 || item.positionSeconds / item.durationSeconds >= 0.95) continue;
 			const key = keyFor(item);
 			if (item.updatedAt >= (entries.get(key)?.updatedAt ?? 0)) {
 				entries.set(key, { media: toMediaItem(item), updatedAt: item.updatedAt });
@@ -108,14 +112,47 @@
 			.slice(0, 12)
 			.map(({ media }) => media);
 	});
-	let featured = $derived(recentlyWatchedItems[0] ?? continueWatchingItems[0] ?? libraryItems.find((item) => item.backdrop || item.poster) ?? null);
+	let heroItems = $derived(discovery?.featured.map(discoveryMedia) ?? []);
+	let featured = $state<MediaItem | null>(null);
 	let featuredBackdrop = $derived(featured ? tmdbImageSize(featured.backdrop, 'original') : '');
-	let libraryPreview = $derived(libraryItems.filter((item) => item.poster).slice(0, 8));
 	let recentlyAdded = $derived(libraryItems.slice(0, 8));
+	let recommendationSections = $derived(discovery?.sections.map((section) => ({title: section.title, items: section.items.map(discoveryMedia)})) ?? []);
+
+	function advanceHero(direction = 1) {
+		if (heroItems.length < 2) return;
+		const next = (heroIndex + direction + heroItems.length) % heroItems.length;
+		heroIndex = next; homeSnapshot.heroIndex = next;
+	}
 
 	$effect(() => {
-		const id = Number(featured?.id);
-		if (!desktopCatalog || !Number.isSafeInteger(id) || id <= 0) return;
+		// Keep only the current title and the next PNG warm, rather than decoding the whole deck.
+		if (!heroItems.length) return;
+		void prepareDiscoveryLogo(heroItems[heroIndex % heroItems.length]);
+		void prepareDiscoveryLogo(heroItems[(heroIndex + 1) % heroItems.length]);
+	});
+
+	$effect(() => {
+		const item = heroItems[heroIndex % Math.max(1, heroItems.length)];
+		if (!item) { featured = null; return; }
+		let cancelled = false;
+		void prepareDiscoveryLogo(item).then(async (logo) => {
+			const backdrop = new Image();
+			backdrop.src = tmdbImageSize(item.backdrop, 'original');
+			try { await backdrop.decode(); } catch { /* The artwork recovery action can retry unavailable backdrops. */ }
+			if (cancelled) return;
+			// Commit the title and its decoded logo together, without a text placeholder.
+			heroLogoUrl = logo;
+			heroLogoFailed = false;
+			heroLogoReady = !!logo;
+			heroLogoResolved = true;
+			featured = item;
+		});
+		return () => { cancelled = true; };
+	});
+
+	$effect(() => {
+		const item = featured;
+		if (!desktopCatalog || !item) return;
 		let cancelled = false;
 		heroTrailer = null;
 		showHeroVideo = false;
@@ -123,32 +160,9 @@
 		heroTrailerEnded = false;
 		heroTrailerExpanded = false;
 		heroRestartOnReturn = false;
-		void readTitleTrailer(id).then((trailer) => {
+		void readDiscoveryTrailer(item).then((trailer) => {
 			if (!cancelled) heroTrailer = trailer;
 		}).catch(() => { if (!cancelled) heroTrailer = null; });
-		return () => { cancelled = true; };
-	});
-
-	$effect(() => {
-		const id = Number(featured?.id);
-		heroLogoUrl = null;
-		heroLogoFailed = false;
-		heroLogoReady = false;
-		heroLogoResolved = false;
-		if (!desktopCatalog || !Number.isSafeInteger(id) || id <= 0) {
-			heroLogoResolved = true;
-			return;
-		}
-		let cancelled = false;
-		void readTitleLogo(id).then((url) => {
-			if (cancelled) return;
-			heroLogoUrl = url;
-			heroLogoResolved = true;
-		}).catch(() => {
-			if (cancelled) return;
-			heroLogoUrl = null;
-			heroLogoResolved = true;
-		});
 		return () => { cancelled = true; };
 	});
 
@@ -242,6 +256,24 @@
 	}
 
 	onMount(() => {
+		let disposed = false;
+		const updateDiscovery = (force = false) => {
+			void readDiscovery(force).then((feed) => {
+				if (!disposed) { discovery = feed; discoveryError = feed.warning ?? ''; }
+			}).catch((error) => {
+				const message = error instanceof Error ? error.message : typeof error === 'string' ? error : error?.message ?? 'Recommendations could not be loaded.';
+				if (!disposed) discoveryError = message;
+				if (import.meta.env.DEV) void fetch(`/__luma-dev/discovery-error?message=${encodeURIComponent(message)}`).catch(() => {});
+			})
+			.finally(() => { if (!disposed) discoveryLoading = false; });
+		};
+		retryDiscovery = () => updateDiscovery(true);
+		updateDiscovery();
+		const rotate = window.setInterval(() => {
+			if (!disposed && heroInView && !document.hidden && !heroPaused && !heroTrailerExpanded && !reduceMotionEnabled && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) void advanceHero();
+		}, 24000);
+		const libraryChanged = () => { updateDiscovery(true); refreshLocal(); };
+		window.addEventListener('luma-library-changed', libraryChanged);
 		desktopCatalog = isDesktopRuntime();
 		const syncMotionPreference = () => {
 			reduceMotionEnabled = document.documentElement.dataset.reduceMotion === 'true';
@@ -254,32 +286,46 @@
 		document.addEventListener('appearance-preferences-changed', syncMotionPreference);
 		const refreshPlaybackHistory = () => {
 			if (!desktopCatalog || document.visibilityState !== 'visible') return;
+			if (!discovery && !discoveryLoading) updateDiscovery();
 			void Promise.all([readContinueWatching(12), readPlaybackHistory(12)])
-				.then(([resume, history]) => { resumeItems = resume; playbackHistoryItems = history; })
+				.then(([resume, history]) => {
+					if (disposed) return;
+					const changed = history[0]?.updatedAt !== playbackHistoryItems[0]?.updatedAt;
+					resumeItems = resume; playbackHistoryItems = history;
+					homeSnapshot.resume = resume; homeSnapshot.history = history;
+					if (changed) updateDiscovery(true);
+				})
 				.catch((error) => console.warn('Playback history could not be refreshed', error));
 		};
 		window.addEventListener(PLAYBACK_HISTORY_UPDATED_EVENT, refreshPlaybackHistory);
 		window.addEventListener('focus', refreshPlaybackHistory);
 		document.addEventListener('visibilitychange', refreshPlaybackHistory);
+		function refreshLocal() {
 		if (desktopCatalog) {
 			void Promise.all([
 				readCatalogPage(0, 48, undefined, undefined, 'Recently added'),
 				readContinueWatching(12),
 				readPlaybackHistory(12)
 			]).then(([page, resume, history]) => {
-				if (page) catalogItems = page.items;
+				if (disposed) return;
+				if (page) { catalogItems = page.items; catalogError = ''; }
 				else catalogError = 'The local library is only available in the desktop app.';
 				resumeItems = resume;
 				playbackHistoryItems = history;
+				homeSnapshot.catalog = catalogItems; homeSnapshot.resume = resume; homeSnapshot.history = history; homeSnapshot.ready = true;
 			}).catch((error) => {
-				catalogError = error instanceof Error ? error.message : 'The local library could not be read.';
-			}).finally(() => (catalogLoading = false));
+				if (!disposed) catalogError = error instanceof Error ? error.message : 'The local library could not be read.';
+			}).finally(() => { if (!disposed) catalogLoading = false; });
 		} else {
 			catalogLoading = false;
 		}
+		}
+		refreshLocal();
+		const cleanupDiscovery = () => { disposed = true; window.clearInterval(rotate); window.removeEventListener('luma-library-changed', libraryChanged); };
 
 		if (!desktopCatalog) {
 			return () => {
+				cleanupDiscovery();
 				document.removeEventListener('appearance-preferences-changed', syncMotionPreference);
 				window.removeEventListener(PLAYBACK_HISTORY_UPDATED_EVENT, refreshPlaybackHistory);
 				window.removeEventListener('focus', refreshPlaybackHistory);
@@ -307,6 +353,7 @@
 		);
 		observer.observe(homeContent);
 		return () => {
+			cleanupDiscovery();
 			observer.disconnect();
 			window.removeEventListener(PLAYBACK_HISTORY_UPDATED_EVENT, refreshPlaybackHistory);
 			window.removeEventListener('focus', refreshPlaybackHistory);
@@ -320,12 +367,16 @@
 <svelte:head><title>Home · Luma</title></svelte:head>
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape') closeHeroTrailer(); }} />
 
-<div class="home-page" class:home-page--empty={!featured && !catalogLoading && (!!catalogError || (!catalogItems.length && !continueWatchingItems.length))}>
+<div class="home-page" class:home-page--without-featured={!featured && !discoveryLoading && !heroItems.length} class:home-page--empty={!featured && !heroItems.length && !catalogLoading && (!!catalogError || (!catalogItems.length && !continueWatchingItems.length))}>
 	{#if featured}
 	<section
 		class="featured"
 		aria-labelledby="featured-title"
 		bind:this={heroElement}
+		onpointerenter={() => heroPaused = true}
+		onpointerleave={() => heroPaused = false}
+		onfocusin={() => heroPaused = true}
+		onfocusout={() => heroPaused = false}
 	>
 		<div class="featured__backdrop" aria-hidden="true">
 			{#if featuredBackdrop}<img use:recoverRemoteArtwork class="featured__backdrop-image" src={featuredBackdrop} alt="" />{/if}
@@ -351,7 +402,7 @@
 		<div class="featured__content">
 			<h1 id="featured-title" aria-label={featured.title}>
 				{#if heroLogoUrl && !heroLogoFailed}
-					<span class="featured__title-pending" aria-hidden="true">{featured.title}</span>
+					<span class="featured__title-pending" class:featured__title-visible={!heroLogoReady} aria-hidden="true">{featured.title}</span>
 					<img
 						class="featured__logo"
 						class:featured__logo--ready={heroLogoReady}
@@ -363,27 +414,27 @@
 				{:else if heroLogoResolved}
 					{featured.title}
 				{:else}
-					<span class="featured__title-pending" aria-hidden="true">{featured.title}</span>
+					<span class="featured__title-pending featured__title-visible">{featured.title}</span>
 				{/if}
 			</h1>
 			<div class="featured__meta">
 				{#if featured.rating}<span class="match">{featured.rating} rating</span>{/if}
 				{#if featured.year}<span>{featured.year}</span>{/if}
 				<span>{featured.kind === 'series' ? 'Series' : 'Movie'}</span>
+				<span class="featured__availability" ><Icon name="download" size={13} />Not downloaded</span>
 			</div>
 			{#if featured.synopsis}<p class="featured__synopsis">{featured.synopsis}</p>{/if}
 			<div class="featured__actions">
-				<button class="button button--primary" style="corner-shape: squircle" onclick={() => player.open(featured)}>
-					<Icon name="play" size={16} weight="fill" />
-					{featured.progress ? 'Resume' : 'Play'}
-				</button>
-				<a class="button button--secondary" style="corner-shape: squircle" href={`/title/${featured.id}`}>
+				<a class="button button--primary" style="corner-shape: squircle" href={`/title/${featured.id}`}>
 					<Icon name="info" size={18} weight="bold" />
 					Details
 				</a>
+				{#if heroTrailer}<button class="button button--secondary" onclick={() => heroTrailerExpanded = true}><Icon name="play" size={16} />Trailer</button>{/if}
 			</div>
 		</div>
+		{#if heroItems.length > 1}<div class="featured__navigation" aria-label="Featured recommendations"><button aria-label="Previous recommendation" onclick={() => advanceHero(-1)}><Icon name="arrow-left" size={16} /></button><span>{heroIndex % heroItems.length + 1} / {heroItems.length}</span><button aria-label="Next recommendation" onclick={() => advanceHero()}><Icon name="chevron-right" size={17} /></button></div>{/if}
 	</section>
+	{:else if discoveryLoading || heroItems.length}<div class="featured featured--loading" aria-label="Loading recommendations" aria-busy="true"></div>
 	{/if}
 	{#if heroTrailerExpanded && heroTrailer && featured}
 		<div class="trailer-fullscreen" role="dialog" aria-modal="true" aria-label={`${featured.title} full trailer`}>
@@ -399,56 +450,47 @@
 
 	<div class="home-content" bind:this={homeContent} data-native-backdrop={$nativeAcrylicStatus}>
 		<div class="home-content__inner">
-			{#if catalogLoading}
-				<section class="home-section" aria-labelledby="library-heading" aria-busy="true">
-					<div class="section-heading"><h2 id="library-heading">Your library</h2></div>
-					<CatalogSkeletonGrid count={8} label="Loading your library" />
-				</section>
-			{:else if catalogError}
-				<EmptyLibraryCard title="Library unavailable" description={catalogError} role="status" fullHeight />
-			{:else if catalogItems.length || continueWatchingItems.length}
-				{#if continueWatchingItems.length}
-					<div class="home-section home-section--first">
-						<MediaRow title="Continue watching" items={continueWatchingItems} showProgress />
-					</div>
-				{/if}
-
-				{#if libraryItems.length}
-					<div class="home-section home-section--library">
-						<div class="section-heading">
-							<h2>Your library</h2>
-							<a href="/library" class="section-link">View all <Icon name="chevron-right" size={15} weight="bold" /></a>
+			{#each recommendationSections as section (section.title)}
+				<section class="home-section" aria-label={section.title}>
+					<div class="section-heading"><h2>{section.title}</h2></div>
+					<div class="poster-grid-preview__viewport" data-more-right="false">
+						<div class="poster-grid-preview" use:smoothHorizontalScroll use:rightEdgeHint>
+							{#each section.items as item, index (item.id)}<PosterCard media={item} priority={index < 2} variant="home" />{/each}
 						</div>
-						{#if libraryPreview.length}
-							<div class="poster-grid-preview__viewport" data-more-right="false">
-								<div class="poster-grid-preview" use:smoothHorizontalScroll use:rightEdgeHint>
-									{#each libraryPreview as item, index (item.id)}
-										<PosterCard media={item} priority={index < 2} variant="home" />
-									{/each}
-								</div>
-							</div>
-						{/if}
 					</div>
+				</section>
+				{#if section.title === 'For you' && continueWatchingItems.length}
+					<div class="home-section"><MediaRow title="Continue watching" items={continueWatchingItems} showProgress /></div>
 				{/if}
-
-				{#if recentlyAdded.length}
-					<div class="home-section home-section--last">
-						<MediaRow title="Recently added" items={recentlyAdded} />
-					</div>
-				{/if}
-			{:else}
-				<EmptyLibraryCard
-					title={desktopCatalog ? 'Your library is empty' : 'Your library is in the desktop app'}
-					description={desktopCatalog ? 'Add a media folder in Settings to scan your videos and find matching artwork.' : 'Open the desktop app to browse your local collection.'}
-					showSettingsLink={desktopCatalog}
-					fullHeight
-				/>
+			{/each}
+			{#if discoveryLoading && !recommendationSections.length}
+				<section class="home-section" aria-busy="true"><div class="section-heading"><h2>For you</h2></div><CatalogSkeletonGrid count={8} label="Loading recommendations" /></section>
+			{/if}
+			{#if !recommendationSections.some((section) => section.title === 'For you') && continueWatchingItems.length}
+				<div class="home-section"><MediaRow title="Continue watching" items={continueWatchingItems} showProgress /></div>
+			{/if}
+			{#if discoveryError}<div class="discovery-feedback" role="status"><span>{discoveryError}</span><button onclick={() => retryDiscovery()}>Retry</button></div>{/if}
+			{#if catalogError}<p class="discovery-feedback" role="status">{catalogError}</p>{/if}
+			{#if recentlyAdded.length}<div class="home-section home-section--last"><MediaRow title="Recently added" items={recentlyAdded} /></div>{/if}
+			{#if !discoveryLoading && !recommendationSections.length && !continueWatchingItems.length && !recentlyAdded.length}
+				<EmptyLibraryCard title="Discover your next watch" description={discoveryError || 'Connect TMDb in Settings to discover movies and series.'} showSettingsLink fullHeight />
 			{/if}
 		</div>
 	</div>
 </div>
 
 <style>
+	.featured--loading { background:var(--acrylic-content-tint); }
+	.featured__navigation { position:absolute; right:var(--content-gutter); bottom:20px; display:flex; align-items:center; gap:10px; color:var(--text-muted); font-size:.68rem; }
+	.featured__navigation button { display:grid; place-items:center; width:34px; height:34px; padding:0; border:1px solid var(--line-subtle); border-radius:50%; background:rgba(8,12,17,.5); color:var(--text-soft); cursor:pointer; }
+	.featured__navigation button:hover { background:rgba(40,50,60,.65); }
+	.featured__navigation button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+	.featured__availability { display:inline-flex; align-items:center; gap:5px; opacity:.7; }
+	.discovery-feedback { color:var(--text-muted); font-size:.72rem; line-height:1.5; }
+	.discovery-feedback button { margin-left:12px; padding:5px 9px; border:1px solid var(--line-subtle); border-radius:var(--radius-sm); color:var(--text-soft); background:transparent; font:inherit; cursor:pointer; }
+	.discovery-feedback button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+	.home-page--without-featured .home-content { min-height:100dvh; }
+	.featured h1 .featured__title-visible { visibility:visible; opacity:1; }
 	.home-page {
 		--featured-content-bottom: 64px;
 		--featured-content-top: 44px;
@@ -479,6 +521,7 @@
 	.featured__video--ready + .featured__video-veil { opacity: 1; }
 	.featured__trailer-button { position: absolute; z-index: 1; right: 0; bottom: 9px; left: 0; display: flex; align-items: center; justify-content: center; gap: 5px; width: fit-content; min-height: 42px; margin: auto; padding: 0 15px; border: 1px solid rgba(255,255,255,.16); border-radius: 999px; color: rgba(245,247,250,.82); background: rgba(10,13,18,.34); backdrop-filter: blur(8px); font-family: inherit; font-size: .66rem; font-weight: 600; line-height: 1; letter-spacing: .015em; text-shadow: 0 1px 8px #000; cursor: pointer; }
 	.featured__trailer-play { display: block; flex: 0 0 9px; width: 9px; height: 9px; background: currentColor; clip-path: polygon(0 0, 100% 50%, 0 100%); }
+	:global(html:not([data-mobile-preview='true'])) .featured__trailer-button { display: none; }
 	.trailer-fullscreen { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; overflow: hidden; background: #000; }
 	.trailer-fullscreen iframe { width: 100%; height: 100%; border: 0; }
 	.trailer-fullscreen__close { position: absolute; top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid rgba(255,255,255,.24); border-radius: 50%; color: white; background: rgba(16,20,25,.68); backdrop-filter: blur(14px); cursor: pointer; }
@@ -604,8 +647,6 @@
 	.home-section--last { margin-top: 58px; }
 	.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 	.section-heading h2 { margin: 0; color: var(--text-strong); font-family: var(--font-display); font-size: 1.08rem; font-weight: 690; letter-spacing: -0.034em; }
-	.section-link { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--text-muted); font-size: 0.71rem; font-weight: 590; text-decoration: none; transition: color 140ms ease; }
-	.section-link:hover { color: var(--text-strong); }
 	.poster-grid-preview {
 		--hover-clearance: 14px;
 		--hover-inline-clearance: 14px;
@@ -640,6 +681,20 @@
 		}
 	}
 
+	@media (min-width: 761px) and (max-width: 1180px) {
+		.home-page { --content-gutter: 32px; }
+		.featured h1 { max-width: 100%; font-size: clamp(3rem, 4.5vw, 4rem); }
+		.featured__logo { max-width: min(380px, 100%); }
+		.featured__synopsis { max-width: 480px; }
+		.home-section + .home-section { margin-top: 36px; }
+	}
+	@media (min-width: 761px) and (max-height: 720px) {
+		.home-page { --featured-content-top: 32px; --featured-content-bottom: 52px; }
+		.featured, .featured__content { min-height: 360px; }
+		.featured__synopsis { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+		.home-content__inner { padding-top: 28px; }
+		.home-section + .home-section { margin-top: 32px; }
+	}
 	@media (max-width: 760px) {
 		.home-page { --featured-content-bottom: 48px; --featured-content-top: 30px; }
 		.featured { min-height: 360px; }
@@ -664,9 +719,9 @@
 		.poster-grid-preview { grid-auto-columns: 42vw; gap: 12px; padding-right: 18px; }
 	}
 
+
 	@media (prefers-reduced-motion: reduce) {
-		.button,
-		.section-link { transition: none; }
+		.button { transition: none; }
 		.button:hover,
 		.button:focus-visible { transform: none; }
 		.featured__video, .featured__video-veil { transition: none; }

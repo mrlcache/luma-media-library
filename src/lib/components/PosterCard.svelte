@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import FavoriteButton from './FavoriteButton.svelte';
 	import { recoverRemoteArtwork } from '$lib/media/artwork';
 	import { usePlayer } from '$lib/player-context';
 	import type { MediaItem } from '$lib/types';
@@ -30,10 +31,14 @@
 				</div>
 			{/if}
 			<span class="poster-card__kind">{media.kind === 'series' ? 'Series' : 'Movie'}</span>
+			{#if media.installed === false}<span class="poster-card__availability" role="img" aria-label="Not downloaded" ><Icon name="download" size={13} /></span>{/if}
 		</a>
-		<button class="poster-card__play" aria-label={`Play ${media.title}`} title={`Play ${media.title}`} onclick={() => player.open(media)}>
+		{#if media.installed !== false}
+		<button class="poster-card__play" aria-label={`Play ${media.title}`}  onclick={() => player.open(media)}>
 			<Icon name="play" size={15} weight="fill" />
 		</button>
+		{/if}
+		<div class="poster-card__favorite"><FavoriteButton {media} compact /></div>
 	</div>
 	<a class="poster-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}, ${media.year}`}>
 		<div class="poster-card__copy">
@@ -45,6 +50,10 @@
 
 <style>
 	.poster-card { --art-radius: var(--radius-md); position: relative; min-width: 0; }
+	.poster-card__favorite { position:absolute; z-index:3; right:9px; top:40px; opacity:0; transition:opacity 140ms ease; }
+	.poster-card:hover .poster-card__favorite, .poster-card:focus-within .poster-card__favorite, .poster-card__favorite:has(:global([aria-pressed='true'])) { opacity:1; }
+	@media (hover:none) { .poster-card__favorite { opacity:1; } }
+	.poster-card__availability { position:absolute; right:9px; top:9px; display:grid; place-items:center; width:24px; height:24px; border:1px solid rgba(255,255,255,.14); border-radius:50%; color:rgba(255,255,255,.85); background:rgba(8,12,17,.65); backdrop-filter:blur(8px); }
 	.poster-card__link { display: block; color: inherit; text-decoration: none; }
 	.poster-card__art { position: relative; isolation: isolate; aspect-ratio: 2 / 3; border-radius: var(--art-radius); background: var(--surface-2); box-shadow: 0 12px 24px rgba(0, 0, 0, 0.14); }
 	.poster-card__media { position: absolute; z-index: 1; inset: 0; display: block; isolation: isolate; overflow: hidden; border-radius: var(--art-radius); color: inherit; text-decoration: none; }

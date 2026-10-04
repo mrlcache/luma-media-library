@@ -36,6 +36,12 @@ typedef struct mt_transfer {
     int32_t upload_rate;
 } mt_transfer;
 
+typedef struct mt_file {
+    char path[4096];
+    int64_t size_bytes;
+    int64_t completed_bytes;
+} mt_file;
+
 // All strings are UTF-8. Error buffers may be null when capacity is zero.
 // A caller must serialize access to one engine instance.
 MT_API mt_engine* mt_create(char const* state_directory, char const* download_directory,
@@ -48,6 +54,8 @@ MT_API int32_t mt_add_torrent_file(mt_engine* engine, char const* path,
 // Returns the total transfer count. Copies up to capacity entries into out.
 MT_API int32_t mt_list(mt_engine* engine, mt_transfer* out, int32_t capacity,
     char* error, int32_t error_capacity);
+MT_API int32_t mt_files(mt_engine* engine, char const* info_hash, mt_file* out,
+    int32_t capacity, char* error, int32_t error_capacity);
 MT_API int32_t mt_set_paused(mt_engine* engine, char const* info_hash, int32_t paused,
     char* error, int32_t error_capacity);
 MT_API int32_t mt_move_queue(mt_engine* engine, char const* info_hash, int32_t direction,

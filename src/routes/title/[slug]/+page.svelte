@@ -1,32 +1,47 @@
 <script lang="ts">
+	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import EpisodePreview from '$lib/components/EpisodePreview.svelte';
 	import PosterCard from '$lib/components/PosterCard.svelte';
-	import { media } from '$lib/data';
+	import ReleaseBrowser from '$lib/components/ReleaseBrowser.svelte';
+	import EpisodeDownloadDialog from '$lib/components/EpisodeDownloadDialog.svelte';
+	import EpisodeActions from '$lib/components/EpisodeActions.svelte';
+	import FavoriteButton from '$lib/components/FavoriteButton.svelte';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
+	import { cachedDiscovery, discoveryMedia, readDiscoveryLogo, readDiscoveryTrailer } from '$lib/media/discovery';
 	import { recoverRemoteArtwork } from '$lib/media/artwork';
-	import { findTvMazeEpisodeDetails } from '$lib/media/tvmaze-episodes';
+	import { readTvMazeEpisodes, type TvMazeEpisodeDetails } from '$lib/media/tvmaze-episodes';
+	import { mergeSeriesEpisodes, type SeriesEpisode } from '$lib/media/series-episodes';
 	import { usePlayer } from '$lib/player-context';
-	import { readTitleLogo, readTitleTrailer } from '$lib/platform/desktop';
+	import { readTitleLogo, readTitleTrailer, readLocalTitleDetail } from '$lib/platform/desktop';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
-	import type { TmdbTrailer } from '$lib/types';
+	import type { LocalTitleDetail, TmdbTrailer } from '$lib/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+	const mobilePreview = isMobilePreview();
 	const player = usePlayer();
 	let selectedSeason = $state(1);
-	let saved = $state(false);
+	let otherVersionsOpen = $state(false);
+	let episodeDownload = $state<SeriesEpisode | null>(null);
 	let trailer = $state<TmdbTrailer | null>(null);
 	let trailerOpen = $state(false);
 	let titleLogo = $state<string | null>(null);
 	let titleLogoResolved = $state(false);
 	let titleLogoReady = $state(false);
-	let episodeSummaries = $state<Record<string, string>>({});
-	let episodes = $derived(data.item.episodes ?? []);
+	let episodeMetadata = $state<TvMazeEpisodeDetails[]>([]);
+	let episodesLoading = $state(false);
+	let watchedBefore = $state<LocalTitleDetail['watchedBefore']>(null);
 	let localEpisodes = $derived([...(data.localDetail?.files ?? [])].sort((a, b) =>
 		(a.season ?? 1) - (b.season ?? 1) || (a.episode ?? Number.MAX_SAFE_INTEGER) - (b.episode ?? Number.MAX_SAFE_INTEGER) || a.fileName.localeCompare(b.fileName)
 	));
-	let related = $derived(media.filter((item) => item.id !== data.item.id && item.kind === data.item.kind).slice(0, 4));
+	let episodes = $derived(mergeSeriesEpisodes(localEpisodes, episodeMetadata, watchedBefore));
+	let seasons = $derived([...new Set(episodes.map((episode) => episode.season))].sort((a, b) => a - b));
+	let visibleEpisodes = $derived(episodes.filter((episode) => episode.season === selectedSeason));
+	let hasDownloadedScope = $derived(data.item.kind === 'movie' ? localEpisodes.length > 0 : visibleEpisodes.some((episode) => !!episode.file));
+	const discoveryFeed = cachedDiscovery();
+	let related = $derived((discoveryFeed?.sections.flatMap((section) => section.items) ?? []).filter((item) => `tmdb-${item.kind}-${item.id}` !== data.item.id && item.kind === data.item.kind).slice(0, 4).map(discoveryMedia));
 
 	function localEpisodeLabel(file: (typeof localEpisodes)[number], index: number) {
 		const season = String(file.season ?? 1).padStart(2, '0');
@@ -35,19 +50,11 @@
 	}
 
 	function localEpisodeTitle(file: (typeof localEpisodes)[number], index: number) {
-		const stem = file.fileName.replace(/\.[^.]+$/, '');
-		const marker = /(?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{1,2})/i.exec(stem);
-		let title = (marker ? stem.slice(marker.index + marker[0].length) : stem)
-			.replace(/^[-_.\s]+/, '')
-			.replace(/[._]+/g, ' ')
-			.replace(/[\[\]{}()]/g, ' ')
-			.replace(/\s+/g, ' ')
-			.trim();
-		title = title.split(/\b(?:480p|720p|1080p|2160p|bluray|web[ ._-]?dl|webrip|hdtv|x264|x265|h264|h265|hevc|av1|hdr|aac|dts)\b/i)[0].trim();
-		return title || `Episode ${file.episode ?? index + 1}`;
+		return episodeMetadata.find((item) => item.season === file.season && item.episode === file.episode)?.title ?? `Episode ${file.episode ?? index + 1}`;
 	}
 
 	function playEpisode(mediaId?: number) {
+		if (data.transfer || data.item.installed === false) return;
 		if (mediaId === undefined || !data.localDetail) { player.open(data.item); return; }
 		const index = localEpisodes.findIndex((file) => file.mediaId === mediaId);
 		if (index < 0) { player.open({ ...data.item, id: String(mediaId) }); return; }
@@ -64,9 +71,22 @@
 	}
 
 	onMount(() => {
+		let disposed = false;
+		const updateWatched = () => {
+			const id = data.localDetail?.media.id;
+			if (!id) return;
+			void readLocalTitleDetail(id, true).then((detail) => {
+				if (!disposed && data.localDetail?.media.id === id) watchedBefore = detail?.watchedBefore ?? null;
+			}).catch((error) => console.warn('Series watch status unavailable', error));
+		};
+		window.addEventListener('media-library:playback-history-updated', updateWatched);
 		const acrylicRequester = Symbol('Details surface');
 		requestNativeAcrylic(acrylicRequester, true);
-		return () => requestNativeAcrylic(acrylicRequester, false);
+		return () => {
+			disposed = true;
+			window.removeEventListener('media-library:playback-history-updated', updateWatched);
+			requestNativeAcrylic(acrylicRequester, false);
+		};
 	});
 
 	$effect(() => {
@@ -78,6 +98,8 @@
 			void readTitleTrailer(id).then((result) => {
 				if (!cancelled) trailer = result;
 			}).catch(() => { if (!cancelled) trailer = null; });
+		} else if (data.item.tmdbId) {
+			void readDiscoveryTrailer(data.item).then((result) => { if (!cancelled) trailer = result; }).catch(() => {});
 		}
 		return () => { cancelled = true; };
 	});
@@ -96,25 +118,36 @@
 			}).catch(() => {
 				if (!cancelled) titleLogoResolved = true;
 			});
+		} else if (data.item.tmdbId) {
+			void readDiscoveryLogo(data.item).then((url) => { if (!cancelled) titleLogo = url; }).catch(() => {});
 		}
 		return () => { cancelled = true; };
 	});
 
 	$effect(() => {
-		const files = data.localDetail?.files;
 		const title = data.item.title;
 		const year = data.item.year;
-		if (!files?.length || data.item.kind !== 'series') { episodeSummaries = {}; return; }
+		watchedBefore = data.localDetail?.watchedBefore ?? null;
+		selectedSeason = data.localDetail?.files.find((file) => file.season !== null)?.season ?? 1;
+		episodeMetadata = [];
+		if (data.item.kind !== 'series') { episodesLoading = false; return; }
 		let cancelled = false;
-		episodeSummaries = {};
-		for (const file of files) {
-			if (file.season === null || file.episode === null) continue;
-			void findTvMazeEpisodeDetails(title, year || null, file.season, file.episode).then((details) => {
-				if (cancelled || !details?.summary) return;
-				episodeSummaries = { ...episodeSummaries, [String(file.mediaId)]: details.summary };
-			});
-		}
+		episodesLoading = true;
+		void readTvMazeEpisodes(title, year || null).then((items) => {
+			if (!cancelled) episodeMetadata = items;
+		}).finally(() => { if (!cancelled) episodesLoading = false; });
 		return () => { cancelled = true; };
+	});
+
+	$effect(() => {
+		data.item.id;
+		selectedSeason;
+		otherVersionsOpen = false;
+		episodeDownload = null;
+	});
+
+	$effect(() => {
+		if (seasons.length && !seasons.includes(selectedSeason)) selectedSeason = seasons[0];
 	});
 </script>
 
@@ -124,83 +157,107 @@
 
 <div class="detail-surface" data-native-backdrop={$nativeAcrylicStatus}>
 	<div class="detail-page">
-	<a class="back-link" href={data.item.kind === 'movie' ? '/library?type=movie' : '/library?type=series'}><Icon name="arrow-left" size={15} />Back to {data.item.kind === 'movie' ? 'movies' : 'series'}</a>
+	{#if !mobilePreview}<a class="back-link" href={data.item.kind === 'movie' ? '/library?type=movie' : '/library?type=series'}><Icon name="arrow-left" size={15} />Back to {data.item.kind === 'movie' ? 'movies' : 'series'}</a>{/if}
 
 	<section class="detail-hero">
+		{#if mobilePreview}<a class="detail-back" href="/library" aria-label="Go back" onclick={(event) => { if (window.history.length > 1) { event.preventDefault(); window.history.back(); } }}><Icon name="arrow-left" size={20} /></a>{/if}
 		<div class="detail-hero__backdrop" aria-hidden="true">{#if data.item.backdrop || data.item.poster}<img use:recoverRemoteArtwork src={data.item.backdrop || data.item.poster} alt="" />{/if}</div>
 		<div class="detail-hero__veil"></div>
 		<div class="detail-hero__content">
-			<div class="detail-poster">{#if data.item.poster}<img use:recoverRemoteArtwork src={data.item.poster} alt={`Poster for ${data.item.title}`} width="520" height="780" />{/if}</div>
+			{#if !mobilePreview}<div class="detail-poster">{#if data.item.poster}<img use:recoverRemoteArtwork src={data.item.poster} alt={`Poster for ${data.item.title}`} width="520" height="780" />{/if}</div>{/if}
 			<div class="detail-copy">
-				<p class="detail-kind">{data.item.kind === 'series' ? 'Series' : 'Movie'} <span>·</span> {data.item.year}</p>
 				<h1 class="detail-title" aria-label={data.item.title}>
 					{#if titleLogo}
+						{#if !titleLogoReady}<span>{data.item.title}</span>{/if}
 						<img class="detail-title__logo" class:detail-title__logo--ready={titleLogoReady} src={titleLogo} alt="" onload={() => { titleLogoReady = true; }} onerror={() => { titleLogo = null; titleLogoResolved = true; }} />
 					{:else if titleLogoResolved}
 						{data.item.title}
 					{:else}
-						<span class="detail-title__pending" aria-hidden="true">{data.item.title}</span>
+						<span>{data.item.title}</span>
 					{/if}
 				</h1>
 				<div class="detail-meta">
 					{#if data.localDetail}
 						<span>{data.localDetail.files.length} {data.item.kind === 'series' ? 'episodes' : 'local file'}</span>
-						{#if data.item.rating}<span>{data.item.rating} rating</span>{/if}
-					{:else}
-						<span class="match">{data.item.match} match</span><span>{data.item.rating} rating</span><span>{data.item.runtime}</span><span>{data.item.genres.join(' · ')}</span>
+					{:else if data.item.kind === 'series' && episodes.length}
+						<span>{episodes.length} episodes</span>
+					{:else if data.item.kind === 'movie' && data.item.runtime}
+						<span>{data.item.runtime}</span>
 					{/if}
+					{#if data.item.rating}<span>{data.item.rating} rating</span>{/if}
+					{#if data.item.year}<span>{data.item.year}</span>{/if}
+					<span>{data.item.kind === 'series' ? 'Series' : 'Movie'}</span>
 				</div>
 				<p class="detail-synopsis">{data.item.synopsis}</p>
 				<div class="detail-actions">
-					<button class="button button--primary" onclick={() => playEpisode(localEpisodes[0]?.mediaId)}><Icon name="play" size={15} />{data.item.progress ? 'Resume' : 'Play now'}</button>
+					{#if data.item.installed !== false}<button class="button button--primary" disabled={!!data.transfer} onclick={() => playEpisode(localEpisodes[0]?.mediaId)}><Icon name="play" size={15} />{data.item.progress ? 'Resume' : 'Play now'}</button>{/if}
 				{#if trailer}<button class="button button--ghost" onclick={() => { trailerOpen = true; }}><Icon name="play" size={15} />{trailer.isTeaser ? 'Teaser' : 'Trailer'}</button>{/if}
-					<button class="button button--ghost" class:saved aria-pressed={saved} onclick={() => (saved = !saved)}><Icon name={saved ? 'check' : 'bookmark'} size={15} />{saved ? 'In library' : 'Add to library'}</button>
+					<FavoriteButton media={data.item} />
 				</div>
 			</div>
 		</div>
 	</section>
 
+	{#if import.meta.env.DEV}
+		<section id="downloads" class="downloads-section" class:downloads-section--optional={hasDownloadedScope || mobilePreview} class:downloads-section--collapsed={(hasDownloadedScope || mobilePreview) && !otherVersionsOpen} aria-label={hasDownloadedScope ? 'Other versions' : 'Downloads'}>
+			{#if hasDownloadedScope || mobilePreview}
+				<button class="other-versions-toggle" type="button" aria-expanded={otherVersionsOpen} aria-controls="download-versions" onclick={() => otherVersionsOpen = !otherVersionsOpen}>{hasDownloadedScope ? 'Other versions' : 'Downloads'}<Icon name={otherVersionsOpen ? 'chevron-down' : 'chevron-right'} size={13} /></button>
+			{/if}
+			<div id="download-versions">
+				{#if (!hasDownloadedScope && !mobilePreview) || otherVersionsOpen}
+					<div class="section-heading"><h2>{data.item.kind === 'series' ? 'Season downloads' : 'Downloads'}</h2>
+						{#if data.item.kind === 'series'}<div class="season-select"><span class="sr-only">Season to download</span><AppSelect bind:value={selectedSeason} label="Season" variant="plain" options={(seasons.length ? seasons : [1]).map(season => ({value:season,label:season === 0 ? 'Specials' : `Season ${season}`}))} /></div>{/if}
+					</div>
+					<ReleaseBrowser media={data.item} scope={data.item.kind === 'series' ? { type: 'season', season: selectedSeason } : { type: 'movie' }} />
+				{/if}
+			</div>
+		</section>
+	{/if}
+
 	{#if data.item.kind === 'series'}
 		<section class="episodes-section" aria-labelledby="episodes-heading">
 			<div class="section-heading">
 				<h2 id="episodes-heading">Episodes</h2>
-				{#if data.localDetail}
-					<span class="episodes-count">{localEpisodes.length} {localEpisodes.length === 1 ? 'episode' : 'episodes'}</span>
-				{:else}
-					<label class="season-select"><span class="sr-only">Season</span><select bind:value={selectedSeason}><option value={1}>Season 1</option><option value={2}>Season 2</option><option value={3}>Season 3</option></select><Icon name="chevron-down" size={14} /></label>
-				{/if}
+				{#if seasons.length}<div class="season-select"><span class="sr-only">Season</span><AppSelect bind:value={selectedSeason} label="Season" variant="plain" options={(seasons.length ? seasons : [1]).map(season => ({value:season,label:season === 0 ? 'Specials' : `Season ${season}`}))} /></div>{/if}
 			</div>
 			<div class="episode-list">
-				{#if data.localDetail}
-					{#each localEpisodes as file, index (file.mediaId)}
-					{@const label = localEpisodeLabel(file, index)}
-						{@const title = localEpisodeTitle(file, index)}
-						<article class="episode-row">
-							<div class="episode-art"><EpisodePreview path={file.path} label={`${label} ${title}`} showTitle={data.item.title} showYear={data.item.year} season={file.season} episode={file.episode} /></div>
-							<div class="episode-copy"><div class="episode-title"><span class="episode-number">{label}</span><h3>{title}</h3></div><p>{episodeSummaries[String(file.mediaId)] ?? 'Episode summary unavailable.'}</p></div>
-							<button class="episode-select" type="button" aria-label={`Play ${label}, ${title}`} onclick={() => playEpisode(file.mediaId)}></button>
-						</article>
-					{/each}
-				{:else}
-					{#each episodes as episode, index (episode.id)}
-							<article class="episode-row">
-								<div class="episode-art"><div class="episode-thumb"><img use:recoverRemoteArtwork src={episode.thumbnail} alt="" width="520" height="292" loading={index === 0 ? 'eager' : 'lazy'} />{#if episode.progress}<span class="episode-progress" style={`--progress: ${episode.progress * 100}%`}></span>{/if}</div></div>
-							<div class="episode-copy"><div class="episode-title"><span class="episode-number">{String(episode.number).padStart(2, '0')}</span><h3>{episode.title}</h3><span>{episode.duration}</span></div><p>{episode.summary}</p></div>
-							<button class="episode-select" type="button" aria-label={`Play episode ${episode.number}, ${episode.title}`} onclick={() => playEpisode()}></button>
-						</article>
-					{/each}
-				{/if}
+				{#each visibleEpisodes as episode (episode.id)}
+					{@const label = episode.episode === null ? 'Episode' : `S${String(episode.season).padStart(2, '0')}E${String(episode.episode).padStart(2, '0')}`}
+					<article class="episode-row" class:episode-row--unavailable={!episode.file || !!data.transfer}>
+						<div class="episode-art">
+							{#if episode.image}<div class="episode-thumb"><img use:recoverRemoteArtwork src={episode.image} alt="" width="520" height="292" loading="lazy" /></div>
+							{:else if episode.file}<EpisodePreview path={episode.file.path} label={`${label} ${episode.title}`} showTitle={data.item.title} showYear={data.item.year} season={episode.file.season} episode={episode.file.episode} />
+							{:else}<div class="episode-thumb episode-thumb--empty"><Icon name="tv" size={22} /></div>{/if}
+						</div>
+						<div class="episode-copy"><div class="episode-title"><span class="episode-number">{label}</span><h3>{episode.title}</h3>{#if episode.runtime}<span>{episode.runtime}m</span>{/if}</div>
+							<p>{episode.summary ?? 'Episode summary unavailable.'}</p>
+							{#if !episode.file || data.transfer}<span class="episode-status"><Icon name="download" size={12} />Not downloaded</span>{/if}
+							{#if episode.watched}<span class="episode-status"><Icon name="check" size={12} />Watched</span>{/if}
+						</div>
+						{#if episode.file && !data.transfer}<button class="episode-select" type="button" aria-label={`Play ${label}, ${episode.title}`} onclick={() => playEpisode(episode.file!.mediaId)}></button>
+						{:else if import.meta.env.DEV && episode.episode !== null}<button class="episode-select" type="button" aria-label={`Download ${label}, ${episode.title}`} onclick={() => episodeDownload = episode}></button>{/if}
+						{#if import.meta.env.DEV && episode.episode !== null}
+							<EpisodeActions label={`${label}, ${episode.title}`} onOtherVersions={() => episodeDownload = episode} />
+						{/if}
+					</article>
+				{/each}
+				{#if !visibleEpisodes.length}<p class="episode-feedback" role="status">{episodesLoading ? 'Loading episodes…' : 'Episode information is unavailable.'}</p>{/if}
 			</div>
-				{#if data.localDetail}<p class="episode-credit">Episode data: <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer">TVmaze</a></p>{/if}
+				{#if episodeMetadata.length}<p class="episode-credit">Episode data: <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer">TVmaze</a></p>{/if}
 		</section>
 	{/if}
 
-	<section class="related-section" aria-labelledby="related-heading">
+	{#if related.length}<section class="related-section" aria-labelledby="related-heading">
 		<div class="section-heading"><h2 id="related-heading">More like this</h2></div>
 		<div class="related-grid">{#each related as item (item.id)}<PosterCard media={item} variant="catalog" />{/each}</div>
-	</section>
+	</section>{/if}
 	</div>
 </div>
+
+{#if episodeDownload && episodeDownload.episode !== null}
+	{@const selection = episodeDownload}
+	<EpisodeDownloadDialog media={data.item} season={selection.season} episode={selection.episode!} title={selection.title} otherVersions={!!selection.file} onClose={() => { if (episodeDownload === selection) episodeDownload = null; }} />
+{/if}
 
 {#if trailerOpen && trailer}
 	<div class="trailer-modal" role="dialog" aria-modal="true" aria-label={`${data.item.title} trailer`}>
@@ -213,6 +270,15 @@
 {/if}
 
 <style>
+	.detail-back { position:absolute; z-index:4; top:16px; left:18px; display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(255,255,255,.16); border-radius:50%; color:var(--text-strong); background:rgba(8,12,17,.65); backdrop-filter:blur(8px); text-decoration:none; }
+	.episode-status { display: inline-flex; align-items: center; gap: 5px; margin: 8px 12px 0 0; color: var(--text-muted); font-size: .65rem; }
+	.episode-thumb--empty { display: grid; place-items: center; color: var(--text-dim); }
+	.downloads-section { max-width:var(--content-width); margin:52px auto 0; scroll-margin-top:24px; }
+	.downloads-section--optional { margin-top:20px; }
+	.other-versions-toggle { display:inline-flex; align-items:center; gap:8px; min-height:34px; padding:0; border:0; color:var(--text-muted); background:transparent; font:inherit; font-size:.72rem; cursor:pointer; }
+	.other-versions-toggle:hover { color:var(--text-soft); }
+	.other-versions-toggle[aria-expanded='true'] { margin-bottom:18px; }
+	.episode-feedback { padding: 18px 0; color: var(--text-muted); font-size: .73rem; }
 	.trailer-modal { position: fixed; z-index: 300; inset: 0; display: grid; place-items: center; padding: 42px; background: rgba(0,0,0,.82); }
 	.trailer-modal__dismiss { position: absolute; inset: 0; width: 100%; border: 0; background: none; cursor: pointer; }
 	.trailer-modal__content { position: relative; width: min(100%, 1100px); aspect-ratio: 16 / 9; background: #000; box-shadow: 0 24px 90px rgba(0,0,0,.65); }
@@ -235,26 +301,21 @@
 	.detail-copy h1 { margin: 0; color: var(--text-strong); font-size: clamp(2.4rem, 5vw, 4.6rem); font-weight: 600; letter-spacing: -0.07em; line-height: 0.94; }
 	.detail-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 19px; color: var(--text-muted); font-size: 0.7rem; }
 	.detail-title { display: grid; align-items: center; min-height: 104px; }
-	.detail-title__pending { visibility: hidden; }
 	.detail-title__logo { display: block; width: auto; height: auto; max-width: min(480px, 100%); max-height: 104px; object-fit: contain; object-position: left center; filter: drop-shadow(0 12px 38px rgba(0,0,0,0.4)); opacity: 0; }
 	.detail-title__logo--ready { opacity: 1; }
 	.detail-meta span:not(:first-child)::before { content: '·'; margin-right: 10px; color: var(--text-dim); }
-	.detail-meta .match { color: var(--success); font-weight: 700; }
-	.detail-meta .match::before { display: none; }
 	.detail-synopsis { max-width: 490px; margin: 18px 0 0; color: var(--text-soft); font-size: 0.8rem; line-height: 1.7; }
 	.detail-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 24px; }
 	.button { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 15px; border: 1px solid transparent; border-radius: 7px; font-size: 0.74rem; font-weight: 650; text-decoration: none; cursor: pointer; }
 	.button--primary { color: var(--surface-0); background: var(--accent-soft); }
 	.button--primary:hover { background: #efd6a4; }
 	.button--ghost { border-color: rgba(255,255,255,0.15); color: var(--text-soft); background: rgba(255,255,255,0.06); }
-	.button--ghost:hover, .button--ghost.saved { border-color: rgba(201,174,124,0.4); color: var(--accent-soft); background: rgba(201,174,124,0.1); }
+	.button--ghost:hover { border-color: rgba(201,174,124,0.4); color: var(--accent-soft); background: rgba(201,174,124,0.1); }
 	.episodes-section, .related-section { margin-top: 52px; }
+	.downloads-section--collapsed + .episodes-section { margin-top: 16px; }
 	.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 	.section-heading h2 { margin: 0; color: var(--text-strong); font-size: 1.04rem; font-weight: 650; letter-spacing: -0.025em; }
-	.episodes-count { color: var(--text-muted); font-size: 0.72rem; }
 	.season-select { position: relative; display: flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 0.72rem; }
-	.season-select select { appearance: none; padding: 5px 20px 5px 8px; border: 1px solid var(--line-subtle); border-radius: 6px; outline: none; color: var(--text-soft); font-size: 0.72rem; background: var(--surface-1); cursor: pointer; }
-	.season-select :global(svg) { position: absolute; right: 5px; pointer-events: none; }
 	.episode-list { display: grid; border-top: 1px solid var(--line-subtle); }
 	.episode-credit { margin: 12px 0 0; color: var(--text-dim); font-size: 0.62rem; }
 	.episode-credit a { color: var(--text-muted); text-decoration: underline; text-underline-offset: 2px; }
@@ -265,8 +326,7 @@
 	.episode-thumb { position: relative; overflow: hidden; aspect-ratio: 16 / 9; border-radius: 7px; background: var(--surface-2); }
 	.episode-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 	.episode-number { position: absolute; top: 8px; left: 8px; color: rgba(255,255,255,0.84); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; }
-	.episode-progress { position: absolute; right: 8px; bottom: 8px; left: 8px; height: 3px; border-radius: 2px; background: linear-gradient(90deg, var(--accent) var(--progress), rgba(255,255,255,0.28) var(--progress)); }
-	.episode-copy { min-width: 0; }
+	.episode-copy { min-width: 0; padding-right: 42px; }
 	.episode-title { display: flex; align-items: baseline; gap: 10px; }
 	.episode-title h3 { overflow: hidden; margin: 0; color: var(--text-soft); font-size: 0.84rem; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 	.episode-title span { flex: 0 0 auto; color: var(--text-muted); font-size: 0.68rem; }
@@ -282,26 +342,28 @@
 	.detail-hero { min-height: clamp(410px, 49svh, 530px); margin-top: 18px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); border-radius: 28px; corner-shape: squircle; background: transparent; }
 	.detail-hero__backdrop { inset: 0; background-image: linear-gradient(90deg, rgba(5, 7, 10, 0.97) 0%, rgba(5, 7, 10, 0.82) 31%, rgba(5, 7, 10, 0.34) 66%, rgba(5, 7, 10, 0.14) 100%), linear-gradient(0deg, rgba(7, 9, 12, 0.98), rgba(7, 9, 12, 0.12) 64%), var(--backdrop); background-position: center; background-size: cover; filter: saturate(0.78) contrast(1.02); }
 	.detail-hero__veil { display: none; }
+	:global(html:not([data-mobile-preview='true'])) .detail-hero__veil {
+		display: block;
+		pointer-events: none;
+		background: linear-gradient(90deg, rgba(9, 14, 21, 0.9) 0%, rgba(9, 14, 21, 0.82) 30%, rgba(9, 14, 21, 0.64) 55%, rgba(9, 14, 21, 0.18) 80%, transparent 100%);
+	}
 	.detail-hero__content { align-items: center; max-width: var(--content-width); min-height: clamp(410px, 49svh, 530px); margin: 0 auto; padding: 58px var(--content-gutter); gap: 32px; }
 	.detail-poster { flex: 0 0 166px; width: 166px; border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; corner-shape: squircle; box-shadow: 0 20px 42px rgba(0,0,0,0.34); }
 	.detail-copy { width: min(630px, 66%); }
-	.detail-kind { margin: 0 0 12px; color: var(--accent); font-size: 0.74rem; font-weight: 650; }
-	.detail-kind span { margin: 0 6px; color: var(--text-dim); }
 	.detail-copy h1 { font-family: var(--font-display); font-size: clamp(3rem, 5.2vw, 5.2rem); font-weight: 650; letter-spacing: -0.072em; line-height: 0.94; }
 	.detail-meta { gap: 10px; margin-top: 16px; font-weight: 560; }
-	.detail-meta .match { color: var(--accent); }
 	.detail-synopsis { max-width: 540px; margin-top: 16px; font-size: 0.82rem; line-height: 1.62; }
 	.detail-actions { gap: 10px; margin-top: 21px; }
+	:global(html:not([data-mobile-preview='true'])) .detail-actions :global(.favorite-button) { width: 42px; height: auto; align-self: stretch; border-radius: 11px; }
 	.button { min-height: 42px; padding: 0 17px; border-radius: 11px; font-size: 0.76rem; font-weight: 710; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease; }
 	.button:hover, .button:focus-visible { transform: scale(1.02); }
 	.button--primary { color: #0a0c0f; background: rgba(248,249,250,0.94); box-shadow: inset 0 1px rgba(255,255,255,0.96), 0 10px 28px rgba(0,0,0,0.24); }
 	.button--primary:hover { background: #fff; }
 	.button--ghost { border-color: rgba(255,255,255,0.14); color: var(--text-strong); background: rgba(54,60,68,0.48); box-shadow: inset 0 1px rgba(255,255,255,0.075), 0 8px 24px rgba(0,0,0,0.16); backdrop-filter: blur(16px) saturate(135%); }
-	.button--ghost:hover, .button--ghost.saved { border-color: rgba(158,198,214,0.38); color: var(--accent-soft); background: rgba(64,78,86,0.62); }
+	.button--ghost:hover { border-color: rgba(158,198,214,0.38); color: var(--accent-soft); background: rgba(64,78,86,0.62); }
 	.episodes-section, .related-section { max-width: var(--content-width); margin: 52px auto 0; }
 	.section-heading { align-items: center; margin-bottom: 17px; }
 	.section-heading h2 { font-family: var(--font-display); font-size: 1.08rem; font-weight: 690; letter-spacing: -0.034em; }
-	.season-select select { padding: 5px 20px 5px 0; border: 0; border-bottom: 1px solid var(--line-subtle); border-radius: 0; color: var(--text-soft); background: transparent; }
 	.episode-list { border-top-color: var(--line-subtle); }
 	.episode-row { grid-template-columns: 170px minmax(0, 1fr); gap: 20px; padding: 16px 12px; border-bottom-color: var(--line-subtle); }
 	.episode-thumb { border: 1px solid rgba(255,255,255,0.1); border-radius: 9px; }
@@ -320,7 +382,6 @@
 		.detail-copy { width: 100%; }
 		.detail-copy h1 { max-width: 96%; font-size: clamp(2.75rem, 12vw, 3.7rem); }
 		.detail-meta { margin-top: 13px; font-size: 0.67rem; }
-		.detail-meta span:nth-child(4) { display: none; }
 		.detail-synopsis { display: -webkit-box; max-width: 96%; margin-top: 13px; overflow: hidden; font-size: 0.76rem; line-height: 1.52; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
 		.detail-actions { margin-top: 18px; }
 		.button { min-height: 40px; padding: 0 15px; }

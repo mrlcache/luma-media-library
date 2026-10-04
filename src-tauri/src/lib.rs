@@ -16,6 +16,7 @@ mod native_player;
 mod native_player;
 mod opensubtitles;
 mod tmdb;
+mod recommendations;
 mod torrent_engine;
 
 #[derive(Serialize)]
@@ -195,9 +196,15 @@ fn save_playback_progress(
 #[tauri::command]
 fn record_playback_activity(
     media_id: i64,
+    mark_previous_episodes_watched: Option<bool>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<(), String> {
-    LibraryStore::open(&state.db_path)?.record_playback_activity(media_id)
+    let mut store = LibraryStore::open(&state.db_path)?;
+    store.record_playback_activity(media_id)?;
+    if mark_previous_episodes_watched.unwrap_or(false) {
+        store.mark_previous_episodes_watched(media_id)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -531,6 +538,33 @@ impl Drop for ScanGuard {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[tauri::command]
+async fn open_mobile_preview(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        if let Some(window) = app.get_webview_window("mobile-preview") {
+            return window.show().map_err(|error| error.to_string());
+        }
+        tauri::WebviewWindowBuilder::new(&app, "mobile-preview", tauri::WebviewUrl::App("/?mobile=1".into()))
+            .title("Luma Mobile · DEV")
+            .inner_size(412.0, 820.0)
+            .min_inner_size(360.0, 640.0)
+            .max_inner_size(480.0, 920.0)
+            .decorations(true)
+            .transparent(false)
+            .center()
+            .focused(false)
+            .build()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = app;
+        Err("Mobile preview is only available in development.".into())
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -558,6 +592,7 @@ pub fn run() {
             let resource_dir = app.path().resource_dir().unwrap_or_else(|_| app_data_dir.clone());
             let torrent_state = torrent_engine::TorrentState::new(&app_data_dir, &resource_dir);
             torrent_state.start_save_worker();
+            torrent_state.start_library_worker(app.handle().clone());
             app.manage(torrent_state);
 
             let frame_state = NativeWindowFrameState::default();
@@ -572,9 +607,31 @@ pub fn run() {
                 }
             }
             app.manage(frame_state);
+            // Opt-in development handset preview. The installed app never creates it.
+            #[cfg(debug_assertions)]
+            if std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../.artifacts/mobile-preview.enabled")
+                .exists()
+            {
+                tauri::WebviewWindowBuilder::new(
+                    app,
+                    "mobile-preview",
+                    tauri::WebviewUrl::App("/?mobile=1".into()),
+                )
+                .title("Luma Mobile · DEV")
+                .inner_size(412.0, 820.0)
+                .min_inner_size(360.0, 640.0)
+                .max_inner_size(480.0, 920.0)
+                .decorations(true)
+                .transparent(false)
+                .center()
+                .focused(false)
+                .build()?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            open_mobile_preview,
             desktop_bootstrap,
             artwork::load_remote_artwork,
             get_library_status,
@@ -598,6 +655,10 @@ pub fn run() {
             download_opensubtitle,
             test_tmdb_connection,
             search_tmdb,
+            recommendations::get_discovery_feed,
+            recommendations::get_discovery_title,
+            recommendations::get_discovery_trailer,
+            recommendations::get_discovery_logo,
             get_title_trailer,
             get_title_logo,
             scan_library,
@@ -606,6 +667,7 @@ pub fn run() {
             torrent_engine::torrent_snapshot,
             torrent_engine::torrent_add_magnet,
             torrent_engine::torrent_add_file,
+            torrent_engine::torrent_add_data,
             torrent_engine::torrent_set_paused,
             torrent_engine::torrent_move_queue,
             torrent_engine::torrent_set_limits,

@@ -1,5 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import FavoriteButton from './FavoriteButton.svelte';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
 	import { recoverRemoteArtwork } from '$lib/media/artwork';
 	import { usePlayer } from '$lib/player-context';
 	import { smoothHorizontalScroll } from '$lib/scroll/lenis';
@@ -9,6 +11,7 @@
 	type Props = { title: string; description?: string; items: MediaItem[]; showProgress?: boolean };
 	let { title, description, items, showProgress = false }: Props = $props();
 	const player = usePlayer();
+	const mobilePreview = isMobilePreview();
 </script>
 
 <section class="media-row" aria-labelledby={`row-${title.toLowerCase().replaceAll(' ', '-')}`}>
@@ -27,11 +30,13 @@
 						<a class="landscape-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} style="corner-shape: squircle">
 							{#if media.backdrop || media.poster}<img use:recoverRemoteArtwork src={media.backdrop || media.poster} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />{/if}
 							<div class="landscape-card__scrim"></div>
+							{#if media.installed === false}<span class="landscape-card__availability" role="img" aria-label="Not downloaded" ><Icon name="download" size={13} /></span>{/if}
 							{#if showProgress && media.progress}
 								<div class="landscape-card__progress"><span style={`--progress: ${media.progress * 100}%`}></span></div>
 							{/if}
 						</a>
-						<button class="landscape-card__play" aria-label={`Play ${media.title}`} onclick={() => player.open(media)}><Icon name="play" size={14} weight="fill" /></button>
+						{#if mobilePreview}<div class="landscape-card__favorite"><FavoriteButton {media} compact /></div>{/if}
+						{#if media.installed !== false}<button class="landscape-card__play" aria-label={`Play ${media.title}`} onclick={() => player.open(media)}><Icon name="play" size={14} weight="fill" /></button>{/if}
 					</div>
 					<a class="landscape-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`}>
 						<div class="landscape-card__copy">
@@ -46,7 +51,9 @@
 </section>
 
 <style>
+	.landscape-card__favorite { position:absolute; z-index:3; left:9px; top:9px; }
 	.media-row { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 18px; }
+	.landscape-card__availability { position:absolute; right:9px; top:9px; display:grid; place-items:center; width:24px; height:24px; border:1px solid rgba(255,255,255,.14); border-radius:50%; color:rgba(255,255,255,.85); background:rgba(8,12,17,.65); backdrop-filter:blur(8px); }
 	.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
 	.section-heading h2 { margin: 0; color: var(--text-strong); font-family: var(--font-display); font-size: 1.08rem; font-weight: 690; letter-spacing: -0.034em; }
 	.section-heading p { margin: 4px 0 0; color: var(--text-muted); font-size: 0.73rem; }

@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import { isDesktopRuntime } from './desktop';
+import { isMobilePreview } from './mobile-preview';
 
 type AcrylicStatus = 'idle' | 'ready' | 'unavailable';
 
@@ -30,7 +31,7 @@ function listenForSystemChanges() {
 }
 
 async function updateNativeAcrylic() {
-	if (updating || !isDesktopRuntime()) return;
+	if (updating || !isDesktopRuntime() || isMobilePreview()) return;
 	updating = true;
 	try {
 		const { invoke } = await import('@tauri-apps/api/core');

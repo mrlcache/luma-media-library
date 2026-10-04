@@ -1,14 +1,16 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import FavoriteButton from './FavoriteButton.svelte';
+	import { cardMedia } from '$lib/media/favorites';
 	import { recoverRemoteArtwork, tmdbImageSize } from '$lib/media/artwork';
 	import { usePlayer } from '$lib/player-context';
-	import type { CatalogMedia } from '$lib/types';
+	import type { LibraryCard } from '$lib/torrents/library';
 
-	type Props = { items: CatalogMedia[] };
+	type Props = { items: LibraryCard[] };
 	let { items }: Props = $props();
 	const player = usePlayer();
 
-	function play(item: CatalogMedia) {
+	function play(item: LibraryCard) {
 		player.open({
 			id: String(item.id),
 			title: item.title,
@@ -36,12 +38,21 @@
 						<span class="catalog-card__placeholder" aria-hidden="true"><Icon name={item.kind === 'series' ? 'tv' : 'film'} size={25} /></span>
 					{/if}
 				</a>
-				<button class="catalog-card__play" type="button" aria-label={`Play ${item.title}`} title={`Play ${item.title}`} onclick={() => play(item)}>
-					<Icon name="play" size={16} weight="fill" />
-				</button>
+				<div class="catalog-card__favorite"><FavoriteButton media={cardMedia(item)} compact /></div>
+				{#if typeof item.id !== 'number' && !item.transfer}<span class="catalog-card__availability"  role="img" aria-label="Not downloaded"><Icon name="download" size={13} /></span>{/if}
+				{#if item.transfer && item.transfer.progress < 1}
+					<div class="download-overlay">
+						<span><strong>{Math.floor(item.transfer.progress * 100)}%</strong></span>
+						<div class="download-progress" role="progressbar" aria-label={`Download progress for ${item.title}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.floor(item.transfer.progress * 100)}><i style={`width: ${item.transfer.progress * 100}%`}></i></div>
+					</div>
+				{:else if typeof item.id === 'number'}
+					<button class="catalog-card__play" type="button" aria-label={`Play ${item.title}`}  onclick={() => play(item)}>
+						<Icon name="play" size={16} weight="fill" />
+					</button>
+				{/if}
 			</div>
 			<div class="catalog-card__copy">
-				<a class="catalog-card__title" href={`/title/${item.id}`} title={item.title}>{item.title}</a>
+				<a class="catalog-card__title" href={`/title/${item.id}`} >{item.title}</a>
 				<span>
 					{#if item.year}{item.year}{:else if item.kind}{item.kind === 'series' ? 'Series' : 'Movie'}{:else}{item.extension.toUpperCase()} file{/if}
 					{#if item.year && item.kind}<i aria-hidden="true">·</i> {item.kind === 'series' ? 'Series' : 'Movie'}{/if}
@@ -53,6 +64,15 @@
 </div>
 
 <style>
+	.catalog-card__favorite { position:absolute; z-index:3; right:9px; top:9px; opacity:0; transition:opacity 140ms ease; }
+	.catalog-card:hover .catalog-card__favorite, .catalog-card:focus-within .catalog-card__favorite, .catalog-card__favorite:has(:global([aria-pressed='true'])) { opacity:1; }
+	.catalog-card__availability { position:absolute; left:9px; top:9px; display:grid; place-items:center; width:24px; height:24px; border:1px solid rgba(255,255,255,.14); border-radius:50%; color:rgba(255,255,255,.85); background:rgba(8,12,17,.65); }
+	@media (hover:none) { .catalog-card__favorite { opacity:1; } }
+	.download-overlay { position: absolute; inset: auto 0 0; padding: 28px 12px 14px; background: linear-gradient(transparent, rgba(5,9,13,.94)); pointer-events: none; }
+	.download-overlay > span { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-bottom: 8px; color: var(--text-soft); font-size: .65rem; }
+	.download-overlay strong { font-variant-numeric: tabular-nums; font-weight: 600; }
+	.download-progress { height: 3px; overflow: hidden; border-radius: 999px; background: rgba(210,229,237,.18); }
+	.download-progress i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 1s linear; }
 	.catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 146px), 1fr)); gap: 18px; margin: -14px; padding: 14px 22px 36px 15px; }
 	.catalog-card { min-width: 0; transform-origin: center bottom; transition: transform 190ms cubic-bezier(0.2, 0.72, 0.2, 1); }
 	.catalog-card__poster { position: relative; overflow: hidden; aspect-ratio: 2 / 3; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; background: var(--surface-2); box-shadow: 0 12px 28px rgba(0,0,0,0.22); transition: border-color 180ms ease, box-shadow 180ms ease; }

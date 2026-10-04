@@ -4,16 +4,22 @@ type TvMazeSearchResult = {
 	show: { id: number; name: string; premiered?: string | null };
 };
 type TvMazeEpisode = {
+	id: number;
+	name: string;
 	season: number;
 	number: number;
+	runtime?: number | null;
 	image: TvMazeImage;
 	summary?: string | null;
 };
 
-export type TvMazeEpisodeDetails = { image: string | null; summary: string | null };
+export type TvMazeEpisodeDetails = {
+	id: number; season: number; episode: number; title: string; runtime: number | null;
+	image: string | null; summary: string | null;
+};
 
 const API = 'https://api.tvmaze.com';
-const MAX_SHOWS = 32;
+const MAX_SHOWS = 8;
 const REQUEST_INTERVAL_MS = 550;
 const showEpisodes = new Map<string, Promise<Map<string, TvMazeEpisodeDetails>>>();
 let requestQueue: Promise<void> = Promise.resolve();
@@ -35,6 +41,15 @@ export function findTvMazeEpisodeDetails(
 	episode: number | null
 ): Promise<TvMazeEpisodeDetails | null> {
 	if (!title.trim() || season === null || episode === null) return Promise.resolve(null);
+	return cachedShowEpisodes(title, year).then((details) => details.get(`${season}:${episode}`) ?? null);
+}
+
+export async function readTvMazeEpisodes(title: string, year: number | null): Promise<TvMazeEpisodeDetails[]> {
+	if (!title.trim()) return [];
+	return [...(await cachedShowEpisodes(title, year)).values()].sort((a, b) => a.season - b.season || a.episode - b.episode);
+}
+
+function cachedShowEpisodes(title: string, year: number | null): Promise<Map<string, TvMazeEpisodeDetails>> {
 	const cacheKey = `${normalize(title)}:${year ?? ''}`;
 	let pending = showEpisodes.get(cacheKey);
 	if (!pending) {
@@ -46,7 +61,7 @@ export function findTvMazeEpisodeDetails(
 			showEpisodes.delete(oldest);
 		}
 	}
-	return pending.then((details) => details.get(`${season}:${episode}`) ?? null);
+	return pending;
 }
 
 async function loadShowEpisodes(title: string, year: number | null): Promise<Map<string, TvMazeEpisodeDetails>> {
@@ -69,12 +84,16 @@ async function loadShowEpisodes(title: string, year: number | null): Promise<Map
 		const match = candidates[0];
 		if (!match || (normalize(match.show.name) !== normalizedTitle && match.score < 0.72)) return new Map();
 
-		const episodes = await requestJson<TvMazeEpisode[]>(`${API}/shows/${match.show.id}/episodes`);
+		if (year && match.show.premiered && yearDistance(match.show.premiered, year) > 1) return new Map();
+		const episodes = await requestJson<TvMazeEpisode[]>(`${API}/shows/${match.show.id}/episodes?specials=1`);
 		const details = new Map<string, TvMazeEpisodeDetails>();
 		for (const item of episodes ?? []) {
-			const url = validImageUrl(item.image?.original ?? item.image?.medium);
+			const url = validImageUrl(item.image?.medium ?? item.image?.original);
 			if (Number.isInteger(item.season) && Number.isInteger(item.number)) {
-				details.set(`${item.season}:${item.number}`, { image: url, summary: plainText(item.summary) });
+				details.set(`${item.season}:${item.number}`, {
+					id: item.id, season: item.season, episode: item.number, title: item.name,
+					runtime: item.runtime ?? null, image: url, summary: plainText(item.summary)
+				});
 			}
 		}
 		return details;
@@ -99,7 +118,7 @@ function requestJson<T>(url: string): Promise<T | null> {
 		const wait = Math.max(0, nextRequestAt - Date.now());
 		if (wait > 0) await new Promise((resolve) => window.setTimeout(resolve, wait));
 		nextRequestAt = Date.now() + REQUEST_INTERVAL_MS;
-		const response = await fetch(url, { headers: { Accept: 'application/json' } });
+		const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
 		if (!response.ok) return null;
 		return (await response.json()) as T;
 	});

@@ -1,30 +1,54 @@
 <script lang="ts">
-	import { onMount, setContext } from 'svelte';
+	import { onMount, setContext, tick } from 'svelte';
 	import { dev } from '$app/environment';
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
+	import CastMenu from '$lib/components/CastMenu.svelte';
 	import PlayerHost from '$lib/components/PlayerHost.svelte';
 	import { PLAYER_CONTEXT, PLAYBACK_HISTORY_UPDATED_EVENT } from '$lib/player-context';
 	import { isDesktopRuntime, readDesktopBootstrap } from '$lib/platform/desktop';
 	import { requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import { applyAppearancePreferences } from '$lib/platform/appearance-preferences';
 	import { registerLenis } from '$lib/scroll/lenis';
+	import { startTorrentLibraryUpdates } from '$lib/torrents/library';
 	import type Lenis from 'lenis';
 	import type { IconName } from '$lib/components/Icon.svelte';
 	import type { MediaItem } from '$lib/types';
 	import '../app.css';
+	import '../mobile.css';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
 
 	let { children } = $props();
+	const mobilePreview = isMobilePreview();
+	if (typeof document !== 'undefined' && mobilePreview) document.documentElement.dataset.mobilePreview = 'true';
+	onMount(startTorrentLibraryUpdates);
 	let activeMedia = $state<MediaItem | null>(null);
 	let desktopRuntime = $state(false);
 	let windowMaximized = $state(false);
 	let contentArea: HTMLElement;
 	let desktopScroll: Lenis | undefined;
+	let mobilePreviewError = $state('');
+	async function openHandset() {
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			await invoke('open_mobile_preview');
+			mobilePreviewError = '';
+		} catch { mobilePreviewError = 'Could not open mobile preview.'; }
+	}
 
-	afterNavigate(() => {
-		if (desktopScroll) desktopScroll.scrollTo(0, { immediate: true });
-		else contentArea?.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+	onNavigate(() => {
+		// Do not carry the outgoing page's animated wheel movement into the next view.
+		desktopScroll?.stop();
+	});
+
+	afterNavigate(async () => {
+		await tick();
+		if (desktopScroll) {
+			desktopScroll.resize();
+			desktopScroll.scrollTo(0, { immediate: true, force: true });
+			desktopScroll.start();
+		} else contentArea?.scrollTo({ top: 0, left: 0, behavior: 'instant' });
 	});
 
 	function scrollContentFromChrome(event: WheelEvent) {
@@ -73,6 +97,11 @@
 	}
 
 	function markKeyboardInput(event: KeyboardEvent) {
+		if (event.key === 'Tab') {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			return;
+		}
 		if (['Alt', 'Control', 'Meta', 'Shift'].includes(event.key)) return;
 		document.documentElement.dataset.inputModality = 'keyboard';
 	}
@@ -106,15 +135,9 @@
 			icon: 'tv',
 			isActive: (url) => url.pathname === '/library' && url.searchParams.get('type') === 'series'
 		},
-		{ label: 'Torrents', href: '/torrents', icon: 'download', isActive: (url) => url.pathname === '/torrents' }
+		{ label: 'Torrents', href: '/torrents', icon: 'download', isActive: (url) => url.pathname === '/torrents' },
 	];
 
-	const searchItem: NavItem = {
-		label: 'Search',
-		href: '/search',
-		icon: 'search',
-		isActive: (url) => url.pathname === '/search'
-	};
 
 	const settingsItem: NavItem = {
 		label: 'Settings',
@@ -123,7 +146,15 @@
 		isActive: (url) => url.pathname === '/settings'
 	};
 
-	const mobileNavItems = [...navItems, searchItem];
+	const mediaServerItem: NavItem = {
+		label: 'Media server',
+		href: '/media-server',
+		icon: 'server',
+		isActive: (url) => url.pathname === '/media-server'
+	};
+	const mobileNavItems = mobilePreview
+		? [navItems[0], { ...navItems[1], isActive: (url: URL) => url.pathname === '/library' }, navItems[4], settingsItem]
+		: [...navItems, ...(dev ? [mediaServerItem] : [])];
 
 	onMount(() => {
 		let disposed = false;
@@ -176,7 +207,7 @@
 	});
 
 	onMount(() => {
-		if (!isDesktopRuntime() || !contentArea) return;
+		if (!isDesktopRuntime() || !contentArea || mobilePreview) return;
 		const scroller = contentArea;
 		const content = scroller.firstElementChild;
 		if (!(content instanceof HTMLElement)) return;
@@ -240,29 +271,21 @@
 		class="app-shell"
 		class:window-restored={desktopRuntime && !windowMaximized}
 		data-sveltekit-preload-data="hover"
+		data-sveltekit-preload-code="viewport"
 	>
 		<aside class="sidebar" aria-label="Application navigation" onwheel={scrollContentFromChrome}>
 			<div class="library-context" aria-label="Luma">
 				<img class="library-wordmark" src="/luma-wordmark.svg" alt="Luma" />
 				{#if dev}
-					<span class="dev-badge" title="Development version" aria-label="Development version">
+					<span class="dev-badge"  aria-label="Development version">
 						<Icon name="code" size={12} weight="bold" />
 						<span>DEV</span>
 					</span>
+					{#if desktopRuntime}<button class="open-handset" type="button" aria-label="Open mobile preview" onclick={openHandset}><Icon name="phone" size={18} /></button>{/if}
+					{#if mobilePreviewError}<span role="status">{mobilePreviewError}</span>{/if}
 				{/if}
 			</div>
 
-			<a
-				class="sidebar-search"
-				class:active={searchItem.isActive(page.url)}
-				href={searchItem.href}
-				style="corner-shape: squircle"
-				aria-current={searchItem.isActive(page.url) ? 'page' : undefined}
-			>
-				<Icon name="search" size={17} weight="bold" />
-				<span>Search</span>
-				<kbd>⌘ K</kbd>
-			</a>
 
 			<nav class="sidebar-nav" aria-label="Primary navigation">
 				{#each navItems as item}
@@ -280,6 +303,17 @@
 			</nav>
 
 			<div class="sidebar-footer">
+				{#if dev}
+					<a
+						class="sidebar-link"
+						class:active={mediaServerItem.isActive(page.url)}
+						href={mediaServerItem.href}
+						aria-current={mediaServerItem.isActive(page.url) ? 'page' : undefined}
+					>
+						<Icon name={mediaServerItem.icon} size={19} weight={mediaServerItem.isActive(page.url) ? 'fill' : 'regular'} />
+						<span>{mediaServerItem.label}</span>
+					</a>
+				{/if}
 				<a
 					class="sidebar-link"
 					class:active={settingsItem.isActive(page.url)}
@@ -300,6 +334,9 @@
 		<div class="workspace">
 			<main class="content-area" bind:this={contentArea}><div class="route-content">{@render children()}</div></main>
 		</div>
+		{#if !/^\/(torrents|settings)(\/|$)/.test(page.url.pathname)}
+			{#key page.url.pathname}<CastMenu />{/key}
+		{/if}
 
 		<nav class="mobile-nav" aria-label="Primary navigation">
 			{#each mobileNavItems as item}
@@ -316,17 +353,17 @@
 			{/each}
 		</nav>
 
-		<div class="window-chrome">
+		{#if !mobilePreview}<div class="window-chrome">
 			<div class="window-drag-region" data-tauri-drag-region aria-hidden="true" onwheel={scrollContentFromChrome}></div>
 			<div class="window-controls" role="group" aria-label="Window controls">
-				<button class="window-control" type="button" aria-label="Minimize window" title="Minimize" onclick={() => runWindowAction('minimize')}>
+				<button class="window-control" type="button" aria-label="Minimize window"  onclick={() => runWindowAction('minimize')}>
 					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
 				</button>
 				<button
 					class="window-control"
 					type="button"
 					aria-label={windowMaximized ? 'Restore window' : 'Maximize window'}
-					title={windowMaximized ? 'Restore' : 'Maximize'}
+
 					onclick={() => runWindowAction('toggle-maximize')}
 				>
 					{#if windowMaximized}
@@ -335,11 +372,11 @@
 						<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="5.5" width="13" height="13" rx="1.75" /></svg>
 					{/if}
 				</button>
-				<button class="window-control window-control--close" type="button" aria-label="Close window" title="Close" onclick={() => runWindowAction('close')}>
+				<button class="window-control window-control--close" type="button" aria-label="Close window"  onclick={() => runWindowAction('close')}>
 					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
 				</button>
 			</div>
-		</div>
+		</div>{/if}
 	</div>
 </div>
 
@@ -350,6 +387,8 @@
 <svelte:window onkeydown={handleGlobalKeydown} />
 
 <style>
+	.open-handset { display:grid; place-items:center; width:30px; height:30px; padding:0; border:0; border-radius:7px; color:var(--text-muted); background:transparent; cursor:pointer; }
+	.open-handset:hover { color:var(--accent-soft); background:var(--surface-2); }
 	.app-stage {
 		min-height: 100vh;
 		padding: 0;
@@ -435,27 +474,6 @@
 		line-height: 1;
 	}
 
-	.sidebar-search {
-		display: flex;
-		align-items: center;
-		gap: 9px;
-		height: 38px;
-		margin-top: 20px;
-		padding: 0 11px;
-		border: 1px solid rgba(255, 255, 255, 0.095);
-		border-radius: 10px;
-		color: rgba(229, 234, 239, 0.68);
-		background: rgba(8, 11, 15, 0.23);
-		box-shadow: inset 0 1px rgba(255, 255, 255, 0.035);
-		font-size: 0.76rem;
-		font-weight: 560;
-		text-decoration: none;
-		transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
-	}
-
-	.sidebar-search:hover,
-	.sidebar-search.active { border-color: rgba(255, 255, 255, 0.16); color: var(--text-strong); background: rgba(10, 13, 17, 0.36); }
-	.sidebar-search kbd { margin-left: auto; color: rgba(225, 230, 235, 0.38); font: 540 0.62rem var(--font-ui); }
 
 	.sidebar-nav { display: grid; gap: 8px; margin-top: 17px; }
 	.sidebar-nav .sidebar-link { border-radius: 14px; }

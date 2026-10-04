@@ -1,4 +1,9 @@
+<script module lang="ts">
+	let nativeOwner: symbol | null = null;
+</script>
+
 <script lang="ts">
+	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import SteppedRange from '$lib/components/SteppedRange.svelte';
@@ -50,6 +55,9 @@
 	let selectedDesktopPlayer = $state<DesktopPlayer>('mpv');
 	let activeEngine = $state<DesktopPlayer | null>(null);
 	let nativePoll: ReturnType<typeof setInterval> | undefined;
+	let nativeLoadingTimeout: number | undefined;
+	let playerDisposed = false;
+	const playerToken = Symbol('native-player-owner');
 	let pendingNativeSubtitlePath: string | null = null;
 	let pendingNativeResume = 0;
 	let resumePosition = 0;
@@ -101,8 +109,8 @@
 		return player === 'mpv' ? 'mpv' : 'VLC';
 	}
 
-	function setDesktopPlayer(event: Event) {
-		selectedDesktopPlayer = (event.currentTarget as HTMLSelectElement).value as DesktopPlayer;
+	function setDesktopPlayer(value: DesktopPlayer) {
+		selectedDesktopPlayer = value;
 		savePreferredDesktopPlayer(selectedDesktopPlayer);
 	}
 
@@ -131,6 +139,7 @@
 	}
 
 	async function startSelectedEngine(position = resumePosition) {
+		if (playerDisposed) return;
 		const mediaId = Number(media.id);
 		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) return;
 		endedHandled = false;
@@ -147,7 +156,16 @@
 			if (preferences.subtitleLanguage === 'auto' && ['en', 'pt', 'ja'].includes(systemLanguage ?? '')) {
 				preferences.subtitleLanguage = systemLanguage as 'en' | 'pt' | 'ja';
 			}
+			nativeOwner = playerToken;
 			const snapshot = await startNativePlayer(mediaId, selectedDesktopPlayer, preferences);
+			if (playerDisposed) {
+				// A new overlay may already have started another native session.
+				if (nativeOwner === playerToken) {
+					nativeOwner = null;
+					await stopNativePlayer().catch(() => undefined);
+				}
+				return;
+			}
 			applyNativeSnapshot(snapshot);
 			pendingNativeSubtitlePath = activeSubtitle >= 0 ? subtitleTracks[activeSubtitle]?.path ?? null : null;
 			recordPlaybackStarted();
@@ -156,23 +174,33 @@
 			if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
 			nativePoll = setInterval(() => {
 				void nativePlayerStatus().then(async (state) => {
+					if (playerDisposed) return;
 					applyNativeSnapshot(state);
 					if (pendingNativeSubtitlePath && state.durationSeconds > 0) {
 						const path = pendingNativeSubtitlePath;
 						pendingNativeSubtitlePath = null;
 						if (!state.subtitleTracks.some((track) => track.selected)) {
-							applyNativeSnapshot(await nativePlayerLoadSubtitle(path));
+							const updated = await nativePlayerLoadSubtitle(path);
+							if (playerDisposed) return;
+							applyNativeSnapshot(updated);
 						}
 					}
 					if (pendingNativeResume > 0 && state.durationSeconds > pendingNativeResume + 10) {
 						const seekTo = pendingNativeResume;
 						pendingNativeResume = 0;
-						applyNativeSnapshot(await nativePlayerAction('seek', seekTo));
+						const updated = await nativePlayerAction('seek', seekTo);
+						if (playerDisposed) return;
+						applyNativeSnapshot(updated);
 					}
-				}).catch((error) => console.warn('Native player status unavailable', error));
+				}).catch((error) => { if (!playerDisposed) console.warn('Native player status unavailable', error); });
 			}, 500);
-			window.setTimeout(() => { if (activeEngine && isLoading) isLoading = false; }, 5000);
+			if (nativeLoadingTimeout) clearTimeout(nativeLoadingTimeout);
+			nativeLoadingTimeout = window.setTimeout(() => {
+				nativeLoadingTimeout = undefined;
+				if (!playerDisposed && activeEngine && isLoading) isLoading = false;
+			}, 5000);
 		} catch (error) {
+			if (playerDisposed) return;
 			activeEngine = null;
 			isPlaying = false;
 			isLoading = false;
@@ -230,8 +258,8 @@
 		revealControls();
 	}
 
-	function setPlaybackRate(event: Event) {
-		playbackRate = Number((event.currentTarget as HTMLSelectElement).value);
+	function setPlaybackRate(value: number) {
+		playbackRate = value;
 		if (activeEngine) void nativePlayerAction('rate', playbackRate).then(applyNativeSnapshot).catch(console.warn);
 		if (video) video.playbackRate = playbackRate;
 		revealControls();
@@ -269,7 +297,7 @@
 	function recordPlaybackStarted() {
 		const mediaId = Number(media.id);
 		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || playbackActivityPromise) return;
-		playbackActivityPromise = recordPlaybackActivity(mediaId).catch((error) => {
+		playbackActivityPromise = recordPlaybackActivity(mediaId, readPlaybackPreferences().markPreviousEpisodesWatched).catch((error) => {
 			playbackActivityPromise = null;
 			console.warn('Playback history could not be saved', error);
 		});
@@ -531,6 +559,7 @@
 	}
 
 	onMount(() => {
+		playerDisposed = false;
 		suspendNativeAcrylicForPlayback(true);
 		selectedDesktopPlayer = readPreferredDesktopPlayer();
 		const playbackPreferences = readPlaybackPreferences();
@@ -560,6 +589,7 @@
 		}
 		void resolveMediaFile(mediaId)
 			.then(async (source) => {
+				if (playerDisposed) return;
 				resumePosition = source.resumePositionSeconds;
 				const episodeMarker = source.path.match(/(?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{2})/i)?.[0];
 				if (episodeMarker && media.kind === 'series') subtitleQuery = `${media.title} ${episodeMarker.toUpperCase()}`;
@@ -569,22 +599,32 @@
 					url: await localMediaUrl(subtitle.path),
 					path: subtitle.path
 				})));
+				if (playerDisposed) {
+					for (const track of tracks) if (track.url.startsWith('blob:')) URL.revokeObjectURL(track.url);
+					return;
+				}
 				subtitleTracks = tracks;
 				activeSubtitle = preferredSubtitleIndex(tracks);
 				await tick();
 				await startSelectedEngine();
 			})
 			.catch((error) => {
+				if (playerDisposed) return;
 				isLoading = false;
 				playbackError = error instanceof Error ? error.message : 'The local media file could not be opened.';
 			});
 		return () => {
+			playerDisposed = true;
 			document.removeEventListener('fullscreenchange', handleFullscreenChange);
 			window.removeEventListener('resize', handleResize);
 			if (timeoutId) clearTimeout(timeoutId);
+			if (nativeLoadingTimeout) clearTimeout(nativeLoadingTimeout);
 			if (nativePoll) clearInterval(nativePoll);
 			void persistProgress();
-			if (activeEngine) void stopNativePlayer();
+			if (activeEngine && nativeOwner === playerToken) {
+				nativeOwner = null;
+				void stopNativePlayer();
+			}
 			delete document.documentElement.dataset.nativePlayer;
 			suspendNativeAcrylicForPlayback(false);
 			for (const track of subtitleTracks) if (track.url.startsWith('blob:')) URL.revokeObjectURL(track.url);
@@ -638,7 +678,7 @@
 
 		<div class:player-ui--hidden={!controlsVisible && isPlaying} class="player-ui">
 			<div class="player-topbar">
-				<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="Close player" title="Close player" onclick={closePlayer}>
+				<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="Close player"  onclick={closePlayer}>
 					<Icon name="close" size={20} />
 				</button>
 
@@ -648,16 +688,13 @@
 				</div>
 
 				<div class="player-options-anchor">
-					<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="More playback options" title="More playback options" aria-expanded={playerMenuOpen} aria-haspopup="true" onclick={() => (playerMenuOpen = !playerMenuOpen)}>
+					<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="More playback options"  aria-expanded={playerMenuOpen} aria-haspopup="true" onclick={() => (playerMenuOpen = !playerMenuOpen)}>
 						<Icon name="more" size={20} />
 					</button>
 					{#if playerMenuOpen}
 						<div class="player-options" role="group" aria-label="Playback engine selection">
-							<label for="desktop-player-select">Playback engine</label>
-							<select id="desktop-player-select" value={selectedDesktopPlayer} onchange={setDesktopPlayer}>
-								<option value="mpv">libmpv</option>
-								<option value="vlc">libVLC</option>
-							</select>
+							<span class="player-options__label">Playback engine</span>
+							<AppSelect bind:value={selectedDesktopPlayer} label="Playback engine" options={[{value:"mpv",label:"libmpv"},{value:"vlc",label:"libVLC"}]} onchange={setDesktopPlayer} />
 							<p>{selectedDesktopPlayer === 'mpv' ? 'Uses libmpv with its GPU video renderer.' : 'Uses libVLC inside this player.'}</p>
 							<button type="button" disabled={desktopPlayerBusy || selectedDesktopPlayer === activeEngine} onclick={switchEngine}>{desktopPlayerBusy ? 'Switching…' : `Use ${desktopPlayerLabel()}`}</button>
 						</div>
@@ -684,17 +721,17 @@
 
 				<div class="player-transport">
 					<div class="player-transport__group">
-						<button class="player-primary-button" type="button" style="corner-shape: squircle" aria-label={isPlaying ? 'Pause' : 'Play'} title={isPlaying ? 'Pause' : 'Play'} onclick={togglePlayback}>
+						<button class="player-primary-button" type="button" style="corner-shape: squircle" aria-label={isPlaying ? 'Pause' : 'Play'}  onclick={togglePlayback}>
 							<Icon name={isPlaying ? 'pause' : 'play'} size={19} weight="fill" />
 						</button>
-						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Go back ten seconds" title="Back 10 seconds" onclick={() => seekBy(-10)}>
+						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Go back ten seconds"  onclick={() => seekBy(-10)}>
 							<Icon name="arrow-left" size={18} />
 						</button>
-						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Forward ten seconds" title="Forward 10 seconds" onclick={() => seekBy(10)}>
+						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Forward ten seconds"  onclick={() => seekBy(10)}>
 							<Icon name="arrow-left" size={18} mirrored />
 						</button>
 						<div class="player-volume" style="corner-shape: squircle">
-							<button class="player-volume__button" type="button" aria-label={isMuted ? 'Unmute' : 'Mute'} title={isMuted ? 'Unmute' : 'Mute'} onclick={toggleMuted}>
+							<button class="player-volume__button" type="button" aria-label={isMuted ? 'Unmute' : 'Mute'}  onclick={toggleMuted}>
 								<Icon name="volume" size={18} />
 							</button>
 							<input class="player-volume__range" type="range" min="0" max="100" value={volume} style={`--volume: ${volume}%`} aria-label="Volume" oninput={setVolume} />
@@ -702,14 +739,12 @@
 					</div>
 
 					<div class="player-transport__group player-transport__group--end">
-						<button class="player-chip" type="button" style="corner-shape: squircle" aria-label="Subtitles" title="Subtitles" onclick={() => (subtitlePanelOpen = !subtitlePanelOpen)}><Icon name="captions" size={17} /><span>Subtitles</span></button>
+						<button class="player-chip" type="button" style="corner-shape: squircle" aria-label="Subtitles"  onclick={() => (subtitlePanelOpen = !subtitlePanelOpen)}><Icon name="captions" size={17} /><span>Subtitles</span></button>
 						{#if audioTracks.length > 1}
-							<select class="player-chip player-chip--select" aria-label="Audio track" value={activeAudio} onchange={(event) => selectAudio(Number(event.currentTarget.value))}>
-								{#each audioTracks as track}<option value={track.index}>{track.label}</option>{/each}
-							</select>
+							<div class="player-chip"><AppSelect value={activeAudio} label="Audio track" variant="plain" options={audioTracks.map(track => ({value:track.index,label:track.label}))} onchange={selectAudio} /></div>
 						{/if}
-						<label class="player-chip player-rate" style="corner-shape: squircle"><span class="player-rate__caption">Speed</span><strong class="player-rate__value">{playbackRate}×</strong><Icon name="chevron-down" size={13} /><select aria-label="Playback speed" value={playbackRate} onchange={setPlaybackRate}><option value={0.75}>0.75×</option><option value={1}>1×</option><option value={1.25}>1.25×</option><option value={1.5}>1.5×</option><option value={2}>2×</option></select></label>
-						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Toggle fullscreen" title="Fullscreen" onclick={toggleFullscreen}><Icon name="fullscreen" size={18} /></button>
+						<div class="player-chip player-rate" style="corner-shape: squircle"><span class="player-rate__caption">Speed</span><AppSelect value={playbackRate} label="Playback speed" variant="plain" options={[0.75,1,1.25,1.5,2].map(rate => ({value:rate,label:`${rate}×`}))} onchange={setPlaybackRate} /></div>
+						<button class="player-control-button" type="button" style="corner-shape: squircle" aria-label="Toggle fullscreen"  onclick={toggleFullscreen}><Icon name="fullscreen" size={18} /></button>
 					</div>
 				</div>
 			</div>
@@ -753,11 +788,9 @@
 						<div class="subtitle-online__content">
 							<label class="subtitle-online__field">API key <input type="password" bind:value={subtitleApiKey} autocomplete="off" placeholder="OpenSubtitles API key" /></label>
 							<label class="subtitle-online__field">Title <input bind:value={subtitleQuery} maxlength="120" aria-label="Subtitle search title" /></label>
-							<label class="subtitle-online__field">Language
-								<select bind:value={subtitleLanguage} aria-label="Subtitle language">
-									<option value="en">English</option><option value="pt-br">Portuguese (Brazil)</option><option value="es">Spanish</option><option value="fr">French</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="de">German</option>
-								</select>
-							</label>
+							<div class="subtitle-online__field">Language
+								<AppSelect bind:value={subtitleLanguage} label="Subtitle language" options={[{value:"en",label:"English"},{value:"pt-br",label:"Portuguese (Brazil)"},{value:"es",label:"Spanish"},{value:"fr",label:"French"},{value:"ja",label:"Japanese"},{value:"ko",label:"Korean"},{value:"de",label:"German"}]} />
+							</div>
 							<button class="subtitle-online__button subtitle-online__button--primary" type="button" disabled={subtitleSearchBusy} onclick={findOpenSubtitles}>{subtitleSearchBusy ? 'Searching…' : 'Search subtitles'}</button>
 							{#if subtitleStatus}<p class="subtitle-online__status" role="status">{subtitleStatus}</p>{/if}
 							{#if subtitleError}<p class="subtitle-online__error" role="alert">{subtitleError}</p>{/if}
@@ -818,9 +851,7 @@
 	.player-topbar > * { pointer-events: auto; }
 	.player-options-anchor { position: relative; z-index: 6; }
 	.player-options { position: absolute; top: 52px; right: 0; display: grid; gap: 9px; width: min(280px, calc(100vw - 36px)); padding: 15px; border: 1px solid rgba(255,255,255,0.14); border-radius: 16px; color: rgba(244,247,249,0.86); background: rgba(17,21,26,0.94); box-shadow: 0 18px 54px rgba(0,0,0,0.42); -webkit-backdrop-filter: blur(24px) saturate(140%); backdrop-filter: blur(24px) saturate(140%); }
-	.player-options label { color: rgba(244,247,249,0.58); font-size: 0.66rem; font-weight: 650; }
-	.player-options select { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; color: #f4f7f9; background: #20262d; font: inherit; font-size: 0.72rem; }
-	.player-options option { color: #f4f7f9; background: #161b21; }
+	.player-options__label { color: rgba(244,247,249,0.58); font-size: 0.66rem; font-weight: 650; }
 	.player-options p { margin: 0; color: rgba(244,247,249,0.56); font-size: 0.64rem; line-height: 1.45; }
 	.player-options > button { min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; color: #11161b; background: rgba(240,246,248,0.94); cursor: pointer; font: inherit; font-size: 0.7rem; font-weight: 650; }
 	.player-options > button:disabled { opacity: 0.55; cursor: progress; }
@@ -874,12 +905,7 @@
 
 	.player-chip { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 10px; border: 1px solid transparent; border-radius: 13px; color: rgba(244,247,249,0.64); font-size: 0.67rem; font-weight: 620; background: transparent; transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease; }
 	.player-chip:hover { border-color: rgba(255,255,255,0.1); color: #fff; background: rgba(255,255,255,0.08); }
-	.player-chip--select, .player-rate select { max-width: 150px; color: inherit; font: inherit; }
-	.player-chip--select option, .player-rate option { color: #eaf0f3; background: #161b21; }
 	.player-rate { position: relative; min-width: 108px; justify-content: center; cursor: pointer; }
-	.player-rate__value { color: rgba(244,247,249,0.88); font-size: 0.68rem; font-variant-numeric: tabular-nums; font-weight: 700; }
-	.player-rate select { position: absolute; inset: 0; z-index: 1; width: 100%; max-width: none; height: 100%; padding: 0; border: 0; outline: 0; opacity: 0; cursor: pointer; }
-	.player-rate:focus-within { outline: 2px solid rgba(158,198,214,0.8); outline-offset: 2px; }
 	.subtitle-panel { position: absolute; right: 20px; bottom: 124px; z-index: 8; display: flex; flex-direction: column; width: min(380px, calc(100% - 40px)); max-height: min(680px, calc(100% - 148px)); overflow: hidden; border: 1px solid rgba(255,255,255,0.16); border-radius: 19px; color: rgba(244,247,249,0.76); background: rgba(20,24,29,0.91); box-shadow: 0 22px 66px rgba(0,0,0,0.42), inset 0 1px rgba(255,255,255,0.07); backdrop-filter: blur(34px) saturate(145%); pointer-events: auto; }
 	.subtitle-panel__header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.1); color: #f8fafb; font-size: 0.86rem; font-weight: 650; }
 	.subtitle-panel__header strong { display: flex; align-items: center; gap: 9px; }
@@ -912,10 +938,9 @@
 	.subtitle-online__content { display: grid; gap: 14px; padding-top: 16px; }
 	.subtitle-online__note { margin: 0; color: rgba(235,240,244,0.5); font-size: 0.64rem; line-height: 1.5; }
 	.subtitle-online__field { display: grid; gap: 6px; min-width: 0; color: rgba(244,247,249,0.66); font-size: 0.66rem; }
-	.subtitle-online input, .subtitle-online select { width: 100%; min-width: 0; height: 38px; padding: 0 11px 2px; border: 1px solid rgba(255,255,255,0.12); border-radius: 9px; outline: none; color: #f2f5f7; background: rgba(5,8,11,0.38); font: inherit; font-size: 0.7rem; line-height: 1.2; }
-	.subtitle-online input:focus, .subtitle-online select:focus { border-color: rgba(225,242,248,0.38); }
+	.subtitle-online input { width: 100%; min-width: 0; height: 38px; padding: 0 11px 2px; border: 1px solid rgba(255,255,255,0.12); border-radius: 9px; outline: none; color: #f2f5f7; background: rgba(5,8,11,0.38); font: inherit; font-size: 0.7rem; line-height: 1.2; }
+	.subtitle-online input:focus { border-color: rgba(225,242,248,0.38); }
 	.subtitle-online input::placeholder { color: rgba(235,240,244,0.4); }
-	.subtitle-online option { color: #edf2f4; background: #171c22; }
 	.subtitle-online__row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 10px; }
 	.subtitle-online__button { width: 100%; min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.13); border-radius: 9px; color: rgba(244,247,249,0.8); background: rgba(255,255,255,0.055); cursor: pointer; font: inherit; font-size: 0.7rem; font-weight: 620; }
 	.subtitle-online__button:hover:not(:disabled) { background: rgba(255,255,255,0.11); }

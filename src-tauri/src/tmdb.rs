@@ -89,6 +89,8 @@ struct RawSearchResult {
     vote_average: Option<f32>,
     poster_path: Option<String>,
     backdrop_path: Option<String>,
+    #[serde(default)]
+    adult: bool,
 }
 
 #[derive(Deserialize)]
@@ -102,6 +104,24 @@ struct ImageConfiguration {
 }
 
 impl TmdbState {
+    pub async fn discovery_list(&self, endpoint: &str, kind: Option<&str>) -> Result<Vec<TmdbSearchResult>, String> {
+        let response = self.client.get(format!("{API_BASE}/{endpoint}"))
+            .bearer_auth(self.read_token()?).query(&[("language", "en-US"), ("include_adult", "false")])
+            .send().await.map_err(|_| "Could not load recommendations from TMDb.".to_owned())?;
+        ensure_success(response.status())?;
+        let response = response.json::<SearchResponse>().await.map_err(|_| "TMDb returned unreadable recommendations.".to_owned())?;
+        Ok(response.results.into_iter().filter(|item| !item.adult).filter_map(|item| discovery_item(item, kind)).collect())
+    }
+
+    pub async fn discovery_title(&self, id: u64, kind: &str) -> Result<TmdbSearchResult, String> {
+        let endpoint = media_endpoint(kind)?;
+        let response = self.client.get(format!("{API_BASE}/{endpoint}/{id}"))
+            .bearer_auth(self.read_token()?).query(&[("language", "en-US")])
+            .send().await.map_err(|_| "Could not load this title from TMDb.".to_owned())?;
+        ensure_success(response.status())?;
+        let item = response.json::<RawSearchResult>().await.map_err(|_| "TMDb returned unreadable title metadata.".to_owned())?;
+        discovery_item(item, Some(kind)).ok_or_else(|| "Title not found.".to_owned())
+    }
     pub fn new(token_path: PathBuf) -> Result<Self, String> {
         static TLS_PROVIDER: std::sync::Once = std::sync::Once::new();
         TLS_PROVIDER.call_once(|| {
@@ -308,6 +328,20 @@ impl TmdbState {
         }
         Ok(token.to_owned())
     }
+}
+
+pub fn media_endpoint(kind: &str) -> Result<&'static str, String> {
+    match kind { "movie" => Ok("movie"), "series" => Ok("tv"), _ => Err("Choose a movie or series.".to_owned()) }
+}
+
+fn discovery_item(item: RawSearchResult, forced_kind: Option<&str>) -> Option<TmdbSearchResult> {
+    if item.adult { return None; }
+    let kind = forced_kind.or_else(|| match item.media_type.as_str() { "movie" => Some("movie"), "tv" => Some("series"), _ => None })?;
+    let title = item.title.or(item.name).filter(|title| !title.trim().is_empty())?;
+    let date = item.release_date.as_deref().or(item.first_air_date.as_deref());
+    Some(TmdbSearchResult { id: item.id, title, kind: kind.to_owned(), year: date.and_then(|value| value.get(..4)).and_then(|value| value.parse().ok()),
+        overview: item.overview.unwrap_or_default(), vote_average: item.vote_average,
+        poster_url: image_url(item.poster_path.as_deref(), "w780"), backdrop_url: image_url(item.backdrop_path.as_deref(), "w1280") })
 }
 
 fn choose_trailer(videos: Vec<RawVideo>) -> Option<TmdbTrailer> {

@@ -7,9 +7,12 @@
 	let { media, onClose }: Props = $props();
 	let PlayerComponent = $state<Component<Props> | null>(null);
 
-	onMount(async () => {
-		const module = await import('$lib/components/PlayerOverlay.svelte');
-		PlayerComponent = module.default;
+	onMount(() => {
+		let disposed = false;
+		void import('$lib/components/PlayerOverlay.svelte').then((module) => {
+			if (!disposed) PlayerComponent = module.default;
+		});
+		return () => { disposed = true; };
 	});
 </script>
 

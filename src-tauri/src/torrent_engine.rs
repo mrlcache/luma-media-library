@@ -3,12 +3,14 @@
 
 use libloading::Library;
 use serde::Serialize;
+use tauri::{Emitter, Manager};
 use std::{ffi::{c_char, c_void, CString}, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::Duration};
 
 type Create = unsafe extern "C" fn(*const c_char, *const c_char, *mut c_char, i32) -> *mut c_void;
 type Destroy = unsafe extern "C" fn(*mut c_void);
 type Add = unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_char, i32, *mut c_char, i32) -> i32;
 type List = unsafe extern "C" fn(*mut c_void, *mut RawTransfer, i32, *mut c_char, i32) -> i32;
+type Files = unsafe extern "C" fn(*mut c_void, *const c_char, *mut RawFile, i32, *mut c_char, i32) -> i32;
 type Paused = unsafe extern "C" fn(*mut c_void, *const c_char, i32, *mut c_char, i32) -> i32;
 type MoveQueue = unsafe extern "C" fn(*mut c_void, *const c_char, i32, *mut c_char, i32) -> i32;
 type Limits = unsafe extern "C" fn(*mut c_void, i32, i32, *mut c_char, i32) -> i32;
@@ -34,6 +36,9 @@ struct RawTransfer {
     download_rate: i32,
     upload_rate: i32,
 }
+
+#[repr(C)]
+struct RawFile { path: [c_char; 4096], size_bytes: i64, completed_bytes: i64 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +74,7 @@ struct TorrentEngine {
     add_magnet: Add,
     add_file: Add,
     list: List,
+    files: Files,
     set_paused: Paused,
     move_queue: MoveQueue,
     set_limits: Limits,
@@ -98,6 +104,7 @@ impl TorrentEngine {
             let add_magnet: Add = symbol(&library, b"mt_add_magnet\0")?;
             let add_file: Add = symbol(&library, b"mt_add_torrent_file\0")?;
             let list: List = symbol(&library, b"mt_list\0")?;
+            let files: Files = symbol(&library, b"mt_files\0")?;
             let set_paused: Paused = symbol(&library, b"mt_set_paused\0")?;
             let move_queue: MoveQueue = symbol(&library, b"mt_move_queue\0")?;
             let set_limits: Limits = symbol(&library, b"mt_set_limits\0")?;
@@ -109,7 +116,7 @@ impl TorrentEngine {
             let handle = create(state.as_ptr(), download.as_ptr(), error.as_mut_ptr(), error.len() as i32);
             if handle.is_null() { return Err(error_text(&error)); }
             Ok(Self { _library: library, handle: handle as usize, destroy, add_magnet, add_file,
-                list, set_paused, move_queue, set_limits, remove, save })
+                list, files, set_paused, move_queue, set_limits, remove, save })
         }
     }
 
@@ -147,6 +154,29 @@ impl TorrentEngine {
             }
         }).collect();
         Ok(TorrentSnapshot { engine: "libtorrent", download_directory: download_directory.to_string_lossy().into_owned(), transfers })
+    }
+
+    fn completed_files(&self, hash: &str) -> Result<Vec<PathBuf>, String> {
+        let hash = CString::new(hash).map_err(|_| "Invalid torrent ID.".to_owned())?;
+        let mut error = [0 as c_char; 512];
+        let count = unsafe { (self.files)(self.handle as *mut c_void, hash.as_ptr(), std::ptr::null_mut(), 0, error.as_mut_ptr(), 512) };
+        check(count, &error)?;
+        if count > 100_000 { return Err("Too many torrent files to import.".into()); }
+        let mut rows: Vec<RawFile> = (0..count).map(|_| unsafe { std::mem::zeroed() }).collect();
+        if count > 0 {
+            let returned = unsafe { (self.files)(self.handle as *mut c_void, hash.as_ptr(), rows.as_mut_ptr(), count, error.as_mut_ptr(), 512) };
+            check(returned, &error)?;
+            rows.truncate(returned.min(count) as usize);
+        }
+        let mut paths = Vec::new();
+        for row in rows {
+            if row.completed_bytes < row.size_bytes { continue; }
+            let path = PathBuf::from(char_array(&row.path));
+            let metadata = std::fs::metadata(&path).map_err(|error| format!("Completed file is not ready: {error}"))?;
+            if metadata.len() < row.size_bytes.max(0) as u64 { return Err("Completed file is still being flushed to disk.".into()); }
+            paths.push(path);
+        }
+        Ok(paths)
     }
 
     fn add(&self, value: &str, file: bool) -> Result<String, String> {
@@ -270,6 +300,45 @@ impl TorrentState {
         });
     }
 
+    pub fn start_library_worker(&self, app: tauri::AppHandle) {
+        let weak = Arc::downgrade(&self.engine);
+        let download_directory = self.download_directory.clone();
+        std::thread::spawn(move || {
+            let mut imported = std::collections::HashSet::new();
+            loop {
+                std::thread::sleep(Duration::from_secs(2));
+                let Some(shared) = weak.upgrade() else { break; };
+                let completed = {
+                    let Ok(slot) = shared.lock() else { continue; };
+                    let Some(engine) = slot.as_ref() else { continue; };
+                    let Ok(snapshot) = engine.snapshot(&download_directory) else { continue; };
+                    snapshot.transfers.into_iter().filter(|item| item.progress >= 1.0 && item.size_bytes > 0 && item.error.is_empty() && item.status != "Checking" && !imported.contains(&item.info_hash))
+                        .filter_map(|item| match engine.completed_files(&item.info_hash) {
+                            Ok(paths) => Some((item.info_hash, paths)),
+                            Err(error) => { eprintln!("Torrent library import will retry: {error}"); None }
+                        }).collect::<Vec<_>>()
+                };
+                if completed.is_empty() { continue; }
+                let library = app.state::<media_core::LibraryState>();
+                if library.scanning.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed).is_err() { continue; }
+                let guard = crate::ScanGuard(library.scanning.clone());
+                let mut changed = false;
+                for (hash, paths) in completed {
+                    match media_core::LibraryStore::open(&library.db_path).and_then(|mut store| store.import_completed_files(&download_directory, &paths)) {
+                        Ok(count) => { imported.insert(hash); changed |= count > 0; }
+                        Err(error) => eprintln!("Torrent library import will retry: {error}"),
+                    }
+                }
+                if changed {
+                    let _ = app.emit("library-changed", ());
+                    tauri::async_runtime::block_on(crate::metadata::enrich_library(&library.db_path, app.state::<crate::tmdb::TmdbState>().inner()));
+                    let _ = app.emit("library-changed", ());
+                }
+                drop(guard);
+            }
+        });
+    }
+
     fn with_engine<T>(&self, operation: impl FnOnce(&TorrentEngine, &Path) -> Result<T, String>) -> Result<T, String> {
         let mut slot = self.engine.lock().map_err(|_| "The torrent engine is unavailable.".to_owned())?;
         if slot.is_none() { *slot = Some(TorrentEngine::open(&self.state_directory, &self.download_directory, &self.resource_directory)?); }
@@ -297,6 +366,28 @@ pub async fn torrent_add_magnet(state: tauri::State<'_, TorrentState>, uri: Stri
 #[tauri::command]
 pub async fn torrent_add_file(state: tauri::State<'_, TorrentState>, path: String) -> Result<String, String> {
     run(state, move |engine, _| engine.add(&path, true)).await
+}
+
+#[tauri::command]
+pub async fn torrent_add_data(state: tauri::State<'_, TorrentState>, encoded: String) -> Result<String, String> {
+    use base64::Engine;
+    use std::io::Write;
+    if encoded.len() > 6_666_668 { return Err("Torrent metadata is too large.".into()); }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
+        .map_err(|_| "Invalid torrent metadata.".to_owned())?;
+    if bytes.is_empty() || bytes.len() > 5_000_000 || bytes[0] != b'd' { return Err("Invalid torrent metadata.".into()); }
+    let directory = state.state_directory.clone();
+    run(state, move |engine, _| {
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos();
+        let path = directory.join(format!("incoming-{unique}.torrent"));
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| error.to_string())?;
+        let result = file.write_all(&bytes).map_err(|error| error.to_string());
+        drop(file);
+        let result = result.and_then(|_| engine.add(&path.to_string_lossy(), true));
+        let _ = std::fs::remove_file(&path);
+        result
+    }).await
 }
 
 #[tauri::command]

@@ -1,12 +1,19 @@
 <script lang="ts">
+	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
+	import { takePreparedDownload, type PendingDownload } from '$lib/torrents/pending-download';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import ArrowDownIcon from 'phosphor-svelte/lib/ArrowDownIcon';
 	import ArrowUpIcon from 'phosphor-svelte/lib/ArrowUpIcon';
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
-	import { addMagnet, addTorrentFile, chooseTorrentFile, moveTorrentQueue, readTorrentSnapshot, removeTorrent, setTorrentLimits, setTorrentPaused, type TorrentTransfer } from '$lib/platform/desktop';
+	import { addMagnet, addTorrentData, addTorrentFile, chooseTorrentFile, moveTorrentQueue, readTorrentSnapshot, removeTorrent, setTorrentLimits, setTorrentPaused, type TorrentTransfer } from '$lib/platform/desktop';
 
+	const mobilePreview = isMobilePreview();
+	let downloadTarget = $state<'pc' | 'phone'>('pc');
+	let pendingRelease = $state<PendingDownload | null>(null);
+	let addError = $state('');
 	let transfers = $state<TorrentTransfer[]>([]);
 	let loadError = $state('');
 	let busy = $state(false);
@@ -31,6 +38,9 @@
 	let seedingCount = $derived(transfers.filter((transfer) => transfer.status === 'Seeding').length);
 	let totalDown = $derived(transfers.reduce((sum, item) => sum + item.downloadRate, 0));
 	let totalUp = $derived(transfers.reduce((sum, item) => sum + item.uploadRate, 0));
+	$effect(() => {
+		if (!addOpen) { pendingRelease = null; addError = ''; downloadTarget = 'pc'; }
+	});
 
 	function formatBytes(bytes: number) {
 		if (bytes <= 0) return '—';
@@ -59,17 +69,24 @@
 	async function act(operation: () => Promise<unknown>) {
 		if (busy) return;
 		busy = true;
-		try { await operation(); await refresh(); }
+		try {
+			await operation();
+			await refresh();
+		}
 		catch (error) { loadError = errorMessage(error); }
 		finally { busy = false; }
 	}
 
 	onMount(() => {
+		if (mobilePreview) {
+			pendingRelease = takePreparedDownload();
+			if (pendingRelease) addOpen = true;
+		}
 		const requester = Symbol('Torrents surface');
 		requestNativeAcrylic(requester, true);
 		void refresh();
 		const timer = window.setInterval(() => { if (!busy) void refresh(); }, 1500);
-		return () => { window.clearInterval(timer); requestNativeAcrylic(requester, false); };
+		return () => { if (timer !== undefined) window.clearInterval(timer); requestNativeAcrylic(requester, false); };
 	});
 
 	function setStatus(item: TorrentTransfer) {
@@ -82,7 +99,7 @@
 	}
 
 	function moveSelected(direction: -1 | 1) {
-		if (selected) void act(() => moveTorrentQueue(selected.infoHash, direction));
+		if (selected) { const id = selected.infoHash; void act(() => moveTorrentQueue(id, direction)); }
 		queueOpen = false;
 	}
 
@@ -92,22 +109,45 @@
 	}
 
 	function addTorrent() {
+		if (mobilePreview && downloadTarget === 'phone') return;
 		const input = torrentInput.trim();
-		if (!input) return;
-		void act(async () => { selectedId = await addMagnet(input); torrentInput = ''; addOpen = false; });
+		const release = pendingRelease;
+		if (!input && !release) return;
+		addError = '';
+		void act(async () => {
+			try {
+				if (release) {
+					const hash = release.infoHash;
+					if (/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(hash)) {
+						selectedId = await addMagnet(`magnet:?xt=urn:${hash.length === 64 ? 'btmh:1220' : 'btih:'}${hash}&dn=${encodeURIComponent(release.name)}`);
+					} else if (release.downloadKey) {
+						const response = await fetch(`/__luma-preview/search?${new URLSearchParams({action:'resolve',key:release.downloadKey})}`);
+						const result = await response.json();
+						if (!response.ok) throw new Error(result.error || 'Could not resolve this release.');
+						if (!addOpen || pendingRelease !== release || (mobilePreview && downloadTarget === 'phone')) return;
+						if (result.magnet) selectedId = await addMagnet(result.magnet);
+						else if (result.torrent) selectedId = await addTorrentData(result.torrent);
+						else throw new Error('No download is available for this release.');
+					} else throw new Error('No download is available for this release.');
+				} else selectedId = await addMagnet(input);
+				torrentInput = ''; pendingRelease = null; addOpen = false;
+			} catch (error) { addError = errorMessage(error); throw error; }
+		});
 	}
 
 	async function addFromFile() {
+		if (mobilePreview && downloadTarget === 'phone') return;
 		try {
 			const path = await chooseTorrentFile();
-			if (path) await act(async () => { selectedId = await addTorrentFile(path); addOpen = false; });
+			if (path) await act(async () => { selectedId = await addTorrentFile(path); pendingRelease = null; addOpen = false; });
 		} catch (error) { loadError = errorMessage(error); }
 	}
 
 	function removeSelected() {
 		if (!selected) return;
+		const id = selected.infoHash;
 		if (window.confirm(`Remove “${selected.name}” from the queue? Downloaded files will be kept.`))
-			void act(() => removeTorrent(selected.infoHash));
+			void act(() => removeTorrent(id));
 	}
 </script>
 
@@ -134,8 +174,8 @@
 					<button class="quiet-button" type="button" aria-expanded={limitsOpen} onclick={() => { limitsOpen = !limitsOpen; queueOpen = false; }}><Icon name="settings" size={16} /> Limits</button>
 					{#if limitsOpen}
 						<div class="action-menu limits-menu" role="group" aria-label="Speed limits">
-							<label>Download <select bind:value={downloadLimit} onchange={applyLimits}><option>Unlimited</option><option>20 MB/s</option><option>10 MB/s</option><option>5 MB/s</option></select></label>
-							<label>Upload <select bind:value={uploadLimit} onchange={applyLimits}><option>Unlimited</option><option>5 MB/s</option><option>2 MB/s</option><option>1 MB/s</option></select></label>
+							<div>Download <AppSelect bind:value={downloadLimit} label="Download limit" options={[{value:"Unlimited",label:"Unlimited"},{value:"20 MB/s",label:"20 MB/s"},{value:"10 MB/s",label:"10 MB/s"},{value:"5 MB/s",label:"5 MB/s"}]} onchange={applyLimits} /></div>
+							<div>Upload <AppSelect bind:value={uploadLimit} label="Upload limit" options={[{value:"Unlimited",label:"Unlimited"},{value:"5 MB/s",label:"5 MB/s"},{value:"2 MB/s",label:"2 MB/s"},{value:"1 MB/s",label:"1 MB/s"}]} onchange={applyLimits} /></div>
 						</div>
 					{/if}
 				</div>
@@ -162,7 +202,7 @@
 				</div>
 				{#if selected}
 					<div class="selection-bar">
-						<strong title={selected.name}>{selected.name}</strong>
+						<strong >{selected.name}</strong>
 						<div class="selection-actions">
 							<button type="button" disabled={busy} onclick={() => setStatus(selected)}><Icon name={selected.status === 'Paused' ? 'play' : 'pause'} size={15} />{selected.status === 'Paused' ? 'Resume' : 'Pause'}</button>
 							<button type="button" aria-expanded={detailsOpen} onclick={() => (detailsOpen = !detailsOpen)}>Details <Icon name="chevron-down" size={13} /></button>
@@ -178,11 +218,11 @@
 								<div><dt>Uploaded</dt><dd>{formatBytes(selected.uploadedBytes)}</dd></div>
 								<div><dt>Ratio</dt><dd>{selected.downloadedBytes > 0 ? (selected.uploadedBytes / selected.downloadedBytes).toFixed(2) : '—'}</dd></div>
 							</dl>
-							{#if downloadDirectory}<p title={downloadDirectory}>Save location <span>{downloadDirectory}</span></p>{/if}
+							{#if downloadDirectory}<p >Save location <span>{downloadDirectory}</span></p>{/if}
 						</div>
 					{/if}
 				{/if}
-				<div class="list-scroll">
+				<div class="list-scroll" class:list-scroll--empty={visibleTransfers.length === 0} data-lenis-prevent>
 					<div class="table-head"><span>Name</span><span>Size</span><span>Progress</span><span>Down</span><span>Up</span><span>ETA</span></div>
 					{#each visibleTransfers as transfer (transfer.infoHash)}
 						<button class="transfer-row" class:selected={selectedId === transfer.infoHash} type="button" onclick={() => (selectedId = transfer.infoHash)} aria-label={`View ${transfer.name} details`}>
@@ -208,17 +248,30 @@
 	<div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) addOpen = false; }}>
 		<form class="add-modal" aria-label="Add torrent" onsubmit={(event) => { event.preventDefault(); addTorrent(); }}>
 			<header><h2>Add torrent</h2><button type="button" aria-label="Close" onclick={() => (addOpen = false)}><Icon name="close" size={18} /></button></header>
-			<label>Magnet link<input bind:value={torrentInput} placeholder="Paste a magnet link" /></label>
-			<div class="modal-actions"><button type="button" onclick={() => void addFromFile()}>Choose .torrent file</button><button type="button" onclick={() => (addOpen = false)}>Cancel</button><button type="submit" disabled={!torrentInput.trim() || busy}>Add to queue</button></div>
+			{#if mobilePreview}
+				<div class="download-destination">
+					<span>Download to</span>
+					<AppSelect bind:value={downloadTarget} label="Download destination" options={[{value:'pc',label:'Computer'},{value:'phone',label:'This phone'}]} />
+					{#if downloadTarget === 'phone'}
+						<div class="destination-notice"><Icon name="info" size={18} /><p>This download stays on your phone. It won’t be copied to your computer or available through your media server.</p></div>
+						<p class="destination-preview">Phone downloads aren’t available in this preview yet.</p>
+					{:else}<p class="destination-preview">The file will be saved on your computer and available through your media server.</p>{/if}
+				</div>
+			{/if}
+			{#if pendingRelease}<div class="selected-release"><Icon name="download" size={18} /><span>{pendingRelease.name}</span></div>
+			{:else}<label>Magnet link<input bind:value={torrentInput} placeholder="Paste a magnet link" /></label>{/if}
+			{#if addError}<p class="destination-preview" role="alert">{addError}</p>{/if}
+			<div class="modal-actions">{#if !pendingRelease}<button type="button" disabled={busy || (mobilePreview && downloadTarget === 'phone')} onclick={() => void addFromFile()}>Choose .torrent file</button>{/if}<button type="button" onclick={() => (addOpen = false)}>Cancel</button><button type="submit" disabled={(!torrentInput.trim() && !pendingRelease) || busy || (mobilePreview && downloadTarget === 'phone')}>{busy ? 'Adding…' : 'Add to queue'}</button></div>
 		</form>
 	</div>
 {/if}
 
 <style>
-	.torrent-surface { min-height: 100vh; min-height: 100dvh; background: #101419; }
+	.torrent-surface { height: 100vh; height: 100dvh; overflow: hidden; background: #101419; }
 	:global(html[data-runtime='desktop']) .torrent-surface { background: var(--acrylic-content-tint); }
 	:global(html[data-runtime='desktop'] .torrent-surface[data-native-backdrop='unavailable']) { background: var(--acrylic-content-fallback); }
-	.torrent-page { max-width: var(--content-width); min-height: 100vh; min-height: 100dvh; margin: 0 auto; padding: 42px var(--content-gutter) 76px; color: var(--text-soft); }
+	.torrent-page { display: flex; flex-direction: column; max-width: var(--content-width); height: 100%; min-height: 0; margin: 0 auto; padding: 42px var(--content-gutter) 22px; color: var(--text-soft); }
+	.torrent-page > :not(.content-grid) { flex-shrink: 0; }
 	.page-header { display: flex; align-items: end; justify-content: space-between; gap: 28px; min-height: 58px; }
 	h1 { margin: 0; color: var(--text-strong); font-family: var(--font-display); font-size: clamp(2.35rem, 4vw, 3.7rem); font-weight: 650; letter-spacing: -0.065em; line-height: .98; }
 	.header-actions { display: flex; align-items: center; gap: 9px; padding-bottom: 3px; }
@@ -235,8 +288,7 @@
 	.action-menu button:disabled { opacity: .35; cursor: default; }
 	.menu-divider { height: 1px; margin: 3px 0; background: var(--line-subtle); }
 	.limits-menu { width: 220px; padding: 12px; gap: 11px; }
-	.limits-menu label { display: grid; gap: 5px; color: var(--text-muted); font-size: .68rem; }
-	.limits-menu select { min-height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--text-soft); background: #202931; }
+	.limits-menu > div { display: grid; gap: 5px; color: var(--text-muted); font-size: .68rem; }
 	.overview { display: flex; align-items: center; flex-wrap: wrap; gap: 16px 30px; margin: 29px 0 22px; padding: 16px 0; border-top: 1px solid var(--line-subtle); border-bottom: 1px solid var(--line-subtle); }
 	.summary-rate { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: .72rem; }
 	.summary-rate strong { margin-left: 5px; color: var(--text-strong); font-size: .8rem; font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -244,8 +296,9 @@
 	.summary-activity span { margin: 0 8px; color: var(--text-dim); }
 	.engine-error { margin: -4px 0 18px; padding: 12px 15px; border: 1px solid rgba(228, 156, 156, .4); border-radius: 10px; color: #ffcbcb; background: rgba(115, 33, 33, .16); font-size: .72rem; }
 	.engine-error button { margin-left: 10px; border: 0; color: #fff; background: transparent; text-decoration: underline; cursor: pointer; }
-	.content-grid { min-width: 0; }
-	.transfers-panel { overflow: hidden; border: 1px solid var(--material-border); border-radius: 17px; corner-shape: squircle; background: linear-gradient(150deg, rgba(30, 39, 48, .67), rgba(15, 21, 28, .74)); box-shadow: inset 0 1px rgba(255,255,255,.035); }
+	.content-grid { display: flex; flex: 1; min-width: 0; min-height: 0; }
+	.transfers-panel { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--material-border); border-radius: 17px; corner-shape: squircle; background: linear-gradient(150deg, rgba(30, 39, 48, .67), rgba(15, 21, 28, .74)); box-shadow: inset 0 1px rgba(255,255,255,.035); }
+	.transfers-panel > :not(.list-scroll) { flex-shrink: 0; }
 	.toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 18px 20px; }
 	.selection-bar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 11px 20px; border-top: 1px solid var(--line-subtle); background: rgba(158,198,214,.045); }
 	.selection-bar > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; font-weight: 600; }
@@ -265,7 +318,16 @@
 	.search { display: flex; align-items: center; gap: 7px; width: 175px; min-height: 31px; padding: 0 9px; border: 1px solid var(--line-subtle); border-radius: 8px; color: var(--text-muted); background: rgba(6, 10, 15, .22); }
 	.search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--text-strong); background: none; font-size: .65rem; }
 	.search input::placeholder { color: var(--text-dim); }
-	.list-scroll { min-width: 0; overflow-x: auto; }
+	.list-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+	.list-scroll--empty { display:flex; flex-direction:column; }
+	.list-scroll--empty .table-head { flex-shrink:0; }
+	.list-scroll--empty .no-results { flex:1; min-height:220px; }
+	:global(html:not([data-mobile-preview='true'])) .page-header > h1 { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+	:global(html:not([data-mobile-preview='true'])) .page-header { justify-content:flex-start; align-items:flex-start; min-height:0; }
+	:global(html:not([data-mobile-preview='true'])) .header-actions { justify-content:flex-start; align-items:center; padding-bottom:0; }
+	:global(html:not([data-mobile-preview='true'])) .header-actions .menu-anchor { display:flex; }
+	:global(html:not([data-mobile-preview='true'])) .header-actions .add-button { order:-1; }
+	:global(html:not([data-mobile-preview='true'])) .overview { margin-block:22px; }
 	.table-head, .transfer-row { display: grid; grid-template-columns: minmax(230px, 2.1fr) minmax(60px,.55fr) minmax(108px,.8fr) minmax(66px,.64fr) minmax(66px,.64fr) minmax(45px,.4fr); align-items: center; gap: 10px; min-width: 670px; }
 	.table-head { padding: 10px 20px; border-top: 1px solid var(--line-subtle); border-bottom: 1px solid var(--line-subtle); color: var(--text-dim); background: rgba(6, 10, 15, .16); font-size: .57rem; font-weight: 730; letter-spacing: .075em; text-transform: uppercase; }
 	.transfer-row { width: 100%; min-height: 73px; padding: 10px 20px; border: 0; border-bottom: 1px solid var(--line-subtle); color: var(--text-soft); background: transparent; text-align: left; cursor: pointer; }
@@ -292,6 +354,14 @@
 	.no-results p { margin: 8px 0 20px; }
 	.modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(0, 3, 6, .7); backdrop-filter: blur(10px); }
 	.add-modal { width: min(420px, 100%); padding: 22px; border: 1px solid var(--line-strong); border-radius: 18px; background: #1b242d; box-shadow: 0 28px 90px rgba(0,0,0,.5); }
+	.download-destination { display:grid; gap:10px; margin-top:20px; color:var(--text-muted); font-size:.72rem; }
+	.selected-release { display:flex; align-items:flex-start; gap:10px; margin-block:20px 12px; padding:12px; border:1px solid var(--line-subtle); border-radius:10px; color:var(--text-soft); font-size:.74rem; line-height:1.5; overflow-wrap:anywhere; }
+	.selected-release :global(svg) { flex-shrink:0; margin-top:2px; }
+	.destination-notice { display:flex; align-items:flex-start; gap:10px; padding:12px; border:1px solid rgba(158,198,214,.18); border-radius:10px; background:rgba(158,198,214,.06); color:var(--text-soft); }
+	.destination-notice :global(svg) { flex-shrink:0; margin-top:2px; }
+	.destination-notice p, .destination-preview { margin:0; line-height:1.55; }
+	:global(html[data-mobile-preview='true']) .modal-actions { flex-wrap:wrap; }
+	:global(html[data-mobile-preview='true']) .modal-actions button { min-height:44px; }
 	.add-modal header { display: flex; align-items: center; justify-content: space-between; }
 	.add-modal h2 { margin: 0; color: var(--text-strong); font-size: 1.15rem; }
 	.add-modal header button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
@@ -301,7 +371,32 @@
 	.modal-actions button { min-height: 36px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: rgba(255,255,255,.07); cursor: pointer; font-size: .7rem; }
 	.modal-actions button:last-child { color: #11171c; background: #e8eef1; }
 	.modal-actions button:disabled { opacity: .4; cursor: default; }
-	@media (max-width: 850px) { .page-header { align-items: start; flex-direction: column; gap: 18px; } .header-actions { flex-wrap: wrap; } .overview { margin-top: 24px; } .toolbar { align-items: stretch; flex-direction: column; } .search { width: 100%; } }
+	@media (min-width: 761px) and (max-width: 1280px) {
+		.torrent-page { padding-inline: 28px; }
+		.page-header { align-items: center; gap: 18px; }
+		.header-actions { flex-shrink: 0; gap: 7px; }
+		.quiet-button, .add-button { gap: 6px; padding-inline: 10px; }
+		.overview { gap: 12px 20px; }
+		.toolbar { padding: 14px 16px; gap: 10px; }
+		.filters { flex: 1; min-width: 0; }
+		.filters button { flex-shrink: 0; }
+		.search { flex: 0 0 158px; width: 158px; }
+		.table-head, .transfer-row { grid-template-columns: minmax(180px, 1.8fr) 58px minmax(88px,.8fr) 65px 65px 43px; gap: 8px; min-width: 550px; padding-inline: 16px; }
+		.selection-bar { flex-wrap: wrap; gap: 9px 14px; padding-inline: 16px; }
+		.selection-bar > strong { flex: 1 1 200px; }
+		.selection-actions { margin-left: auto; }
+		.transfer-details { padding: 14px 16px; }
+	}
+	@media (min-width: 761px) and (max-height: 720px) {
+		.torrent-page { padding-top: 28px; }
+		.page-header { min-height: 48px; }
+		.overview { margin: 18px 0; padding-block: 12px; }
+		:global(html:not([data-mobile-preview='true'])) .overview { margin-block:18px; }
+		.toolbar { padding-block: 12px; }
+		.transfer-details { padding-block: 12px; }
+		.transfer-details p { margin-top: 10px; }
+	}
+	@media (max-width: 850px) { .page-header { align-items: start; flex-direction: column; gap: 18px; } .header-actions { flex-wrap: wrap; } .overview { margin-top: 24px; } .toolbar { align-items: stretch; flex-direction: column; } .search { width: 100%; flex-basis: auto; } }
 	@media (max-width: 560px) { .torrent-page { padding: 32px 18px 48px; } .summary-activity { width: 100%; margin-left: 0; } .selection-bar { align-items: start; flex-direction: column; gap: 10px; } .selection-bar > strong { max-width: 100%; } .selection-actions { flex-wrap: wrap; } .transfer-details dl { grid-template-columns: repeat(2,minmax(0,1fr)); } .filters { max-width: 100%; } }
 	@media (prefers-reduced-transparency: reduce) { .torrent-surface { background: #0c0f13; } }
 </style>

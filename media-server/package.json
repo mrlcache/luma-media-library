@@ -1,0 +1,10 @@
+{
+  "name": "luma-server-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-2.0-or-later",
+  "engines": { "node": ">=24" },
+  "scripts": { "start": "node src/main.mjs", "dev": "node --watch-path=src --watch-path=web src/main.mjs --start --dev", "test": "node --test test/*.test.mjs" },
+  "dependencies": { "fast-xml-parser": "5.11.2" }
+}

@@ -36,8 +36,10 @@ export type LocalEpisodeFile = {
 };
 
 export type LocalTitleDetail = {
+	tmdbId?: number | null;
 	media: CatalogMedia;
 	files: LocalEpisodeFile[];
+	watchedBefore?: { season: number; episode: number } | null;
 };
 
 export type ContinueWatchingItem = {
@@ -89,6 +91,8 @@ export type Episode = {
 };
 
 export type MediaItem = {
+	installed?: boolean;
+	tmdbId?: number;
 	id: string;
 	title: string;
 	kind: MediaKind;

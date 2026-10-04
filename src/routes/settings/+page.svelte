@@ -1,7 +1,9 @@
 <script lang="ts">
+	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import SteppedRange from '$lib/components/SteppedRange.svelte';
+	import { isMobilePreview } from '$lib/platform/mobile-preview';
 	import {
 		chooseMediaFolder,
 		isDesktopRuntime,
@@ -15,15 +17,19 @@
 	import { readAppearancePreferences, updateAppearancePreference } from '$lib/platform/appearance-preferences';
 	import { readPlaybackPreferences, updatePlaybackPreference, subtitleFontOptions, type PlaybackPreferences, type SubtitleFont } from '$lib/platform/playback-preferences';
 
-	let reduceTransparency = $state(false);
-	let reduceMotion = $state(false);
-	let autoplay = $state(true);
-	let audioLanguage = $state<PlaybackPreferences['audioLanguage']>('system');
-	let subtitleLanguage = $state<PlaybackPreferences['subtitleLanguage']>('auto');
-	let subtitleFont = $state<SubtitleFont>('Manrope');
-	let subtitleSize = $state(100);
-	let subtitlePosition = $state(0);
-	let desktopAvailable = $state(false);
+	const initialAppearance = readAppearancePreferences();
+	const mobilePreview = isMobilePreview();
+	const initialPlayback = readPlaybackPreferences();
+	let reduceTransparency = $state(initialAppearance.reduceTransparency);
+	let reduceMotion = $state(initialAppearance.reduceMotion);
+	let autoplay = $state(initialPlayback.autoplayNextEpisode);
+	let markPrevious = $state(initialPlayback.markPreviousEpisodesWatched);
+	let audioLanguage = $state<PlaybackPreferences['audioLanguage']>(initialPlayback.audioLanguage);
+	let subtitleLanguage = $state<PlaybackPreferences['subtitleLanguage']>(initialPlayback.subtitleLanguage);
+	let subtitleFont = $state<SubtitleFont>(initialPlayback.subtitleFont);
+	let subtitleSize = $state(initialPlayback.subtitleSize);
+	let subtitlePosition = $state(initialPlayback.subtitlePosition / 1.5);
+	let desktopAvailable = $state(isDesktopRuntime());
 	let libraryStatus = $state<LibraryStatus | null>(null);
 	let loadingLibrary = $state(true);
 	let scanning = $state(false);
@@ -31,16 +37,6 @@
 	let appVersion = $state('');
 
 	onMount(() => {
-		const appearance = readAppearancePreferences();
-		reduceTransparency = appearance.reduceTransparency;
-		reduceMotion = appearance.reduceMotion;
-		const playback = readPlaybackPreferences();
-		autoplay = playback.autoplayNextEpisode;
-		audioLanguage = playback.audioLanguage;
-		subtitleLanguage = playback.subtitleLanguage;
-		subtitleFont = playback.subtitleFont;
-		subtitleSize = playback.subtitleSize;
-		subtitlePosition = playback.subtitlePosition / 1.5;
 		void refreshLibraryStatus();
 		void readDesktopBootstrap().then((bootstrap) => { appVersion = bootstrap?.version ?? ''; }).catch(() => {});
 		const acrylicRequester = Symbol('Settings surface');
@@ -121,16 +117,14 @@
 					<span class="setting-copy"><strong>Autoplay next episode</strong><small>Continue a series when an episode ends.</small></span>
 					<input class="toggle" type="checkbox" bind:checked={autoplay} onchange={(event) => updatePlaybackPreference('autoplayNextEpisode', (event.currentTarget as HTMLInputElement).checked)} />
 				</label>
-				<div class="setting-row setting-row--static">
-					<span class="setting-copy"><strong>Default quality</strong><small>Play local media at its original quality.</small></span>
-					<span class="setting-value">Original file</span>
-				</div>
 				<label class="setting-row">
-					<span class="setting-copy"><strong>Preferred audio</strong><small>Default language when available.</small></span>
-					<select class="setting-select" bind:value={audioLanguage} onchange={(event) => updatePlaybackPreference('audioLanguage', (event.currentTarget as HTMLSelectElement).value as PlaybackPreferences['audioLanguage'])} aria-label="Preferred audio language">
-						<option value="system">System default</option><option value="en">English</option><option value="pt">Portuguese</option><option value="ja">Japanese</option>
-					</select>
+					<span class="setting-copy"><strong>Mark earlier episodes as watched</strong><small>Starting an episode marks all previous episodes in the series as watched.</small></span>
+					<input class="toggle" type="checkbox" bind:checked={markPrevious} onchange={(event) => updatePlaybackPreference('markPreviousEpisodesWatched', (event.currentTarget as HTMLInputElement).checked)} />
 				</label>
+				<div class="setting-row">
+					<span class="setting-copy"><strong>Preferred audio</strong><small>Default language when available.</small></span>
+					<div class="setting-picker"><AppSelect bind:value={audioLanguage} label="Preferred audio language" options={[{value:"system",label:"System default"},{value:"en",label:"English"},{value:"pt",label:"Portuguese"},{value:"ja",label:"Japanese"}]} onchange={(value) => updatePlaybackPreference('audioLanguage', value)} /></div>
+				</div>
 			</div>
 		</section>
 
@@ -149,18 +143,14 @@
 					</div>
 				</aside>
 				<div class="settings-list subtitle-controls">
-				<label class="setting-row">
+				<div class="setting-row">
 					<span class="setting-copy"><strong>Language</strong><small>Default subtitle track.</small></span>
-					<select class="setting-select" bind:value={subtitleLanguage} onchange={(event) => updatePlaybackPreference('subtitleLanguage', (event.currentTarget as HTMLSelectElement).value as PlaybackPreferences['subtitleLanguage'])} aria-label="Preferred subtitle language">
-						<option value="auto">Automatic</option><option value="off">Off</option><option value="en">English</option><option value="pt">Portuguese</option><option value="ja">Japanese</option>
-					</select>
-				</label>
-				<label class="setting-row">
+					<div class="setting-picker"><AppSelect bind:value={subtitleLanguage} label="Preferred subtitle language" options={[{value:"auto",label:"Automatic"},{value:"off",label:"Off"},{value:"en",label:"English"},{value:"pt",label:"Portuguese"},{value:"ja",label:"Japanese"}]} onchange={(value) => updatePlaybackPreference('subtitleLanguage', value)} /></div>
+				</div>
+				<div class="setting-row">
 					<span class="setting-copy"><strong>Font</strong></span>
-					<select class="setting-select" bind:value={subtitleFont} onchange={(event) => updatePlaybackPreference('subtitleFont', (event.currentTarget as HTMLSelectElement).value as SubtitleFont)} aria-label="Subtitle font">
-						{#each subtitleFontOptions as font (font.value)}<option value={font.value}>{font.label}</option>{/each}
-					</select>
-				</label>
+					<div class="setting-picker"><AppSelect bind:value={subtitleFont} label="Subtitle font" options={subtitleFontOptions} onchange={(value) => updatePlaybackPreference('subtitleFont', value)} /></div>
+				</div>
 				<label class="setting-row setting-row--slider">
 					<span class="setting-copy"><strong>Size</strong><small>{subtitleSize}%</small></span>
 					<span class="setting-range-control">
@@ -183,10 +173,10 @@
 				<p>Keep the interface quiet and readable.</p>
 			</div>
 			<div class="settings-list">
-				<label class="setting-row">
+				{#if !mobilePreview}<label class="setting-row">
 					<span class="setting-copy"><strong>Reduce transparency</strong><small>Use solid surfaces instead of translucent overlays.</small></span>
 					<input class="toggle" type="checkbox" bind:checked={reduceTransparency} onchange={(event) => updateAppearancePreference('reduceTransparency', event.currentTarget.checked)} />
-				</label>
+				</label>{/if}
 				<label class="setting-row">
 					<span class="setting-copy"><strong>Reduce motion</strong><small>Minimize non-essential transitions and movement.</small></span>
 					<input class="toggle" type="checkbox" bind:checked={reduceMotion} onchange={(event) => updateAppearancePreference('reduceMotion', event.currentTarget.checked)} />
@@ -214,7 +204,7 @@
 					<button class="settings-action" type="button" disabled={!desktopAvailable || loadingLibrary || scanning} onclick={libraryStatus?.rootCount ? refreshLibrary : addOrScanFolder}>
 						<Icon name="refresh" size={15} />{scanning ? 'Refreshing library…' : libraryStatus?.rootCount ? 'Refresh library' : 'Choose folder'}
 					</button>
-					{#if libraryStatus?.rootCount}<button class="settings-action settings-action--secondary" type="button" disabled={!desktopAvailable || loadingLibrary || scanning} onclick={addOrScanFolder}><Icon name="folder" size={15} />Add folder</button>{/if}
+					{#if !mobilePreview && libraryStatus?.rootCount}<button class="settings-action settings-action--secondary" type="button" disabled={!desktopAvailable || loadingLibrary || scanning} onclick={addOrScanFolder}><Icon name="folder" size={15} />Add folder</button>{/if}
 					{#if libraryFeedback}<p class="library-feedback" role="status" aria-live="polite">{libraryFeedback}</p>{/if}
 				</div>
 			</div>
@@ -224,6 +214,8 @@
 </div>
 
 <style>
+	.setting-picker { flex:0 0 155px; min-width:0; }
+	@media(max-width:600px) { .setting-picker { flex-basis:138px; } }
 	.settings-surface { min-height: 100vh; background: #101419; }
 	:global(html[data-runtime='desktop']) .settings-surface { background: var(--acrylic-content-tint); }
 	:global(html[data-runtime='desktop'] .settings-surface[data-native-backdrop='unavailable']) { background: var(--acrylic-content-fallback); }
@@ -249,13 +241,9 @@
 	.settings-section__heading > p { max-width: 170px; margin: 7px 0 0; color: var(--text-muted); font-size: 0.7rem; line-height: 1.5; }
 	.settings-list { border-top: 1px solid var(--line-subtle); }
 	.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 74px; padding: 16px 0; border-bottom: 1px solid var(--line-subtle); cursor: pointer; }
-	.setting-copy { display: grid; gap: 4px; }
+	.setting-copy { display: grid; min-width: 0; gap: 4px; }
 	.setting-row strong { color: var(--text-soft); font-size: 0.78rem; font-weight: 600; }
 	.setting-row small { color: var(--text-muted); font-size: 0.68rem; line-height: 1.4; }
-	.setting-row--static { cursor: default; }
-	.setting-value { flex: 0 0 auto; color: var(--text-muted); font-size: 0.7rem; }
-	.setting-select { flex: 0 0 155px; min-width: 0; height: 34px; padding: 0 31px 0 9px; appearance: none; border: 1px solid var(--line-subtle); border-radius: var(--radius-sm); color: var(--text-soft); background-color: var(--surface-2); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='m4 6 4 4 4-4' stroke='%23ccd2d7' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; background-size: 14px; font: inherit; font-size: 0.7rem; }
-	.setting-select option { background: var(--surface-2); }
 	.setting-row--slider { cursor: default; }
 	.toggle { position: relative; flex: 0 0 auto; width: 36px; height: 21px; appearance: none; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-3); cursor: pointer; transition: background 160ms ease, border-color 160ms ease; }
 	.toggle::after { position: absolute; top: 3px; left: 3px; width: 13px; height: 13px; border-radius: 50%; background: var(--text-muted); content: ''; transition: transform 160ms ease, background 160ms ease; }
@@ -273,6 +261,20 @@
 	.settings-action--secondary { color: var(--text-muted); }
 	.settings-action:disabled { color: var(--text-dim); cursor: not-allowed; opacity: 0.6; }
 	.library-feedback { flex-basis: 100%; margin: 1px 0 0; color: var(--text-muted); font-size: 0.68rem; line-height: 1.5; }
+	@media (min-width: 761px) and (max-width: 1180px) {
+		.settings-page { padding: 40px 32px 64px; }
+		.settings-layout { margin-top: 34px; }
+		.settings-section { grid-template-columns: minmax(0, 1fr); gap: 16px; padding-block: 24px; }
+		.settings-section__heading > p { max-width: none; }
+		.subtitle-workspace { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 18px; }
+		.subtitle-controls .setting-row { gap: 12px; padding-block: 12px; }
+		.subtitle-controls .setting-picker { flex-basis: 140px; }
+		.subtitle-controls .setting-range-control { flex-basis: 130px; }
+	}
+	@media (min-width: 761px) and (max-height: 720px) {
+		.settings-page { padding-top: 32px; }
+		.settings-layout { margin-top: 30px; }
+	}
 	@media (max-width: 760px) {
 		.settings-page { padding: 42px 18px 70px; }
 		.settings-heading h1 { font-size: 2rem; }
@@ -286,9 +288,11 @@
 		.setting-row { gap: 15px; min-height: 76px; padding: 16px 0; }
 		.setting-copy { min-width: 0; }
 		.setting-row small { max-width: 230px; }
-		.setting-select { flex-basis: 138px; }
 		.setting-range-control { flex-basis: 120px; }
 	}
+
+	:global(html:not([data-mobile-preview='true'])) .settings-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+	:global(html:not([data-mobile-preview='true'])) .settings-layout { margin-top: 0; }
 	@media (prefers-reduced-motion: reduce) {
 		.toggle, .toggle::after, .settings-action, .subtitle-preview-card__caption { transition: none; }
 	}

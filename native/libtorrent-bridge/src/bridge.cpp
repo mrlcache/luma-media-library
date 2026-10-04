@@ -216,6 +216,35 @@ int32_t mt_list(mt_engine* engine, mt_transfer* out, int32_t capacity,
     }, error, error_capacity);
 }
 
+int32_t mt_files(mt_engine* engine, char const* info_hash, mt_file* out,
+    int32_t capacity, char* error, int32_t error_capacity) {
+    return guarded([&] {
+        if (capacity < 0 || (capacity > 0 && !out)) throw std::invalid_argument("Invalid file buffer.");
+        auto const handle = find_torrent(require_engine(engine), info_hash);
+        auto const info = handle.torrent_file();
+        if (!info) return int32_t(0);
+        auto const& files = info->layout();
+        auto const renames = handle.get_renamed_files();
+        lt::filenames const names(files, renames);
+        auto const progress = handle.file_progress();
+        auto const save_path = fs::u8path(handle.status().save_path);
+        int32_t count = 0;
+        for (auto const index : files.file_range()) {
+            if (files.pad_file_at(index)) continue;
+            if (count < capacity) {
+                auto const path = (save_path / fs::u8path(names.file_path(index))).u8string();
+                if (path.size() >= sizeof(out[count].path)) throw std::runtime_error("Torrent file path is too long.");
+                std::memset(&out[count], 0, sizeof(mt_file));
+                copy_text(out[count].path, path);
+                out[count].size_bytes = files.file_size(index);
+                out[count].completed_bytes = progress[static_cast<std::size_t>(static_cast<int>(index))];
+            }
+            ++count;
+        }
+        return count;
+    }, error, error_capacity);
+}
+
 int32_t mt_set_paused(mt_engine* engine, char const* info_hash, int32_t paused,
     char* error, int32_t error_capacity) {
     return guarded([&] {

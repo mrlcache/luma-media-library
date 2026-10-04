@@ -87,7 +87,7 @@
 	{#if thumbnail}
 		<img src={thumbnail} alt={`Preview for ${label}`} width="480" height="270" loading="lazy" decoding="async" onerror={handleImageError} />
 	{:else if checked}
-		<span class="episode-thumb__fallback" title="A preview frame is not available for this video"><Icon name="film" size={20} /></span>
+		<span class="episode-thumb__fallback" ><Icon name="film" size={20} /></span>
 	{:else}
 		<span class="episode-thumb__fallback episode-thumb__fallback--loading" aria-hidden="true"><Icon name="film" size={20} /></span>
 	{/if}

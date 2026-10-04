@@ -11,6 +11,7 @@ export type SubtitleFont = (typeof subtitleFontOptions)[number]['value'];
 
 export type PlaybackPreferences = {
 	autoplayNextEpisode: boolean;
+	markPreviousEpisodesWatched: boolean;
 	audioLanguage: PreferredTrackLanguage;
 	subtitleLanguage: PreferredSubtitleLanguage;
 	subtitleFont: SubtitleFont;
@@ -21,6 +22,7 @@ export type PlaybackPreferences = {
 const storageKey = 'media-library.playback-preferences';
 const defaults: PlaybackPreferences = {
 	autoplayNextEpisode: true,
+	markPreviousEpisodesWatched: false,
 	audioLanguage: 'system',
 	subtitleLanguage: 'auto',
 	subtitleFont: 'Manrope',
@@ -33,6 +35,7 @@ export function readPlaybackPreferences(): PlaybackPreferences {
 		const saved = JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Partial<PlaybackPreferences>;
 		return {
 			autoplayNextEpisode: typeof saved.autoplayNextEpisode === 'boolean' ? saved.autoplayNextEpisode : defaults.autoplayNextEpisode,
+			markPreviousEpisodesWatched: typeof saved.markPreviousEpisodesWatched === 'boolean' ? saved.markPreviousEpisodesWatched : defaults.markPreviousEpisodesWatched,
 			audioLanguage: isAudioLanguage(saved.audioLanguage) ? saved.audioLanguage : defaults.audioLanguage,
 			subtitleLanguage: isSubtitleLanguage(saved.subtitleLanguage) ? saved.subtitleLanguage : defaults.subtitleLanguage,
 			subtitleFont: isSubtitleFont(saved.subtitleFont) ? saved.subtitleFont : defaults.subtitleFont,

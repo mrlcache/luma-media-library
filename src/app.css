@@ -117,13 +117,7 @@ select { -webkit-tap-highlight-color: transparent; }
 
 button { color: inherit; }
 
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible {
-	outline: 2px solid var(--accent);
-	outline-offset: 3px;
-}
+:focus, :focus-visible { outline: none !important; }
 
 html[data-input-modality='pointer'] :focus-visible {
 	outline: none;
