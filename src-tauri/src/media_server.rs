@@ -9,14 +9,30 @@ const ADMIN_ORIGIN: &str = "http://127.0.0.1:8940";
 const STATUS_URL: &str = "http://127.0.0.1:8940/api/status";
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 
+// Windows resource paths may use the verbatim prefix. Node's entry-point
+// resolver rejects that prefix, although Rust accepts it for filesystem access.
+fn subprocess_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 #[derive(Clone)]
 pub struct MediaServerState(Arc<Mutex<Supervisor>>);
 
 impl MediaServerState {
     pub fn new(app_data_dir: PathBuf, resource_dir: PathBuf) -> Self {
         Self(Arc::new(Mutex::new(Supervisor {
-            app_data_dir,
-            resource_dir,
+            app_data_dir: subprocess_path(app_data_dir),
+            resource_dir: subprocess_path(resource_dir),
             child: None,
             client: reqwest::blocking::Client::builder()
                 .no_proxy()

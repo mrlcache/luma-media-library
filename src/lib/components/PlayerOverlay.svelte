@@ -241,7 +241,7 @@
 		controlsVisible = true;
 		if (timeoutId) clearTimeout(timeoutId);
 		timeoutId = setTimeout(() => {
-			if (isPlaying && !subtitlePanelOpen && !playerMenuOpen) controlsVisible = false;
+			if (isPlaying && !subtitlePanelOpen && !playerMenuOpen && !speedMenuOpen) controlsVisible = false;
 		}, 2400);
 	}
 
@@ -792,8 +792,8 @@
 			onloadedmetadata={onLoadedMetadata}
 			onloadeddata={() => (mediaReady = true)}
 			ontimeupdate={onTimeUpdate}
-			onplay={() => { isPlaying = true; recordPlaybackStarted(); }}
-			onpause={() => { isPlaying = false; void persistProgress(); }}
+			onplay={() => { isPlaying = true; revealControls(); recordPlaybackStarted(); }}
+			onpause={() => { isPlaying = false; revealControls(); void persistProgress(); }}
 			onended={() => { void handlePlaybackEnded(); }}
 			onerror={onPlaybackError}
 		>
@@ -1177,7 +1177,8 @@
 	.player-overlay--mobile .player-now-playing strong { display: block; overflow: hidden; font-size: .9rem; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 	.player-overlay--mobile .player-now-playing > span { display: block; margin-bottom: 3px; font-size: .65rem; color: rgba(229,238,244,.55); }
 	.player-overlay--mobile .player-glass-button { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; background: rgba(27,37,47,.46); }
-	.player-overlay--mobile .player-control-deck { left: 0; right: 0; bottom: 0; padding: 64px 22px max(22px, env(safe-area-inset-bottom)); border: 0; border-radius: 0; background: linear-gradient(0deg,rgba(7,12,18,.98),rgba(7,12,18,.75) 65%,transparent); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+	.player-overlay--mobile .player-ui::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(0deg,rgba(7,12,18,.7),rgba(7,12,18,.2) 24%,transparent 48%); }
+	.player-overlay--mobile .player-control-deck { left: 0; right: 0; bottom: 0; padding: 64px 22px max(22px, env(safe-area-inset-bottom)); border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
 	.player-overlay--mobile .player-timeline { gap: 0; }
 	.player-overlay--mobile .player-timeline__meta { order: 2; font-size: .69rem; color: rgba(237,242,247,.68); }
 	.player-overlay--mobile .player-range { height: 36px; touch-action: none; }
