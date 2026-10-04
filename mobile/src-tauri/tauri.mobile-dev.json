@@ -1,0 +1,6 @@
+{
+  "build": {
+    "devUrl": "http://127.0.0.1:1422",
+    "beforeDevCommand": "node ../scripts/start-mobile-web.mjs"
+  }
+}

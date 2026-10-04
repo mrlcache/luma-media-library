@@ -1,0 +1,27 @@
+[package]
+name = "luma-mobile"
+version = "0.2.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+
+[lib]
+name = "luma_mobile_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "~2.11.0", features = ["protocol-asset"] }
+tauri-runtime = "=2.11.3"
+tauri-runtime-wry = "=2.11.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+base64 = "0.23"
+librqbit = { version = "9.0.1", default-features = false, features = ["rust-tls"] }
+
+[workspace]
+
+[profile.dev]
+debug = 0

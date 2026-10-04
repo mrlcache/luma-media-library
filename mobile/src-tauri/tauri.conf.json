@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Luma Mobile",
+  "version": "0.2.0",
+  "identifier": "app.luma.mobile.demo",
+  "build": {
+    "beforeBuildCommand": "node ../scripts/build-mobile-demo.mjs",
+    "frontendDist": "../../.artifacts/mobile-web",
+    "devUrl": "http://127.0.0.1:1420"
+  },
+  "app": {
+    "windows": [{"label":"main","title":"Luma","width":412,"height":820}],
+    "security": {"csp":"default-src 'self' customprotocol: asset:; script-src 'self' https://www.youtube.com; img-src 'self' data: https://image.tmdb.org https://static.tvmaze.com; media-src 'self' asset: http: https:; frame-src https://www.youtube-nocookie.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://api.tvmaze.com http: https:","assetProtocol":{"enable":true,"scope":["$APPDATA/Downloads/**"]}}
+  },
+  "bundle": {"active":true,"icon":["../../src-tauri/icons/icon.png"],"android":{"minSdkVersion":26}}
+}
