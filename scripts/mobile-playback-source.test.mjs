@@ -37,6 +37,12 @@ test('an absent Full Circle file reports the missing computer file without clear
   assert.deepEqual(f.calls.filter(([command])=>command==='resolve_media_file').map(([,args])=>args.mediaId),[11]);
   assert.equal(f.calls.some(([command])=>command==='save_playback_progress'),false);
 });
+test('Full Circle and The Haunting of Julia resolve by the same TMDB identity regardless of display title',async()=>{
+  const f=fixture(false,{title:'Full Circle',kind:'movie'});
+  const source=await f.resolveMediaFile(11,'The Haunting of Julia',undefined,101,'movie');
+  assert.equal(source.mediaId,11);assert.equal(source.path,'file-11.mp4');
+  assert.equal(f.calls.some(([command])=>command==='get_catalog_page'),false);
+});
 test('a stale ID for another episode in the same series recovers the requested episode',async()=>{
   const f=fixture();const resolved=await f.resolveMediaFile(11,'MobLand','S01E02 · Jigsaw Puzzle',101);
   assert.equal(resolved.mediaId,12);

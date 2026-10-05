@@ -6,6 +6,7 @@
 	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { bitratePresets, readTranscodePreferences, saveTranscodePreferences } from '$lib/platform/transcode-preferences';
 	import { playbackPosition, resumePlaybackPosition, reachedPlaybackEnd } from '$lib/platform/playback-timeline';
+	import { openCompatibleStream } from '$lib/platform/compatible-stream';
 	import { onMount, tick } from 'svelte';
 	import { dev } from '$app/environment';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
@@ -73,6 +74,7 @@
 	const bitrateOptions = $derived((bitratePresets[transcodeQuality] || []).map(value=>({value,label:`${value / 1_000_000} Mbps`})));
 	const mobileStreamSession = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,14)}`;
 	let mobileMetadataAbort: AbortController | undefined;
+	let compatibleStream: ReturnType<typeof openCompatibleStream> | undefined;
 	let sourceBitrate = $state(0);
 	const qualityOptions = [
 		{ value: 'auto', label: 'Automatic' },
@@ -709,11 +711,19 @@
 				sourceBitrate=Number(metadata.headers.get('X-Luma-Source-Bitrate')) || 0;
 			}
 			if(attempt!==mobileLoadAttempt||playerDisposed)return;
+			compatibleStream?.stop(); compatibleStream = undefined;
 			video.pause();video.removeAttribute('src');video.load();mediaReady=false;isPlaying=false;
 			activeTranscoding=requestedTranscoding;
 			mobilePendingResume=restoringResume;
 			transcodeOffset=activeTranscoding?position:0;resumePosition=activeTranscoding?0:position;mobilePendingSeek=activeTranscoding?null:position;
-			currentTime=position;video.src=url.toString();video.load();video.playbackRate=playbackRate;
+			currentTime=position;
+			if (activeTranscoding) {
+				compatibleStream = openCompatibleStream(video, url.toString(), Math.max(0, duration-position), error => {
+					if (attempt === mobileLoadAttempt && !playerDisposed) { isLoading = false; playbackError = error.message; }
+				});
+				video.load(); await compatibleStream.ready;
+			} else { video.src=url.toString();video.load(); }
+			video.playbackRate=playbackRate;
 			try {await video.play();} catch(error){if(error instanceof Error && error.name==='NotAllowedError'){isLoading=false;controlsVisible=true;}else throw error;}
 		}catch(error){if(attempt===mobileLoadAttempt&&!playerDisposed){isLoading=false;playbackError=error instanceof Error && error.name==='AbortError'?'Your computer took too long to prepare the stream. Try again.':error instanceof Error?error.message:String(error);}}
 		finally {clearTimeout(metadataTimeout);if(mobileMetadataAbort===controller)mobileMetadataAbort=undefined;}
@@ -721,7 +731,7 @@
 	async function retryMobilePlayback() {
 		try {
 			isLoading=true;playbackError='';
-			const source=await resolveMediaFile(Number(media.id),media.title,media.episodeLabel,media.tmdbId);
+			const source=await resolveMediaFile(Number(media.id),media.title,media.episodeLabel,media.tmdbId,media.kind);
 			if(playerDisposed)return;
 			if(source.mediaId)media={...media,id:String(source.mediaId)};
 			mobileSourceUrl=await localMediaUrl(source.path);
@@ -792,7 +802,7 @@
 			return () => { document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
 		}
 		void readPlayerLevels().then(levels=>{ if(levels && !playerDisposed){volume=Math.round(levels.volume); brightness=Math.round(levels.brightness);} }).catch(console.warn);
-		void resolveMediaFile(mediaId, media.title, media.episodeLabel, media.tmdbId)
+		void resolveMediaFile(mediaId, media.title, media.episodeLabel, media.tmdbId, media.kind)
 			.then(async (source) => {
 				if (playerDisposed) return;
 				if(source.mediaId && source.mediaId!==Number(media.id))media={...media,id:String(source.mediaId)};
@@ -828,6 +838,7 @@
 		return () => {
 			playerDisposed = true;
 			mobileMetadataAbort?.abort();
+			compatibleStream?.stop();
 			mobileLoadAttempt++;
 			resetPlayerLevels();
 			document.removeEventListener('fullscreenchange', handleFullscreenChange);

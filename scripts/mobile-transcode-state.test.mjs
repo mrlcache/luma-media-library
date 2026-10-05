@@ -10,11 +10,13 @@ const timelineExports={};new Function('exports',timeline)(timelineExports);
 function fixture(fetch) {
   const code = `
     let mobileLoadAttempt=0, mobileMetadataAbort, playbackError='', isLoading=false;
+    let compatibleStream;
     let transcoding=true, activeTranscoding=false, transcodeQuality='720p', transcodeBitrate=2500000;
     let mobileSourceUrl='http://localhost/api/v1/media/1?token=fixture', mobileStreamSession='fixture';
     let duration=0, sourceBitrate=0, playerDisposed=false, mediaReady=true, isPlaying=true;
     let transcodeOffset=0, resumePosition=0, mobilePendingSeek=null, mobilePendingResume=false, currentTime=0, playbackRate=1, controlsVisible=false;
     const video={src:'',pause(){},removeAttribute(){},load(){},async play(){}};
+    function openCompatibleStream(video,url){video.src=url;return {ready:Promise.resolve(),stop(){}};}
     ${loader}
     return {loadMobileStream, setRequested(value){transcoding=value;},
       state(){return {activeTranscoding,playbackError,src:video.src,transcodeOffset};}};
