@@ -16,6 +16,29 @@ import { Transcoder } from '../src/transcode.mjs';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 
+test('mobile seeks rebase both tracks precisely and retain the original duration',async t=>{
+  const transcoder=new Transcoder(path.resolve('tools'));
+  if(!transcoder.available){t.skip('Run setup-ffmpeg.ps1');return;}
+  const f=await fixture();t.after(()=>rm(f.root,{recursive:true,force:true}));const exec=promisify(execFile);
+  const source=path.join(f.media,'episode.mkv');
+  await exec(transcoder.ffmpeg,['-y','-v','error','-f','lavfi','-i','testsrc2=s=320x180:r=24','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t','12','-c:v','libx264','-g','48','-pix_fmt','yuv420p','-c:a','aac',source],{windowsHide:true,timeout:30000});
+  const catalog=new Catalog(f.dbPath);await catalog.refresh(true);const file=await catalog.file('file-10');
+  assert.equal((await transcoder.plan(file,'mp4','auto')).mode,'remux');
+  const server=http.createServer((req,res)=>transcoder.stream(file,req,res,5,'mp4',new URL(req.url,'http://localhost').searchParams.get('quality')||'auto'));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  for(const quality of ['auto','480p']){
+    const plan=await transcoder.plan(file,'mp4',quality,0,5);
+    assert.equal(plan.copyVideo,false);assert.equal(plan.copyAudio,false);
+    const response=await fetch(`http://127.0.0.1:${server.address().port}/stream?quality=${quality}`);
+    assert.equal(response.status,200);assert.ok(Number(response.headers.get('X-Luma-Duration'))>=12);
+    const output=path.join(f.root,`${quality}.mp4`);await writeFile(output,Buffer.from(await response.arrayBuffer()));
+    const {stdout}=await exec(transcoder.ffprobe,['-v','error','-show_entries','format=start_time,duration:stream=start_time,duration','-of','json',output],{windowsHide:true,timeout:15000});
+    const probe=JSON.parse(stdout);
+    assert.ok(Math.abs(Number(probe.format.duration)-(plan.duration-5))<.15,`${quality}: remaining duration must exclude preroll`);
+    for(const track of probe.streams)assert.ok(Math.abs(Number(track.start_time))<.1,`${quality}: track timeline must start at zero`);
+  }
+});
+
 const parse=new XMLParser({removeNSPrefix:true,parseTagValue:false});
 const mediaServerRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 async function fixture(){

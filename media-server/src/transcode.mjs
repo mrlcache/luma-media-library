@@ -16,7 +16,7 @@ export class Transcoder {
     this.active = new Set(); this.pending = 0; this.generation = 0; this.available = existsSync(this.ffmpeg) && existsSync(this.ffprobe);
     this.lastError = null; this.probes = new Map(); this.sessions = new Map();
   }
-  async plan(file,output = 'mpegts',quality = 'auto',bitrate = 0) {
+  async plan(file,output = 'mpegts',quality = 'auto',bitrate = 0,offset = 0) {
     if (quality !== 'auto' && !Object.hasOwn(mobileQualities,quality)) throw new Error('Unsupported quality');
     if (bitrate !== 0 && !mobileQualities[quality]?.bitrates.includes(bitrate)) throw new Error('Unsupported bitrate for this quality');
     if (!this.available) throw new Error('FFmpeg is not installed in the server workspace');
@@ -31,9 +31,12 @@ export class Transcoder {
     const audio = data.streams.find(s=>s.codec_type === 'audio');
     const preset = output === 'mp4' ? mobileQualities[quality] : null;
     const profile = preset ? {...preset,bitrate:bitrate || preset.bitrate} : null;
-    const copyVideo = !profile && video.codec_name === 'h264' && ['yuv420p','yuvj420p'].includes(video.pix_fmt)
+    // Copying either track after an input seek retains keyframe/audio preroll.
+    // Re-encode both tracks so the phone's zero-based timeline matches `offset`.
+    const preciseSeek = output === 'mp4' && offset > 0;
+    const copyVideo = !preciseSeek && !profile && video.codec_name === 'h264' && ['yuv420p','yuvj420p'].includes(video.pix_fmt)
       && (output !== 'mp4' || (Number(video.width) <= 1920 && Number(video.height) <= 1080));
-    const copyAudio = !audio || audio.codec_name === 'aac';
+    const copyAudio = !audio || (!preciseSeek && audio.codec_name === 'aac');
     // Do not silently discard HDR. Tone mapping needs a separate tested profile.
     if (['smpte2084','arib-std-b67'].includes(video.color_transfer) && !copyVideo) throw new Error('HDR conversion is not enabled; use the original file');
     return {mode:copyVideo && copyAudio ? 'remux' : copyVideo ? 'audio-transcode' : 'transcode',copyVideo,copyAudio,duration:Number(data.format?.duration || 0),profile:profile || null,sourceBitrate:Number(data.format?.bit_rate || 0)};
@@ -53,7 +56,7 @@ export class Transcoder {
     const generation = this.generation;
     this.pending++;
     let plan;
-    try { plan = await this.plan(file,output,quality,bitrate); } catch(error) {releaseSession();throw error;} finally { this.pending--; }
+    try { plan = await this.plan(file,output,quality,bitrate,offset); } catch(error) {releaseSession();throw error;} finally { this.pending--; }
     if (res.destroyed || generation !== this.generation || (session && this.sessions.get(session)!==ticket)) {releaseSession();res.destroy();return;}
     const args = ['-nostdin','-hide_banner','-loglevel','error'];
     if (offset > 0) args.push('-ss',String(offset));

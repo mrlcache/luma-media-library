@@ -52,7 +52,7 @@ const admin=http.createServer(async(req,res)=>{
       if(typeof identity==='string')res.setHeader('X-Luma-Media-Identity',identity);
       if(!media.transcoder.available){res.writeHead(503,{'Content-Type':'text/plain'});res.end('FFmpeg unavailable');return;}
       if(req.method==='HEAD'){
-        const plan=await media.transcoder.plan(file,'mp4',quality,bitrate);
+        const plan=await media.transcoder.plan(file,'mp4',quality,bitrate,start);
         res.setHeader('X-Luma-Bitrate-Limit',String(plan.profile?.bitrate || 0));
         res.setHeader('X-Luma-Source-Bitrate',String(plan.sourceBitrate));
         res.writeHead(200,{'Content-Type':'video/mp4','X-Luma-Duration':String(plan.duration),'Cache-Control':'no-store','Access-Control-Allow-Origin':'*','Access-Control-Expose-Headers':'X-Luma-Duration'});res.end();return;
