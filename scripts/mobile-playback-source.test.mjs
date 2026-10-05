@@ -8,15 +8,18 @@ const source=readFileSync(new URL('../src/lib/platform/desktop.ts',import.meta.u
 const resolver=source.slice(source.indexOf('export async function resolveMediaFile('),source.indexOf('export async function savePlaybackProgress('))
   .replace("const { invoke } = await import('$lib/platform/invoke');",'const invoke = mockInvoke;');
 const code=ts.transpileModule(resolver,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
-function fixture(duplicate=false){
-  const correct={tmdbId:101,media:{id:11,title:'MobLand',kind:'series'},files:[{mediaId:11,season:1,episode:1},{mediaId:12,season:1,episode:2},...(duplicate?[{mediaId:21,season:1,episode:1}]:[])]};
+function fixture(duplicate=false,{missing=false,title='MobLand',kind='series'}={}){
+  const correct={tmdbId:101,media:{id:11,title,kind},files:[{mediaId:11,season:1,episode:1},{mediaId:12,season:1,episode:2},...(duplicate?[{mediaId:21,season:1,episode:1}]:[])]};
   const wrong={tmdbId:202,media:{id:9,title:'Marvel Zombies',kind:'series'},files:[{mediaId:9,season:1,episode:3}]};
   const calls=[];const exports={};let invalidations=0;
   const invoke=async(command,args)=>{
     calls.push([command,args]);
     if(command==='get_local_title_detail')return args.mediaId===9?wrong:correct;
     if(command==='get_catalog_page')return {items:[correct.media],total:1,offset:0};
-    if(command==='resolve_media_file')return {path:`file-${args.mediaId}.mp4`,subtitles:[],resumePositionSeconds:30};
+    if(command==='resolve_media_file'){
+      if(missing)throw 'Could not open the indexed media file: The system cannot find the path specified.';
+      return {path:`file-${args.mediaId}.mp4`,subtitles:[],resumePositionSeconds:30};
+    }
     throw new Error(`Unexpected command: ${command}`);
   };
   new Function('exports','nativeMobile','isDesktopRuntime','invalidateCatalogPageCache','mockInvoke',code)(exports,true,()=>true,()=>invalidations++,invoke);
@@ -26,6 +29,13 @@ test('stale MobLand ID cannot play Marvel Zombies and recovers the matching epis
   const f=fixture();const resolved=await f.resolveMediaFile(9,'MobLand','S01E01 · Stick or Twist',101);
   assert.equal(resolved.mediaId,11);assert.equal(resolved.path,'file-11.mp4');assert.equal(f.invalidations(),1);
   assert.deepEqual(f.calls.filter(([command])=>command==='resolve_media_file').map(([,args])=>args.mediaId),[11]);
+});
+
+test('an absent Full Circle file reports the missing computer file without clearing progress or resolving a different title',async()=>{
+  const f=fixture(false,{missing:true,title:'Full Circle',kind:'movie'});
+  await assert.rejects(f.resolveMediaFile(11,'Full Circle',undefined,101),/file for Full Circle is missing/);
+  assert.deepEqual(f.calls.filter(([command])=>command==='resolve_media_file').map(([,args])=>args.mediaId),[11]);
+  assert.equal(f.calls.some(([command])=>command==='save_playback_progress'),false);
 });
 test('a stale ID for another episode in the same series recovers the requested episode',async()=>{
   const f=fixture();const resolved=await f.resolveMediaFile(11,'MobLand','S01E02 · Jigsaw Puzzle',101);

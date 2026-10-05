@@ -289,7 +289,15 @@ export async function resolveMediaFile(mediaId: number, expectedTitle?: string, 
 			mediaId = [...matches][0];
 		}
 	}
-	return {...await invoke<ResolvedMediaFile>('resolve_media_file', { mediaId }),mediaId};
+	try {
+		return {...await invoke<ResolvedMediaFile>('resolve_media_file', { mediaId }),mediaId};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (/Could not open the indexed media file|This media file is no longer in the library/i.test(message)) {
+			throw new Error(`The file for ${expectedTitle || 'this title'} is missing from its library folder on your computer. Restore the file or refresh the library. Your saved viewing position has been kept.`);
+		}
+		throw error;
+	}
 }
 
 export async function savePlaybackProgress(mediaId: number, positionSeconds: number, durationSeconds: number): Promise<void> {

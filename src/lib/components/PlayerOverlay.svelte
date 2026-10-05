@@ -5,6 +5,7 @@
 <script lang="ts">
 	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { bitratePresets, readTranscodePreferences, saveTranscodePreferences } from '$lib/platform/transcode-preferences';
+	import { playbackPosition, resumePlaybackPosition, reachedPlaybackEnd } from '$lib/platform/playback-timeline';
 	import { onMount, tick } from 'svelte';
 	import { dev } from '$app/environment';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
@@ -81,6 +82,7 @@
 	];
 	let transcodeOffset = 0;
 	let mobilePendingSeek:number|null = null;
+	let mobilePendingResume = false;
 	const originalCueTimes = new WeakMap<TextTrackCue,[number,number]>();
 	let mobileLoadAttempt = 0;
 	const canTranscode = $derived(previewOnly || /^https?:\/\/[^/]+\/api\/v1\/media\/\d+\?/.test(mobileSourceUrl));
@@ -129,7 +131,8 @@
 	let vlcSubtitleNote = $state(false);
 	let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-	let progressPercent = $derived(duration > 0 ? currentTime / duration * 100 : 0);
+	let scrubPercent = $state<number | null>(null);
+	let progressPercent = $derived(scrubPercent ?? (duration > 0 ? currentTime / duration * 100 : 0));
 	let elapsedLabel = $derived(formatClock(currentTime));
 	let remainingLabel = $derived(`-${formatClock(Math.max(0, duration - currentTime))}`);
 
@@ -327,15 +330,26 @@
 		video.currentTime = duration * Number((event.currentTarget as HTMLInputElement).value) / 100;
 		revealControls();
 	}
+	function previewSeek(event: Event) {
+		if (mobilePlayer && activeTranscoding && !previewOnly) {
+			scrubPercent = Math.max(0, Math.min(100, Number((event.currentTarget as HTMLInputElement).value)));
+		} else seekToPercent(event);
+	}
+	function commitSeek(event: Event) {
+		if (mobilePlayer && activeTranscoding && !previewOnly) seekToPercent(event);
+		scrubPercent = null;
+	}
 
 	function onTimeUpdate() {
-		if (!video) return;
-		currentTime = video.currentTime + (activeTranscoding ? transcodeOffset : 0);
+		if (!video || isLoading || !mediaReady || playbackError) return;
+		currentTime = playbackPosition(video.currentTime, activeTranscoding ? transcodeOffset : 0, activeTranscoding ? duration : video.duration);
 		if (!activeTranscoding) duration = Number.isFinite(video.duration) ? video.duration : duration;
 		if (Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
 	}
 
 	async function persistProgress() {
+		// Loading, failed opens and source-reset pause events are not watched progress.
+		if (isLoading || !mediaReady || playbackError) return;
 		const mediaId = Number(media.id);
 		const position = activeEngine || activeTranscoding ? currentTime : video?.currentTime;
 		const length = activeEngine || activeTranscoding ? duration : video?.duration;
@@ -359,8 +373,8 @@
 		for(const track of Array.from(video.textTracks))setCueOffset(track);
 		if (activeTranscoding) { currentTime = transcodeOffset; isLoading = false; video.playbackRate = playbackRate; readAudioTracks(); return; }
 		duration = Number.isFinite(video.duration) ? video.duration : 0;
-		if(mobilePendingSeek!==null){video.currentTime=Math.min(Math.max(0,mobilePendingSeek),Math.max(0,duration-.1));mobilePendingSeek=null;}
-		else if (resumePosition > 15 && resumePosition < duration - 10) video.currentTime = resumePosition;
+		if(mobilePendingSeek!==null){video.currentTime=mobilePendingResume ? resumePlaybackPosition(mobilePendingSeek,duration) : Math.min(Math.max(0,mobilePendingSeek),Math.max(0,duration-.1));mobilePendingSeek=null;}
+		else if (resumePosition > 0) video.currentTime = resumePlaybackPosition(resumePosition, duration);
 		currentTime = video.currentTime;
 		isLoading = false;
 		readAudioTracks();
@@ -455,11 +469,17 @@
 	}
 
 	async function handlePlaybackEnded() {
-		if (autoplayTransitioning) return;
+		if (playerDisposed || autoplayTransitioning || isLoading || !mediaReady || playbackError) return;
 		isPlaying = false;
-		currentTime = duration;
+		if (!activeEngine && video) currentTime = playbackPosition(video.currentTime, activeTranscoding ? transcodeOffset : 0, duration);
+		if (!reachedPlaybackEnd(currentTime, duration)) {
+			await persistProgress();
+			playbackError = 'The stream stopped before the video ended. Your position is saved. Try again to continue.';
+			return;
+		}
 		await persistProgress();
 		await playbackActivityPromise;
+		if (playerDisposed || isLoading) return;
 		const preferences = readPlaybackPreferences();
 		if (!preferences.autoplayNextEpisode || !media.nextEpisode) return;
 		autoplayTransitioning = true;
@@ -662,7 +682,7 @@
 		await startSelectedEngine(currentTime);
 	}
 
-	async function loadMobileStream(position=0) {
+	async function loadMobileStream(position=0, restoringResume=false) {
 		const attempt=++mobileLoadAttempt;
 		const requestedTranscoding = transcoding;
 		const requestedQuality = transcodeQuality;
@@ -682,11 +702,16 @@
 				if(!metadata.ok)throw new Error('Could not start transcoding on your computer. Check that Luma is updated and FFmpeg is available.');
 				const length=Number(metadata.headers.get('X-Luma-Duration'));
 				if(Number.isFinite(length)&&length>0)duration=length;
+				if (restoringResume) {
+					position = resumePlaybackPosition(position, duration);
+					url.searchParams.set('start', String(position));
+				}
 				sourceBitrate=Number(metadata.headers.get('X-Luma-Source-Bitrate')) || 0;
 			}
 			if(attempt!==mobileLoadAttempt||playerDisposed)return;
 			video.pause();video.removeAttribute('src');video.load();mediaReady=false;isPlaying=false;
 			activeTranscoding=requestedTranscoding;
+			mobilePendingResume=restoringResume;
 			transcodeOffset=activeTranscoding?position:0;resumePosition=activeTranscoding?0:position;mobilePendingSeek=activeTranscoding?null:position;
 			currentTime=position;video.src=url.toString();video.load();video.playbackRate=playbackRate;
 			try {await video.play();} catch(error){if(error instanceof Error && error.name==='NotAllowedError'){isLoading=false;controlsVisible=true;}else throw error;}
@@ -792,7 +817,7 @@
 					// Files stored on this phone have no computer transcoder.
 					// Keep the saved preference for the next computer-backed video.
 					if (!canTranscode) transcoding = false;
-					await loadMobileStream(resumePosition);
+					await loadMobileStream(resumePosition, true);
 				} else await startSelectedEngine();
 			})
 			.catch((error) => {
@@ -945,7 +970,8 @@
 						max="100"
 						step="0.1"
 						value={progressPercent}
-						oninput={seekToPercent}
+						oninput={previewSeek}
+						onchange={commitSeek}
 						style={`--player-progress: ${progressPercent}%`}
 						aria-label="Playback position"
 						aria-valuetext={`${elapsedLabel} elapsed, ${remainingLabel} remaining`}
