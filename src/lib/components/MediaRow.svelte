@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import FavoriteButton from './FavoriteButton.svelte';
+	import PosterCard from './PosterCard.svelte';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
 	import { recoverRemoteArtwork, tmdbImageSize } from '$lib/media/artwork';
 	import { usePlayer } from '$lib/player-context';
@@ -12,9 +13,12 @@
 	let { title, description, items, showProgress = false }: Props = $props();
 	const player = usePlayer();
 	const mobilePreview = isMobilePreview();
+	function openCard(media: MediaItem) {
+		player.open(showProgress && media.playbackId ? { ...media, id: String(media.playbackId) } : media);
+	}
 </script>
 
-<section class="media-row" aria-labelledby={`row-${title.toLowerCase().replaceAll(' ', '-')}`}>
+<section class="media-row" class:media-row--posters={mobilePreview && !showProgress} aria-labelledby={`row-${title.toLowerCase().replaceAll(' ', '-')}`}>
 	<div class="section-heading">
 		<div>
 			<h2 id={`row-${title.toLowerCase().replaceAll(' ', '-')}`}>{title}</h2>
@@ -24,10 +28,13 @@
 	<div class="media-row__viewport" data-more-right="false">
 		<div class="media-row__track" role="list" use:smoothHorizontalScroll use:rightEdgeHint>
 			{#each items as media, index (media.id)}
+				{#if mobilePreview && !showProgress}
+					<div role="listitem"><PosterCard {media} variant="catalog" /></div>
+				{:else}
 				<article class="landscape-card" role="listitem">
 					<div class="landscape-card__art" style="corner-shape: squircle">
 						<div class="landscape-card__selection-halo" style="corner-shape: squircle"></div>
-						<a class="landscape-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} style="corner-shape: squircle">
+						<a class="landscape-card__media" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} style="corner-shape: squircle" onclick={showProgress ? (event) => { event.preventDefault(); openCard(media); } : undefined}>
 							{#if media.backdrop || media.poster}<img use:recoverRemoteArtwork src={mobilePreview ? tmdbImageSize(media.backdrop || media.poster, 'w500') : media.backdrop || media.poster} alt="" width="720" height="405" loading={index < 2 ? 'eager' : 'lazy'} decoding="async" />{/if}
 							<div class="landscape-card__scrim"></div>
 							{#if media.installed === false}<span class="landscape-card__availability" role="img" aria-label="Not downloaded" ><Icon name="download" size={13} /></span>{/if}
@@ -36,15 +43,16 @@
 							{/if}
 						</a>
 						{#if mobilePreview}<div class="landscape-card__favorite"><FavoriteButton {media} compact /></div>{/if}
-						{#if media.installed !== false}<button class="landscape-card__play" aria-label={`Play ${media.title}`} onclick={() => player.open(media)}><Icon name="play" size={14} weight="fill" /></button>{/if}
+						{#if media.installed !== false}<button class="landscape-card__play" aria-label={`Play ${media.title}`} onclick={() => openCard(media)}><Icon name="play" size={14} weight="fill" /></button>{/if}
 					</div>
-					<a class="landscape-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`}>
+					<a class="landscape-card__link" href={`/title/${media.id}`} aria-label={`${media.title}, ${media.kind}`} onclick={showProgress ? (event) => { event.preventDefault(); openCard(media); } : undefined}>
 						<div class="landscape-card__copy">
 							<strong>{media.title}</strong>
 							<span>{media.progressLabel ?? `${media.year} · ${media.genres[0]}`}</span>
 						</div>
 					</a>
 				</article>
+				{/if}
 			{/each}
 		</div>
 	</div>
@@ -82,5 +90,13 @@
 	.landscape-card:hover .landscape-card__selection-halo, .landscape-card:focus-within .landscape-card__selection-halo { border-color: rgba(255,255,255,0.48); opacity: 1; }
 	.landscape-card:hover .landscape-card__art img, .landscape-card:focus-within .landscape-card__art img { filter: brightness(1.06) saturate(1.03); transform: scale(1.012); }
 	@media (max-width: 680px) { .media-row { gap: 14px; } .section-heading h2 { font-size: 1.02rem; } .media-row__viewport { margin-right: -18px; } .media-row__track { grid-auto-columns: 72vw; gap: 12px; padding-right: 18px; } .landscape-card__play { display: none; } }
+	@media (hover: none) {
+		.landscape-card { transition-duration: 110ms; }
+		.landscape-card:hover, .landscape-card:focus-within { transform: none; }
+		.landscape-card:hover .landscape-card__art, .landscape-card:focus-within .landscape-card__art { box-shadow: none; }
+		.landscape-card:hover .landscape-card__selection-halo, .landscape-card:focus-within .landscape-card__selection-halo { border-color: transparent; opacity: 0; }
+		.landscape-card:hover .landscape-card__art img, .landscape-card:focus-within .landscape-card__art img { filter: none; transform: none; }
+		.landscape-card__media { -webkit-touch-callout: none; }
+	}
 	@media (prefers-reduced-motion: reduce) { .landscape-card, .landscape-card__art img, .landscape-card__play { transition: none; } .landscape-card:hover, .landscape-card:focus-within { transform: none; } }
 </style>

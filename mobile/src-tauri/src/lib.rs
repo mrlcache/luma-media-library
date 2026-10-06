@@ -5,6 +5,10 @@ use tauri::{AppHandle, Manager, State};
 mod local_downloads;
 mod pairing;
 mod player_device;
+#[path = "../../../src-tauri/media-core/src/naming.rs"]
+mod naming;
+#[path = "../../../src-tauri/media-core/src/subtitles.rs"]
+mod subtitle_files;
 static LOCAL_METADATA_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -220,6 +224,48 @@ fn mobile_library_status(app: AppHandle) -> Result<serde_json::Value, String> {
     )
 }
 
+fn delete_local_media(app: &AppHandle, media_id: i64) -> Result<(), String> {
+    if !(1_000_000_000..2_000_000_000).contains(&media_id) {
+        return Err("Invalid phone library item".into());
+    }
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let root = app_data.join("Downloads");
+    let canonical_root = fs::canonicalize(&root).map_err(|e| format!("Could not open phone downloads: {e}"))?;
+    let (path, _) = ready_media_files(app, &root)
+        .into_iter()
+        .find(|(_, item)| item.id == media_id)
+        .ok_or("Downloaded media file was not found")?;
+    let canonical_path = fs::canonicalize(path).map_err(|e| format!("Could not locate downloaded media: {e}"))?;
+    if !canonical_path.starts_with(&canonical_root) || !canonical_path.is_file() {
+        return Err("The selected file is outside the phone library".into());
+    }
+    fs::remove_file(&canonical_path).map_err(|e| format!("Could not delete downloaded media: {e}"))?;
+
+    if let Ok(mut rows) = read_local_progress(app) {
+        rows.retain(|row| row.id != media_id);
+        if let (Ok(path), Ok(bytes)) = (progress_path(app), serde_json::to_vec(&rows)) {
+            let temp = path.with_extension("tmp");
+            if fs::write(&temp, bytes).is_ok() { let _ = fs::rename(temp, path); }
+        }
+    }
+    if let Ok(_guard) = LOCAL_METADATA_LOCK.lock() {
+        let metadata_path = app_data.join("local-metadata.json");
+        let mut metadata: serde_json::Value = fs::read(&metadata_path)
+            .ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(values) = metadata.as_object_mut() {
+            values.remove(&media_id.to_string());
+            if let Ok(bytes) = serde_json::to_vec(&metadata) {
+                let temp = metadata_path.with_extension("tmp");
+                if fs::write(&temp, bytes).is_ok() { let _ = fs::rename(temp, metadata_path); }
+            }
+        }
+    }
+    use tauri::Emitter;
+    let _ = app.emit("library-changed", ());
+    Ok(())
+}
+
 #[tauri::command]
 fn mobile_resolve_media_file(app: AppHandle, media_id: i64) -> Result<serde_json::Value, String> {
     let root = app
@@ -239,9 +285,34 @@ fn mobile_resolve_media_file(app: AppHandle, media_id: i64) -> Result<serde_json
         .find(|v| v.id == media_id)
         .map(|v| v.position_seconds)
         .unwrap_or(0.0);
-    Ok(
-        serde_json::json!({"path":path.to_string_lossy(),"subtitles":[],"resumePositionSeconds":resume}),
-    )
+    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("subtitles");
+    fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
+    let mut subtitles = Vec::new();
+    let canonical_root = root.canonicalize().map_err(|e| e.to_string())?;
+    for (index, subtitle) in subtitle_files::discover_subtitle_files(&canonical_root, &path)?.into_iter().enumerate() {
+        let label = subtitle.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let extension = subtitle.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+        let supported = matches!(extension.as_str(), "srt" | "vtt");
+        let playback = if supported {
+            use std::io::Read;
+            let file = fs::File::open(&subtitle).map_err(|e| e.to_string())?;
+            if file.metadata().map_err(|e| e.to_string())?.len() > 8 * 1024 * 1024 { continue; }
+            let mut bytes = Vec::new();
+            file.take(8 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            if bytes.len() > 8 * 1024 * 1024 { continue; }
+            let text = subtitle_files::decode_subtitle_text(&bytes);
+            let text = if extension == "srt" {
+                let body = text.lines().map(|line| if line.contains("-->") { line.replace(',', ".") } else { line.to_owned() }).collect::<Vec<_>>().join("\n");
+                format!("WEBVTT\n\n{body}\n")
+            } else { text };
+            let converted = cache.join(format!("{media_id}-{index}.vtt"));
+            fs::write(&converted, text).map_err(|e| e.to_string())?;
+            converted
+        } else { subtitle };
+        app.asset_protocol_scope().allow_file(&playback).map_err(|e| e.to_string())?;
+        subtitles.push(serde_json::json!({"label":label,"path":playback.to_string_lossy(),"supported":supported}));
+    }
+    Ok(serde_json::json!({"path":path.to_string_lossy(),"subtitles":subtitles,"resumePositionSeconds":resume}))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -373,6 +444,43 @@ fn load_connection(app: &AppHandle) -> Result<Option<Connection>, String> {
     Ok(Some(connection))
 }
 
+fn store_connection(app: &AppHandle, connection: &Connection) -> Result<(), String> {
+    let path = connection_path(app)?;
+    let serialized = serde_json::to_vec(connection).map_err(|e| e.to_string())?;
+    // Windows does not replace an existing destination with `rename`, so an
+    // automatic address refresh would fail after the first pairing.
+    fs::write(&path, serialized).map_err(|e| format!("Cannot save desktop connection: {e}"))
+}
+
+fn token_fingerprint(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(token.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+async fn discover_paired_computer(token: String) -> Result<Option<String>, String> {
+    let identity = token_fingerprint(&token);
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::net::UdpSocket;
+        use std::time::Instant;
+        let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Could not search the local network: {e}"))?;
+        socket.set_broadcast(true).map_err(|e| format!("Could not search the local network: {e}"))?;
+        socket.set_read_timeout(Some(Duration::from_millis(200))).map_err(|e| e.to_string())?;
+        socket.send_to(b"LUMA_DISCOVER_V1", "255.255.255.255:47631").map_err(|e| format!("Could not search the local network: {e}"))?;
+        let until = Instant::now() + Duration::from_secs(2);
+        let mut packet = [0u8; 512];
+        while Instant::now() < until {
+            let Ok((count, peer)) = socket.recv_from(&mut packet) else { continue; };
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&packet[..count]) else { continue; };
+            if value.get("service").and_then(|v| v.as_str()) != Some("luma")
+                || value.get("identity").and_then(|v| v.as_str()) != Some(identity.as_str())
+                || !peer.is_ipv4() { continue; }
+            let Some(port) = value.get("port").and_then(|v| v.as_u64()).filter(|p| (1024..=65535).contains(p)) else { continue; };
+            return Ok(Some(format!("http://{}:{port}", peer.ip())));
+        }
+        Ok(None)
+    }).await.map_err(|e| format!("Computer rediscovery did not finish: {e}"))?
+}
+
 #[tauri::command]
 fn get_mobile_connection(app: AppHandle) -> Result<ConnectionStatus, String> {
     let connection = load_connection(&app)?;
@@ -404,11 +512,7 @@ fn set_mobile_connection(app: AppHandle, url: String, token: String) -> Result<(
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
         return Err("Desktop address must use HTTP or HTTPS and include a host".into());
     }
-    let path = connection_path(&app)?;
-    let serialized = serde_json::to_vec(&Connection { url, token }).map_err(|e| e.to_string())?;
-    let temp = path.with_extension("tmp");
-    fs::write(&temp, serialized).map_err(|e| format!("Cannot save desktop connection: {e}"))?;
-    fs::rename(&temp, &path).map_err(|e| format!("Cannot save desktop connection: {e}"))
+    store_connection(&app, &Connection { url, token })
 }
 
 #[tauri::command]
@@ -426,7 +530,7 @@ async fn mobile_remote_command(
     command: String,
     args: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let connection = load_connection(&app)?
+    let mut connection = load_connection(&app)?
         .ok_or_else(|| "Connect this phone to Luma Desktop first".to_string())?;
     if connection.token.is_empty() {
         return Err("Desktop pairing is incomplete; pair the device again".into());
@@ -436,10 +540,22 @@ async fn mobile_remote_command(
         .timeout(Duration::from_secs(45))
         .build()
         .map_err(|e| format!("Cannot create desktop connection: {e}"))?;
+    let payload = serde_json::json!({"command": command, "args": args.unwrap_or_else(|| serde_json::json!({}))});
     let endpoint = format!("{}/api/v1/command", connection.url);
-    let response = client.post(endpoint).bearer_auth(connection.token)
-        .json(&serde_json::json!({"command": command, "args": args.unwrap_or_else(|| serde_json::json!({}))}))
-        .send().await.map_err(|e| format!("Cannot reach Luma Desktop: {e}"))?;
+    let response = match client.post(endpoint).bearer_auth(&connection.token).json(&payload).send().await {
+        Ok(response) => response,
+        Err(error) if error.is_connect() => {
+            let previous_error = error.to_string();
+            let discovered = discover_paired_computer(connection.token.clone()).await.ok().flatten();
+            let Some(url) = discovered else { return Err(format!("Cannot reach Luma Desktop; searching this network did not find the paired computer ({previous_error}).")); };
+            connection.url = url;
+            store_connection(&app, &connection)?;
+            let endpoint = format!("{}/api/v1/command", connection.url);
+            client.post(endpoint).bearer_auth(&connection.token).json(&payload).send().await
+                .map_err(|retry_error| format!("Reconnected to the paired computer, but its request failed: {retry_error}"))?
+        }
+        Err(error) => return Err(format!("Cannot reach Luma Desktop: {error}")),
+    };
     let status = response.status();
     let body: serde_json::Value = response
         .json()
@@ -600,6 +716,11 @@ async fn mobile_local_command(
         )?)
         .map_err(|e| e.to_string()),
         "get_library_status" => mobile_library_status(app),
+        "delete_local_media" => {
+            let id = args.get("mediaId").and_then(|v| v.as_i64()).ok_or("Missing mediaId")?;
+            delete_local_media(&app, id)?;
+            Ok(serde_json::Value::Null)
+        }
         "resolve_media_file" => {
             let id = args
                 .get("mediaId")

@@ -1,7 +1,7 @@
 {
 	"name": "media-platform-desktop",
 	"private": true,
-	"version": "0.1.3",
+	"version": "0.2.2",
 	"license": "GPL-2.0-or-later",
 	"type": "module",
 	"scripts": {
@@ -9,7 +9,7 @@
 		"media-server:test": "npm --prefix media-server test",
 		"build": "vite build",
 		"desktop:prepare": "node scripts/prepare-windows.mjs",
-		"desktop:dev": "npm run desktop:prepare && tauri dev",
+		"desktop:dev": "npm run desktop:prepare && tauri dev --no-watch",
 		"desktop:dev:independent": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-dev-independent.ps1",
 		"mobile:preview": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-mobile-preview.ps1",
 		"desktop:build": "npm run desktop:prepare && tauri build",
@@ -35,6 +35,7 @@
 	"dependencies": {
 		"@tauri-apps/api": "^2.11.1",
 		"@tauri-apps/plugin-dialog": "^2.7.3",
+		"hls.js": "^1.7.3",
 		"lenis": "1.3.26",
 		"phosphor-svelte": "^3.1.0"
 	}

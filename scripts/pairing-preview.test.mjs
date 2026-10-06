@@ -15,13 +15,14 @@ await writeFile(new URL('Icon.mjs',dir),icon.js.code);
 let source=await readFile(new URL('../src/lib/components/MobilePairing.svelte',import.meta.url),'utf8');
 source=source.replace("import {goto} from '$app/navigation';",'const goto=globalThis.__previewGoto;')
  .replace("import {invoke} from '@tauri-apps/api/core';",'const invoke=globalThis.__previewInvoke;')
- .replace("import {nativeMobile,readMobileConnection} from '$lib/platform/mobile-connection';",'const nativeMobile=false;const readMobileConnection=()=>Promise.resolve({paired:false});')
+ .replace("import {nativeMobile,readMobileConnection,wifiDevMobile} from '$lib/platform/mobile-connection';",'const nativeMobile=false;const wifiDevMobile=false;const readMobileConnection=()=>Promise.resolve({paired:false});')
  .replace("import {isDesktopRuntime,invalidateCatalogPageCache} from '$lib/platform/desktop';",'const isDesktopRuntime=()=>false;const invalidateCatalogPageCache=()=>{};')
  .replace("import {resetDiscovery} from '$lib/media/discovery';",'const resetDiscovery=()=>{};')
  .replace("'./Icon.svelte'","'./Icon.mjs'");
 const result=compile(source,{generate:'client',filename:'MobilePairing.svelte'});
-await writeFile(new URL('MobilePairing.mjs',dir),result.js.code);
-const {mount,unmount,flushSync}=await import('svelte');
+const clientCode=code=>code.replaceAll("from 'svelte';", "from '../../node_modules/svelte/src/index-client.js';");
+await writeFile(new URL('MobilePairing.mjs',dir),clientCode(result.js.code));
+const {mount,unmount,flushSync}=await import('../node_modules/svelte/src/index-client.js');
 const {default:Pairing}=await import(new URL('MobilePairing.mjs',dir));
 const component=mount(Pairing,{target:document.body,props:{preview:true}});
 const settle=async()=>{flushSync();await Promise.resolve();flushSync();};await settle();
@@ -46,7 +47,7 @@ globalThis.__previewInvoke=(command,args)=>{
 	throw new Error(`Unexpected native command: ${command}`);
 };
 const nativeSource=source.replace('const nativeMobile=false;','const nativeMobile=true;').replace('Promise.resolve({paired:false})','Promise.resolve({paired:true})').replace('const isDesktopRuntime=()=>false;','const isDesktopRuntime=()=>true;').replace("import.meta.env.VITE_LUMA_MOBILE_DEMO","'false'");
-await writeFile(new URL('MobilePairingNative.mjs',dir),compile(nativeSource,{generate:'client',filename:'MobilePairingNative.svelte'}).js.code);
+await writeFile(new URL('MobilePairingNative.mjs',dir),clientCode(compile(nativeSource,{generate:'client',filename:'MobilePairingNative.svelte'}).js.code));
 const {default:NativePairing}=await import(new URL('MobilePairingNative.mjs',dir));
 const native=mount(NativePairing,{target:document.body});await settle();
 window.dispatchEvent(new Event('luma-pair-computer'));await settle();

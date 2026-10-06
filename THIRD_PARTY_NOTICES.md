@@ -1,5 +1,18 @@
 # Third-party notices
 
+## FFmpeg / ffprobe
+
+- Components: the Windows FFmpeg and ffprobe executables used for HLS transcoding and subtitle inspection.
+- License of the bundled build: GPL-3.0; its complete license is included beside the executables as `LICENSE-FFmpeg.txt`.
+- Source and build information: [FFmpeg](https://ffmpeg.org/) and the linked Windows build provider [Gyan](https://www.gyan.dev/ffmpeg/builds/).
+
+## hls.js
+
+- Component: mobile HLS playback and buffering.
+- Package: `hls.js` 1.7.3.
+- License: Apache-2.0; complete notices are distributed in the upstream package.
+- Source: [video-dev/hls.js](https://github.com/video-dev/hls.js).
+
 ## MPV Windows runtime
 
 - Component: `libmpv-2.dll` and the runtime DLLs from the pinned Windows development archive.

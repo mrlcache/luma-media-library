@@ -641,7 +641,7 @@ pub fn native_player_action(player: tauri::State<'_, NativePlayerState>, action:
 pub fn native_player_load_subtitle(path: String, player: tauri::State<'_, NativePlayerState>) -> Result<PlaybackSnapshot, String> {
     let path = PathBuf::from(path).canonicalize().map_err(|_| "The subtitle file could not be opened.".to_owned())?;
     let extension = path.extension().and_then(|extension| extension.to_str()).unwrap_or_default().to_ascii_lowercase();
-    if !matches!(extension.as_str(), "srt" | "vtt" | "ass" | "ssa" | "sub") { return Err("Choose an SRT, VTT, ASS or SUB subtitle file.".into()); }
+    if !matches!(extension.as_str(), "srt" | "vtt" | "ass" | "ssa" | "sub" | "idx") { return Err("Choose an SRT, VTT, ASS, SUB or IDX subtitle file.".into()); }
     let metadata = std::fs::metadata(&path).map_err(|_| "The subtitle file could not be read.".to_owned())?;
     if !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 { return Err("This subtitle file is invalid or too large.".into()); }
     let slot = player.0.lock().map_err(|_| "The player is unavailable.".to_owned())?;

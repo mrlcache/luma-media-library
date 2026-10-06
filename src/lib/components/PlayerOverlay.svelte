@@ -6,7 +6,8 @@
 	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { bitratePresets, readTranscodePreferences, saveTranscodePreferences } from '$lib/platform/transcode-preferences';
 	import { playbackPosition, resumePlaybackPosition, reachedPlaybackEnd } from '$lib/platform/playback-timeline';
-	import { openCompatibleStream } from '$lib/platform/compatible-stream';
+	import { fetchCompatibleMedia } from '$lib/platform/compatible-stream';
+	import { openHlsStream } from '$lib/platform/hls-stream';
 	import { onMount, tick } from 'svelte';
 	import { dev } from '$app/environment';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
@@ -27,6 +28,7 @@
 		readPreferredDesktopPlayer,
 		recordPlaybackActivity,
 		resolveMediaFile,
+		resolveSubtitleFile,
 		resizeNativePlayer,
 		savePreferredDesktopPlayer,
 		setOpenSubtitlesApiKey,
@@ -39,7 +41,7 @@
 	} from '$lib/platform/desktop';
 	import type { MediaItem, OpenSubtitleSearchResult } from '$lib/types';
 	import { readPlaybackPreferences, updatePlaybackPreference, type SubtitleFont } from '$lib/platform/playback-preferences';
-	import { usePlayer } from '$lib/player-context';
+	import { PLAYBACK_HISTORY_UPDATED_EVENT, usePlayer } from '$lib/player-context';
 
 	type Props = { media: MediaItem; onClose: () => void; visualPreview?: boolean };
 	let { media, onClose, visualPreview = false }: Props = $props();
@@ -53,11 +55,14 @@
 	let video: HTMLVideoElement;
 	let isPlaying = $state(false);
 	let controlsVisible = $state(true);
+	let screenLocked = $state(false);
 	let mediaReady = $state(false);
 	let currentTime = $state(isVisualPreview() ? 854 : 0);
 	let duration = $state(isVisualPreview() ? 3120 : 0);
 	let volume = $state(72);
 	let isMuted = $state(false);
+	let desktopVolumeFeedback = $state(false);
+	let desktopVolumeFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
 	let isLoading = $state(!isVisualPreview());
 	let playbackError = $state('');
 	$effect(() => {
@@ -74,7 +79,22 @@
 	const bitrateOptions = $derived((bitratePresets[transcodeQuality] || []).map(value=>({value,label:`${value / 1_000_000} Mbps`})));
 	const mobileStreamSession = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,14)}`;
 	let mobileMetadataAbort: AbortController | undefined;
-	let compatibleStream: ReturnType<typeof openCompatibleStream> | undefined;
+	let compatibleStream: ReturnType<typeof openHlsStream> | undefined;
+	let mobileStreamPaused = false;
+	function stopCompatibleStream() {
+		compatibleStream?.stop();
+		compatibleStream = undefined;
+		mobileStreamPaused = false;
+	}
+	function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+		let timer: ReturnType<typeof setTimeout>;
+		return Promise.race([
+			promise,
+			new Promise<T>((_, reject) => {
+				timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+			})
+		]).finally(() => clearTimeout(timer));
+	}
 	let sourceBitrate = $state(0);
 	const qualityOptions = [
 		{ value: 'auto', label: 'Automatic' },
@@ -94,7 +114,12 @@
 	let gestureFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
 	let gesture: { pointerId: number; side: 'brightness' | 'volume'; x: number; y: number; time: number; value: number; moved: boolean } | null = null;
 	let lastTap: { side: 'brightness' | 'volume'; time: number; x: number; y: number } | null = null;
-	$effect(() => () => { if (gestureFeedbackTimer) clearTimeout(gestureFeedbackTimer); });
+	let mobileTapTimer: ReturnType<typeof setTimeout> | undefined;
+	let mobileBackListener: { unregister: () => Promise<void> } | undefined;
+	$effect(() => () => {
+		if (gestureFeedbackTimer) clearTimeout(gestureFeedbackTimer);
+		if (mobileTapTimer) clearTimeout(mobileTapTimer);
+	});
 	let desktopPlayerBusy = $state(false);
 	let selectedDesktopPlayer = $state<DesktopPlayer>('mpv');
 	let activeEngine = $state<DesktopPlayer | null>(null);
@@ -107,7 +132,10 @@
 	let resumePosition = 0;
 	let lastSavedPosition = -1;
 	let playbackActivityPromise: Promise<void> | null = null;
-	let subtitleTracks = $state<{ label: string; language: string; url: string; path?: string }[]>([]);
+	let playbackActivityStarted = false;
+	let subtitleTracks = $state<{ label: string; language: string; url: string; path?: string; streamIndex?: number | null; supported?: boolean; lazyIndex?: number }[]>([]);
+	let subtitleSelectionRequest = 0;
+	let subtitleWarning = $state('');
 	let nativeSubtitleTracks = $state<{ id: number; label: string; language: string; selected: boolean }[]>([]);
 	let nativeAudioTracks = $state<{ id: number; label: string; language: string; selected: boolean }[]>([]);
 	let activeSubtitle = $state(-1);
@@ -257,6 +285,7 @@
 	}
 
 	function revealControls() {
+		if (screenLocked) return;
 		controlsVisible = true;
 		if (timeoutId) clearTimeout(timeoutId);
 		timeoutId = setTimeout(() => {
@@ -274,6 +303,7 @@
 		}
 		if (!video || playbackError) return;
 		if (video.paused) {
+			if (mobilePlayer && activeTranscoding && mobileStreamPaused) { await loadMobileStream(currentTime); revealControls(); return; }
 			try { await video.play(); }
 			catch (error) { playbackError = error instanceof Error ? error.message : 'Playback could not start.'; }
 		} else video.pause();
@@ -282,7 +312,18 @@
 
 	function seekBy(amount: number) {
 		if (previewOnly) { currentTime = Math.min(duration, Math.max(0, currentTime + amount)); return; }
-		if (mobilePlayer && activeTranscoding) { void loadMobileStream(Math.min(duration || 86400, Math.max(0,currentTime + amount))); return; }
+		if (mobilePlayer && activeTranscoding) {
+			const target = Math.min(duration || 86400, Math.max(0, currentTime + amount));
+			const streamTarget = target - transcodeOffset;
+			const alreadyBuffered = video && streamTarget >= 0 && Array.from({ length: video.buffered.length }, (_, index) => ({ start: video.buffered.start(index), end: video.buffered.end(index) }))
+				.some((range) => streamTarget >= range.start - 0.25 && streamTarget <= range.end + 0.25);
+			if (alreadyBuffered) {
+				video.currentTime = streamTarget;
+				currentTime = target;
+				revealControls();
+			} else void loadMobileStream(target);
+			return;
+		}
 		if (activeEngine) {
 			void nativePlayerAction('seek', Math.min(duration || Number.MAX_SAFE_INTEGER, Math.max(0, currentTime + amount))).then(applyNativeSnapshot).catch(console.warn);
 			revealControls();
@@ -303,13 +344,19 @@
 		applyVolume(Number((event.currentTarget as HTMLInputElement).value));
 	}
 
-	function applyVolume(value: number) {
+	function applyVolume(value: number, showControls = true) {
 		volume = Math.round(Math.min(100, Math.max(0, value)));
 		isMuted = volume === 0;
 		if (!previewOnly) setPlayerLevel('volume', volume);
 		if (activeEngine) void nativePlayerAction('volume', volume).then(applyNativeSnapshot).catch(console.warn);
 		if (video) { video.volume = nativeMobile ? 1 : volume / 100; video.muted = volume === 0; isMuted = video.muted; }
-		revealControls();
+		if (showControls) revealControls();
+	}
+
+	function showDesktopVolumeFeedback() {
+		desktopVolumeFeedback = true;
+		if (desktopVolumeFeedbackTimer) clearTimeout(desktopVolumeFeedbackTimer);
+		desktopVolumeFeedbackTimer = setTimeout(() => { desktopVolumeFeedback = false; }, 900);
 	}
 
 	function setPlaybackRate(value: number) {
@@ -348,6 +395,17 @@
 		if (!activeTranscoding) duration = Number.isFinite(video.duration) ? video.duration : duration;
 		if (Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
 	}
+	function onPlaybackPause() {
+		if (!video?.paused) return;
+		isPlaying = false;
+		revealControls();
+		if (mobilePlayer && activeTranscoding && compatibleStream && !isLoading && mediaReady && !playbackError) {
+			currentTime = playbackPosition(video.currentTime, transcodeOffset, duration);
+			compatibleStream.suspend();
+			mobileStreamPaused = true;
+		}
+		void persistProgress();
+	}
 
 	async function persistProgress() {
 		// Loading, failed opens and source-reset pause events are not watched progress.
@@ -363,9 +421,10 @@
 
 	function recordPlaybackStarted() {
 		const mediaId = Number(media.id);
-		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || playbackActivityPromise) return;
+		if (!Number.isSafeInteger(mediaId) || mediaId <= 0 || playbackActivityStarted) return;
+		// Pause/resume stays within the same player session, so it must not record a new start.
+		playbackActivityStarted = true;
 		playbackActivityPromise = recordPlaybackActivity(mediaId, readPlaybackPreferences().markPreviousEpisodesWatched).catch((error) => {
-			playbackActivityPromise = null;
 			console.warn('Playback history could not be saved', error);
 		});
 	}
@@ -373,7 +432,7 @@
 	function onLoadedMetadata() {
 		if (!video) return;
 		for(const track of Array.from(video.textTracks))setCueOffset(track);
-		if (activeTranscoding) { currentTime = transcodeOffset; isLoading = false; video.playbackRate = playbackRate; readAudioTracks(); return; }
+		if (activeTranscoding) { currentTime = transcodeOffset; video.playbackRate = playbackRate; readAudioTracks(); return; }
 		duration = Number.isFinite(video.duration) ? video.duration : 0;
 		if(mobilePendingSeek!==null){video.currentTime=mobilePendingResume ? resumePlaybackPosition(mobilePendingSeek,duration) : Math.min(Math.max(0,mobilePendingSeek),Math.max(0,duration-.1));mobilePendingSeek=null;}
 		else if (resumePosition > 0) video.currentTime = resumePlaybackPosition(resumePosition, duration);
@@ -397,12 +456,13 @@
 		if (preferredIndex >= 0) selectAudio(preferredIndex);
 	}
 
-	function preferredSubtitleIndex(tracks: { language: string }[]): number {
+	function preferredSubtitleIndex(tracks: { language: string; supported?: boolean }[]): number {
 		const preference = readPlaybackPreferences().subtitleLanguage;
 		if (preference === 'off') return -1;
 		const desiredLanguage = preference === 'auto' ? (navigator.language?.slice(0, 2) ?? '') : preference;
 		if (!desiredLanguage) return -1;
-		return tracks.findIndex((track) => track.language.toLowerCase().startsWith(desiredLanguage.toLowerCase()));
+		const normalize = (language: string) => ({ eng:'en', por:'pt', spa:'es', fra:'fr', fre:'fr', deu:'de', ger:'de', jpn:'ja', kor:'ko', ita:'it', rus:'ru', zho:'zh', chi:'zh' }[language.toLowerCase()] ?? language.toLowerCase());
+		return tracks.findIndex((track) => track.supported !== false && normalize(track.language).startsWith(normalize(desiredLanguage)));
 	}
 
 	function selectAudio(index: number) {
@@ -431,7 +491,22 @@
 		} catch (error) { subtitleError = error instanceof Error ? error.message : 'Subtitle file could not be loaded.'; }
 	}
 
-	function selectSubtitle(index: number) {
+	async function selectSubtitle(index: number) {
+		const request = ++subtitleSelectionRequest;
+		subtitleError = '';
+		const selected = subtitleTracks[index];
+		if (selected?.supported === false) return;
+		if (selected?.lazyIndex !== undefined) {
+			try {
+				const path = await resolveSubtitleFile(Number(media.id), selected.lazyIndex);
+				if (playerDisposed || request !== subtitleSelectionRequest) return;
+				const url = await localMediaUrl(path);
+				if (playerDisposed || request !== subtitleSelectionRequest) return;
+				selected.url = url;
+				selected.lazyIndex = undefined;
+				await tick();
+			} catch (error) { subtitleError = error instanceof Error ? error.message : String(error); return; }
+		}
 		activeSubtitle = index;
 		for (let trackIndex = 0; trackIndex < video.textTracks.length; trackIndex += 1) {
 			video.textTracks[trackIndex].mode = trackIndex === index ? 'showing' : 'disabled';
@@ -587,9 +662,16 @@
 			void toggleFullscreen();
 			return;
 		}
-		revealControls();
 		const target = event.target;
 		const isRange = target instanceof HTMLInputElement && target.type === 'range';
+		const isEditable = target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+		if (!mobilePlayer && !isRange && !isEditable && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key)) {
+			event.preventDefault();
+			applyVolume(volume + (event.key === 'ArrowUp' || event.key === 'PageUp' ? 1 : -1) * (event.key.startsWith('Page') ? 10 : 5), false);
+			showDesktopVolumeFeedback();
+			return;
+		}
+		revealControls();
 
 		if (event.key === 'Escape' && subtitlePanelOpen) { subtitlePanelOpen = false; return; }
 		if (event.key === 'Escape' && speedMenuOpen) { speedMenuOpen = false; return; }
@@ -618,11 +700,10 @@
 	}
 
 	function startMobileGesture(event: PointerEvent, side: 'brightness' | 'volume') {
-		if (!event.isPrimary || event.button !== 0 || subtitlePanelOpen || playerMenuOpen || speedMenuOpen) return;
+		if (!event.isPrimary || event.button !== 0 || screenLocked || subtitlePanelOpen || playerMenuOpen || speedMenuOpen) return;
 		const target = event.currentTarget as HTMLElement;
 		target.setPointerCapture(event.pointerId);
 		gesture = {pointerId: event.pointerId, side, x: event.clientX, y: event.clientY, time: performance.now(), value: side === 'brightness' ? brightness : volume, moved: false};
-		revealControls();
 	}
 
 	function moveMobileGesture(event: PointerEvent) {
@@ -644,21 +725,105 @@
 		if (!gesture || gesture.pointerId !== event.pointerId) return;
 		const current = gesture;
 		gesture = null;
-		if (current.moved || performance.now() - current.time > 500 || Math.hypot(event.clientX - current.x, event.clientY - current.y) > 18) { lastTap = null; return; }
+		if (current.moved || performance.now() - current.time > 500 || Math.hypot(event.clientX - current.x, event.clientY - current.y) > 18) {
+			lastTap = null;
+			if (mobileTapTimer) clearTimeout(mobileTapTimer);
+			mobileTapTimer = undefined;
+			return;
+		}
 		const now = performance.now();
 		if (lastTap && lastTap.side === current.side && now - lastTap.time < 320 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 70) {
+			if (mobileTapTimer) clearTimeout(mobileTapTimer);
+			mobileTapTimer = undefined;
 			seekBy(current.side === 'brightness' ? -10 : 10);
 			showGestureFeedback(current.side === 'brightness' ? 'back' : 'forward');
 			lastTap = null;
-		} else lastTap = {side: current.side, time: now, x: event.clientX, y: event.clientY};
+		} else {
+			if (mobileTapTimer) clearTimeout(mobileTapTimer);
+			lastTap = {side: current.side, time: now, x: event.clientX, y: event.clientY};
+			mobileTapTimer = setTimeout(() => {
+				mobileTapTimer = undefined;
+				lastTap = null;
+				if (screenLocked) return;
+				if (controlsVisible) {
+					controlsVisible = false;
+					if (timeoutId) clearTimeout(timeoutId);
+					timeoutId = undefined;
+				} else revealControls();
+			}, 320);
+		}
+	}
+
+	function lockScreen() {
+		screenLocked = true;
+		controlsVisible = false;
+		playerMenuOpen = false;
+		speedMenuOpen = false;
+		subtitlePanelOpen = false;
+		gesture = null;
+		lastTap = null;
+		if (timeoutId) clearTimeout(timeoutId);
+		timeoutId = undefined;
+	}
+
+	function unlockScreen() {
+		screenLocked = false;
+		revealControls();
+	}
+
+	function attachMobileBackButton() {
+		if (!mobilePlayer || !nativeMobile) return;
+		void import('@tauri-apps/api/app').then(async ({ onBackButtonPress }) => {
+			const listener = await onBackButtonPress(() => {
+				if (playerDisposed) return;
+				if (subtitlePanelOpen) { subtitlePanelOpen = false; return; }
+				if (speedMenuOpen) { speedMenuOpen = false; return; }
+				if (playerMenuOpen) { playerMenuOpen = false; return; }
+				void closePlayer();
+			});
+			if (playerDisposed) await listener.unregister();
+			else mobileBackListener = listener;
+		}).catch((error) => console.warn('Android back button listener unavailable', error));
+	}
+
+	function detachMobileBackButton() {
+		const listener = mobileBackListener;
+		mobileBackListener = undefined;
+		if (listener) void listener.unregister().catch((error) => console.warn('Android back button listener cleanup failed', error));
+	}
+
+	function tryCompatiblePlayback() {
+		if (!mobilePlayer || previewOnly || !canTranscode || activeTranscoding || transcoding || playerDisposed) return false;
+		// Retry unsupported computer-backed media once through the converter.
+		// Starting a new attempt also invalidates the failed direct play promise.
+		transcoding = true;
+		rememberTranscoding();
+		void loadMobileStream(currentTime || resumePosition, mobilePendingResume);
+		return true;
 	}
 
 	function onPlaybackError() {
 		if (activeEngine) return;
+		// Let hls.js recover its media errors before showing the terminal error card.
+		if (mobilePlayer && activeTranscoding && compatibleStream) return;
 		if(mobilePlayer && isLoading && !video?.getAttribute('src'))return;
 		if (!video?.error) return;
-		playbackError = video.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
-			? mobilePlayer ? 'This video format is not supported on your phone.' : 'This file or its video codec is not supported by the built-in Windows player. Try an MP4 or WebM file, or open it in your configured desktop player.'
+		const errorCode = video.error.code;
+		if ((errorCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || errorCode === MediaError.MEDIA_ERR_DECODE) && tryCompatiblePlayback()) return;
+		if (mobilePlayer) {
+			mobileMetadataAbort?.abort();
+			stopCompatibleStream();
+			video.pause();
+			video.removeAttribute('src');
+			video.load();
+		}
+		if (playbackError) return;
+		playbackError = errorCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+			? mobilePlayer
+				? activeTranscoding
+					? 'The converted stream could not be opened. Update Android System WebView and try again.'
+					: 'This video format is not supported on your phone.'
+				: 'This file or its video codec is not supported by the built-in Windows player. Try an MP4 or WebM file, or open it in your configured desktop player.'
 			: 'This media file could not be played. Check that it is still available in the library.';
 		isLoading = false;
 	}
@@ -668,8 +833,9 @@
 		if (document.fullscreenElement === playerStage) {
 			try { await document.exitFullscreen(); } catch { /* The stage is removed immediately after closing. */ }
 		}
-		await persistProgress();
 		await playbackActivityPromise;
+		await persistProgress();
+		window.dispatchEvent(new CustomEvent(PLAYBACK_HISTORY_UPDATED_EVENT));
 		if (nativePoll) clearInterval(nativePoll);
 		if (activeEngine) await stopNativePlayer().catch((error) => console.warn('Native player could not stop', error));
 		delete document.documentElement.dataset.nativePlayer;
@@ -690,17 +856,20 @@
 		const requestedQuality = transcodeQuality;
 		const requestedBitrate = transcodeBitrate;
 		mobileMetadataAbort?.abort();
+		stopCompatibleStream();
+		video.pause();video.removeAttribute('src');video.load();mediaReady=false;isPlaying=false;
 		const controller=new AbortController();mobileMetadataAbort=controller;
 		const metadataTimeout=setTimeout(()=>controller.abort(),20000);
+		let streamForAttempt: ReturnType<typeof openHlsStream> | undefined;
 		playbackError='';isLoading=true;
 		try {
 			const url=new URL(mobileSourceUrl);
 			if(requestedTranscoding){
-				url.pathname += '/compatible';url.searchParams.set('start',String(Math.max(0,position)));
+				url.pathname += '/hls/index.m3u8';url.searchParams.set('start',String(Math.max(0,position)));
 				url.searchParams.set('quality',requestedQuality);
 				url.searchParams.set('bitrate',String(requestedBitrate));
 				url.searchParams.set('session',mobileStreamSession);
-				const metadata=await fetch(url,{method:'HEAD',cache:'no-store',signal:controller.signal});
+				const metadata=await fetchCompatibleMedia(url,{method:'HEAD',cache:'no-store',signal:controller.signal},'prepare');
 				if(!metadata.ok)throw new Error('Could not start transcoding on your computer. Check that Luma is updated and FFmpeg is available.');
 				const length=Number(metadata.headers.get('X-Luma-Duration'));
 				if(Number.isFinite(length)&&length>0)duration=length;
@@ -711,29 +880,50 @@
 				sourceBitrate=Number(metadata.headers.get('X-Luma-Source-Bitrate')) || 0;
 			}
 			if(attempt!==mobileLoadAttempt||playerDisposed)return;
-			compatibleStream?.stop(); compatibleStream = undefined;
-			video.pause();video.removeAttribute('src');video.load();mediaReady=false;isPlaying=false;
 			activeTranscoding=requestedTranscoding;
 			mobilePendingResume=restoringResume;
 			transcodeOffset=activeTranscoding?position:0;resumePosition=activeTranscoding?0:position;mobilePendingSeek=activeTranscoding?null:position;
 			currentTime=position;
 			if (activeTranscoding) {
-				compatibleStream = openCompatibleStream(video, url.toString(), Math.max(0, duration-position), error => {
-					if (attempt === mobileLoadAttempt && !playerDisposed) { isLoading = false; playbackError = error.message; }
+				streamForAttempt = openHlsStream(video, url.toString(), error => {
+					if (attempt === mobileLoadAttempt && !playerDisposed) {
+						if (compatibleStream === streamForAttempt) compatibleStream = undefined;
+						video.pause();video.removeAttribute('src');video.load();mediaReady=false;
+						isLoading = false; playbackError = error.message;
+					}
 				});
-				video.load(); await compatibleStream.ready;
+				compatibleStream = streamForAttempt;
+				await streamForAttempt.ready;
+				if (attempt !== mobileLoadAttempt || playerDisposed) return;
+				mediaReady = true;
+				isLoading = false;
 			} else { video.src=url.toString();video.load(); }
 			video.playbackRate=playbackRate;
-			try {await video.play();} catch(error){if(error instanceof Error && error.name==='NotAllowedError'){isLoading=false;controlsVisible=true;}else throw error;}
-		}catch(error){if(attempt===mobileLoadAttempt&&!playerDisposed){isLoading=false;playbackError=error instanceof Error && error.name==='AbortError'?'Your computer took too long to prepare the stream. Try again.':error instanceof Error?error.message:String(error);}}
+			try {
+				const play = video.play();
+				if (streamForAttempt) await withTimeout(play, 20000, 'The converted stream did not start playing in time. Try again.');
+				else await play;
+			} catch(error){if(error instanceof Error && error.name==='NotAllowedError'){isLoading=false;controlsVisible=true;}else throw error;}
+		}catch(error){
+			if(attempt===mobileLoadAttempt&&!playerDisposed){
+				if (error instanceof Error && error.name === 'NotSupportedError' && tryCompatiblePlayback()) return;
+				if (streamForAttempt) {
+					streamForAttempt.stop();
+					if (compatibleStream === streamForAttempt) compatibleStream = undefined;
+					video.pause();video.removeAttribute('src');video.load();mediaReady=false;
+				}
+				isLoading=false;
+				if (!playbackError) playbackError=error instanceof Error && error.name==='AbortError'?'Your computer took too long to prepare the stream. Try again.':error instanceof Error?error.message:String(error);
+			}
+		}
 		finally {clearTimeout(metadataTimeout);if(mobileMetadataAbort===controller)mobileMetadataAbort=undefined;}
 	}
 	async function retryMobilePlayback() {
 		try {
 			isLoading=true;playbackError='';
-			const source=await resolveMediaFile(Number(media.id),media.title,media.episodeLabel,media.tmdbId,media.kind);
+			const source=await resolveMediaFile(Number(media.id),media.title,media.episodeLabel,media.tmdbId,media.kind,media.playbackUuid);
 			if(playerDisposed)return;
-			if(source.mediaId)media={...media,id:String(source.mediaId)};
+			if(source.mediaId)media={...media,id:String(source.mediaId),playbackUuid:source.playbackUuid ?? media.playbackUuid};
 			mobileSourceUrl=await localMediaUrl(source.path);
 			await loadMobileStream(currentTime || source.resumePositionSeconds);
 		}catch(error){isLoading=false;playbackError=error instanceof Error?error.message:String(error);}
@@ -774,6 +964,7 @@
 			transcoding = saved.enabled; transcodeQuality = saved.quality; transcodeBitrate = saved.bitrate;
 		}
 		playerDisposed = false;
+		attachMobileBackButton();
 		suspendNativeAcrylicForPlayback(true);
 		selectedDesktopPlayer = readPreferredDesktopPlayer();
 		const playbackPreferences = readPlaybackPreferences();
@@ -793,34 +984,42 @@
 		if (!isDesktopRuntime()) {
 			isLoading = false;
 			playbackError = 'Local playback is available in the desktop app.';
-			return () => { document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
+			return () => { playerDisposed = true; detachMobileBackButton(); document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
 		}
 		const mediaId = Number(media.id);
 		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) {
 			isLoading = false;
 			playbackError = 'This item is not connected to a local media file.';
-			return () => { document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
+			return () => { playerDisposed = true; detachMobileBackButton(); document.removeEventListener('fullscreenchange', handleFullscreenChange); window.removeEventListener('resize', handleResize); suspendNativeAcrylicForPlayback(false); };
 		}
 		void readPlayerLevels().then(levels=>{ if(levels && !playerDisposed){volume=Math.round(levels.volume); brightness=Math.round(levels.brightness);} }).catch(console.warn);
-		void resolveMediaFile(mediaId, media.title, media.episodeLabel, media.tmdbId, media.kind)
+		void resolveMediaFile(mediaId, media.title, media.episodeLabel, media.tmdbId, media.kind, media.playbackUuid)
 			.then(async (source) => {
 				if (playerDisposed) return;
-				if(source.mediaId && source.mediaId!==Number(media.id))media={...media,id:String(source.mediaId)};
+				if(source.mediaId)media={...media,id:String(source.mediaId),playbackUuid:source.playbackUuid ?? media.playbackUuid};
 				resumePosition = source.resumePositionSeconds;
 				const episodeMarker = source.path.match(/(?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{2})/i)?.[0];
 				if (episodeMarker && media.kind === 'series') subtitleQuery = `${media.title} ${episodeMarker.toUpperCase()}`;
-				const tracks = await Promise.all(source.subtitles.map(async (subtitle) => ({
-					label: subtitle.label.replace(/\.[^.]+$/, ''),
-					language: subtitle.label.match(/\.([a-z]{2,3}(?:-[A-Z]{2})?)\.(?:srt|vtt)$/i)?.[1] ?? 'und',
-					url: await localMediaUrl(subtitle.path),
-					path: subtitle.path
+				subtitleWarning = source.subtitleWarning ?? '';
+				const tracks = await Promise.all(source.subtitles.map(async (subtitle, index) => ({
+					label: subtitle.label.replace(/\.(?:srt|vtt|ass|ssa|sub|idx)$/i, ''),
+					language: subtitle.language && subtitle.language !== 'und' ? subtitle.language : subtitle.label.match(/(?:^|[. _-])(en|eng|english|pt-br|por|portuguese|pt|es|spa|fr|fre|fra|de|ger|deu|ja|jpn|ko|kor)(?=[. _-]|$)/i)?.[1]?.toLowerCase().replace('english','en').replace('portuguese','pt') ?? 'und',
+					url: subtitle.supported === false ? '' : /^https?:/i.test(subtitle.path) || /\.vtt$/i.test(subtitle.path) ? await localMediaUrl(subtitle.path) : '',
+					path: subtitle.path,
+					streamIndex: subtitle.streamIndex,
+					supported: subtitle.supported,
+					lazyIndex: subtitle.supported !== false && !/^https?:/i.test(subtitle.path) && !/\.vtt$/i.test(subtitle.path) ? index : undefined
 				})));
 				if (playerDisposed) {
 					for (const track of tracks) if (track.url.startsWith('blob:')) URL.revokeObjectURL(track.url);
 					return;
 				}
 				subtitleTracks = tracks;
-				activeSubtitle = preferredSubtitleIndex(tracks);
+				activeSubtitle = -1;
+				const preferred = preferredSubtitleIndex(tracks);
+				if (import.meta.env.VITE_LUMA_MOBILE === 'true') {
+					if (preferred >= 0 && tracks[preferred].supported !== false) void selectSubtitle(preferred);
+				} else if (preferred >= 0 && tracks[preferred].streamIndex == null) activeSubtitle = preferred;
 				await tick();
 				if (import.meta.env.VITE_LUMA_MOBILE === 'true') {
 					mobileSourceUrl = await localMediaUrl(source.path);
@@ -837,6 +1036,7 @@
 			});
 		return () => {
 			playerDisposed = true;
+			detachMobileBackButton();
 			mobileMetadataAbort?.abort();
 			compatibleStream?.stop();
 			mobileLoadAttempt++;
@@ -844,7 +1044,9 @@
 			document.removeEventListener('fullscreenchange', handleFullscreenChange);
 			window.removeEventListener('resize', handleResize);
 			if (timeoutId) clearTimeout(timeoutId);
+			if (mobileTapTimer) clearTimeout(mobileTapTimer);
 			if (nativeLoadingTimeout) clearTimeout(nativeLoadingTimeout);
+			if (desktopVolumeFeedbackTimer) clearTimeout(desktopVolumeFeedbackTimer);
 			if (nativePoll) clearInterval(nativePoll);
 			void persistProgress();
 			if (activeEngine && nativeOwner === playerToken) {
@@ -870,7 +1072,7 @@
 	aria-modal="true"
 	aria-label={`Player for ${media.title}`}
 	tabindex="-1"
-	onpointermove={revealControls}
+		onpointermove={(event) => { if (!mobilePlayer || event.pointerType === 'mouse') revealControls(); }}
 	onpointerdown={handlePlayerPointerDown}
 >
 	<div class="player-stage" class:player-stage--media-ready={mediaReady} class:player-stage--native={activeEngine !== null} bind:this={playerStage} style={`--backdrop: url("${media.backdrop}")`}>
@@ -889,19 +1091,19 @@
 			onloadeddata={() => (mediaReady = true)}
 			ontimeupdate={onTimeUpdate}
 			onplay={() => { isPlaying = true; revealControls(); recordPlaybackStarted(); }}
-			onpause={() => { isPlaying = false; revealControls(); void persistProgress(); }}
+			onpause={onPlaybackPause}
 			onended={() => { void handlePlaybackEnded(); }}
 			onerror={onPlaybackError}
 		>
-			{#each subtitleTracks as track, index (track.url)}
-				<track kind="subtitles" src={track.url} srclang={track.language} label={track.label} onload={(event) => onTrackLoad(event, index)} />
+			{#each subtitleTracks as track, index (index)}
+				<track kind="subtitles" src={track.url || undefined} srclang={track.language} label={track.label} onload={(event) => onTrackLoad(event, index)} onerror={() => { if (activeSubtitle === index) subtitleError = 'This subtitle could not be loaded. Try another track.'; }} />
 			{/each}
 		</video>
 		{#if mobilePlayer && !playbackError && !isLoading}
 			<div class="mobile-player-dimmer" style={`opacity: ${nativeMobile && !previewOnly ? 0 : (100 - brightness) / 100 * .85}`}></div>
 			<div class="mobile-player-gestures" aria-label="Player gestures">
 				{#each ['brightness', 'volume'] as side}
-					<button type="button" class="mobile-player-gesture" aria-label={side === 'brightness' ? 'Swipe up or down for brightness; double tap to go back ten seconds' : 'Swipe up or down for volume; double tap to go forward ten seconds'} onpointerdown={(event) => startMobileGesture(event, side as 'brightness' | 'volume')} onpointermove={moveMobileGesture} onpointerup={endMobileGesture} onpointercancel={() => { gesture = null; lastTap = null; }}>
+					<button type="button" class="mobile-player-gesture" aria-label={side === 'brightness' ? 'Swipe up or down for brightness; double tap to go back ten seconds' : 'Swipe up or down for volume; double tap to go forward ten seconds'} onpointerdown={(event) => startMobileGesture(event, side as 'brightness' | 'volume')} onpointermove={moveMobileGesture} onpointerup={endMobileGesture} onpointercancel={() => { gesture = null; lastTap = null; if (mobileTapTimer) clearTimeout(mobileTapTimer); mobileTapTimer = undefined; }}>
 						<span class="mobile-player-level" class:mobile-player-level--visible={controlsVisible || gestureFeedback === side} aria-hidden="true"><Icon name={side === 'brightness' ? 'sun' : 'volume'} size={17} /><span class="mobile-player-level__rail"><span style={`height: ${side === 'brightness' ? brightness : isMuted ? 0 : volume}%`}></span></span></span>
 					</button>
 				{/each}
@@ -923,8 +1125,11 @@
 				<div class="player-message player-message--error" role="alert"><strong>Playback unavailable</strong><span>{playbackError}</span><span>Choose another engine in the menu at the top right.</span></div>
 			{/if}
 		{/if}
+		{#if !mobilePlayer && desktopVolumeFeedback}
+			<div class="desktop-volume-feedback" role="status" aria-live="polite"><Icon name="volume" size={20}/><strong>{volume}%</strong></div>
+		{/if}
 
-		<div class:player-ui--hidden={!controlsVisible && isPlaying} class="player-ui">
+		<div class:player-ui--hidden={!controlsVisible} class="player-ui">
 			<div class="player-topbar">
 				<button class="player-glass-button" type="button" style="corner-shape: squircle" aria-label="Close player"  onclick={closePlayer}>
 					<Icon name={mobilePlayer ? 'arrow-left' : 'close'} size={20} />
@@ -997,6 +1202,7 @@
 							{#if speedMenuOpen}<div class="mobile-player-speed__menu" role="group" aria-label="Playback speed">{#each [0.75,1,1.25,1.5,2] as rate}<button type="button" class:active={playbackRate === rate} aria-pressed={playbackRate === rate} onclick={() => { setPlaybackRate(rate); speedMenuOpen = false; }}>{rate}×</button>{/each}</div>{/if}
 						</div>
 						<button type="button" onclick={toggleFullscreen}><Icon name="fullscreen" size={21} /><span>Fullscreen</span></button>
+						<button type="button" aria-label="Lock screen touch controls" onclick={lockScreen}><Icon name="lock" size={21} /><span>Lock screen</span></button>
 					</div>
 				{:else}
 				<div class="player-transport">
@@ -1030,8 +1236,13 @@
 				{/if}
 			</div>{/if}
 		</div>
+		{#if mobilePlayer && screenLocked}
+			<div class="mobile-player-lock-shield">
+				<button type="button" onclick={unlockScreen} aria-label="Unlock screen controls"><Icon name="unlock" size={18} /><span>Screen locked · Tap to unlock</span></button>
+			</div>
+		{/if}
 
-		{#if !isPlaying && !mobilePlayer}
+		{#if !isPlaying && !mobilePlayer && !isLoading && !activeEngine}
 			{#if !playbackError}<button class="player-center-play" type="button" style="corner-shape: squircle" aria-label="Play" onclick={togglePlayback}>
 				<Icon name="play" size={28} weight="fill" />
 			</button>{/if}
@@ -1047,12 +1258,14 @@
 							{#if activeEngine}
 								<button type="button" class:active={!nativeSubtitleTracks.some((track) => track.selected)} aria-pressed={!nativeSubtitleTracks.some((track) => track.selected)} onclick={() => selectNativeSubtitle(-1)}><span>Off</span>{#if !nativeSubtitleTracks.some((track) => track.selected)}<Icon name="check" size={14} />{/if}</button>
 								{#each nativeSubtitleTracks as track (track.id)}<button type="button" class:active={track.selected} aria-pressed={track.selected} onclick={() => selectNativeSubtitle(track.id)}><span>{track.label}{track.language && track.language.toLowerCase() !== track.label.toLowerCase() ? ` · ${track.language}` : ''}</span>{#if track.selected}<Icon name="check" size={14} />{/if}</button>{/each}
-								{#each subtitleTracks.filter((track) => track.path) as track (track.path)}<button type="button" onclick={() => selectNativeExternalSubtitle(track)}>{track.label}</button>{/each}
+								{#each subtitleTracks.filter((track) => track.path && track.streamIndex == null) as track (track.path)}<button type="button" onclick={() => selectNativeExternalSubtitle(track)}>{track.label}</button>{/each}
 							{:else}
 								<button type="button" class:active={activeSubtitle === -1} aria-pressed={activeSubtitle === -1} onclick={() => selectSubtitle(-1)}><span>Off</span>{#if activeSubtitle === -1}<Icon name="check" size={14} />{/if}</button>
-								{#each subtitleTracks as track, index}<button type="button" class:active={activeSubtitle === index} aria-pressed={activeSubtitle === index} onclick={() => selectSubtitle(index)}><span>{track.label}</span>{#if activeSubtitle === index}<Icon name="check" size={14} />{/if}</button>{/each}
+								{#each subtitleTracks as track, index}<button type="button" disabled={track.supported === false} class:active={activeSubtitle === index} aria-pressed={activeSubtitle === index} onclick={() => selectSubtitle(index)}><span>{track.label}{track.supported === false ? ' · Not supported by this player' : ''}</span>{#if activeSubtitle === index}<Icon name="check" size={14} />{/if}</button>{/each}
 							{/if}
 						</div>
+						{#if subtitleWarning && !activeEngine}<p class="subtitle-online__error" role="status">{subtitleWarning}</p>{/if}
+						{#if subtitleError}<p class="subtitle-online__error" role="alert">{subtitleError}</p>{/if}
 					</section>
 					<section class="subtitle-panel__section subtitle-panel__appearance" aria-label="Subtitle appearance">
 						<h3>Appearance</h3>
@@ -1074,7 +1287,6 @@
 							</div>
 							<button class="subtitle-online__button subtitle-online__button--primary" type="button" disabled={subtitleSearchBusy} onclick={findOpenSubtitles}>{subtitleSearchBusy ? 'Searching…' : 'Search subtitles'}</button>
 							{#if subtitleStatus}<p class="subtitle-online__status" role="status">{subtitleStatus}</p>{/if}
-							{#if subtitleError}<p class="subtitle-online__error" role="alert">{subtitleError}</p>{/if}
 							{#if subtitleResults.length > 0}
 								<div class="subtitle-online__results" aria-label="Subtitle results">
 									{#each subtitleResults as result (result.fileId)}
@@ -1103,10 +1315,11 @@
 </div>
 
 <style>
-	.player-overlay { position: fixed; inset: 0; z-index: 80; color: #f4f6f7; background: #020304; outline: none; }
+	.player-overlay { position: fixed; inset: 0; z-index: 80; border: 0; color: #f4f6f7; background: #020304; outline: none; box-shadow: none; }
 	.player-overlay--native { background: transparent; }
 	.player-stage--native .player-stage__image, .player-stage--native .player-stage__ambient, .player-stage--native .player-stage__vignette { display: none; }
-	.player-stage { position: relative; width: 100%; height: 100%; overflow: hidden; isolation: isolate; background: #000; }
+	.player-stage { position: relative; width: 100%; height: 100%; overflow: hidden; isolation: isolate; border: 0; background: #000; }
+	.player-stage::before { position:absolute; top:0; right:0; left:0; z-index:2; height:1px; background:#020304; content:""; pointer-events:none; }
 	.player-stage:fullscreen { width: 100vw; height: 100vh; background: #000; }
 	.player-stage.player-stage--native, .player-stage.player-stage--native:fullscreen { background: transparent; }
 	.player-stage__image { position: absolute; inset: -2.5%; background-image: var(--backdrop); background-position: center; background-size: cover; filter: saturate(0.8) contrast(1.06) brightness(0.74); transform: scale(1.025); z-index: -3; transition: opacity 320ms ease, visibility 0s; }
@@ -1115,12 +1328,15 @@
 	.player-stage--media-ready .player-stage__image,
 	.player-stage--media-ready .player-stage__ambient,
 	.player-stage--media-ready .player-stage__vignette { visibility: hidden; opacity: 0; transition: opacity 320ms ease, visibility 0s linear 320ms; }
-	.player-video { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; background: #000; object-fit: contain; outline: none; }
+	.player-video { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; border: 0; background: #000; object-fit: contain; outline: none; }
 	.player-video--hidden { visibility: hidden; }
-	.player-overlay--mobile .player-video::-webkit-media-controls,
-	.player-overlay--mobile .player-video::-webkit-media-controls-start-playback-button { display:none !important; -webkit-appearance:none; }
+	.player-video::-webkit-media-controls,
+	.player-video::-webkit-media-controls-start-playback-button { display:none !important; -webkit-appearance:none; }
 	.player-video::cue { color: #fff; font-family: var(--caption-font, Manrope, sans-serif); font-size: var(--caption-size, 100%); background: rgba(0,0,0,0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
 	.player-message { position: absolute; top: 50%; left: 50%; z-index: 2; display: grid; justify-items: center; gap: 12px; width: min(440px, calc(100% - 36px)); color: rgba(244,247,249,0.72); font-size: 0.78rem; text-align: center; transform: translate(-50%,-50%); }
+	.desktop-volume-feedback { position:absolute; bottom:26px; left:26px; z-index:7; display:flex; align-items:center; gap:12px; padding:14px 18px; border:1px solid rgba(255,255,255,.12); border-radius:16px; color:#f4f7f9; background:rgba(14,18,22,.78); box-shadow:0 14px 42px rgba(0,0,0,.28); pointer-events:none; animation:volume-feedback-in 120ms ease-out; }
+	.desktop-volume-feedback strong { min-width:3ch; font-size:1rem; font-variant-numeric:tabular-nums; text-align:right; }
+	@keyframes volume-feedback-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
 	.player-message--error { padding: 22px 24px; border: 1px solid rgba(255,255,255,0.15); border-radius: 18px; background: rgba(13,16,20,0.72); box-shadow: 0 24px 60px rgba(0,0,0,0.38); backdrop-filter: blur(24px) saturate(135%); }
 	.player-message--error strong { color: #fff; font-size: 0.95rem; font-weight: 650; }
 	.player-message--mobile-error { z-index:4; width:min(340px,calc(100% - 48px)); gap:14px; padding:26px 22px; border:1px solid rgba(220,234,246,.13); border-radius:20px; background:#111b25; line-height:1.6; }
@@ -1133,7 +1349,7 @@
 	.player-ui--hidden { visibility: hidden; opacity: 0; transition: opacity 220ms ease, visibility 0s linear 220ms; }
 	.player-ui--hidden * { pointer-events: none !important; }
 
-	.player-topbar { position: absolute; top: 0; right: 0; left: 0; display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 86px; background: linear-gradient(180deg, rgba(2,4,6,0.68), transparent); }
+	.player-topbar { position: absolute; top: 0; right: 0; left: 0; display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 86px; border: 0; background: linear-gradient(180deg, rgba(2,4,6,0.68), transparent); }
 	.player-topbar > * { pointer-events: auto; }
 	.player-options-anchor { position: relative; z-index: 6; }
 	.player-options { position: absolute; top: 52px; right: 0; display: grid; gap: 9px; width: min(280px, calc(100vw - 36px)); padding: 15px; border: 1px solid rgba(255,255,255,0.14); border-radius: 16px; color: rgba(244,247,249,0.86); background: rgba(17,21,26,0.94); box-shadow: 0 18px 54px rgba(0,0,0,0.42); -webkit-backdrop-filter: blur(24px) saturate(140%); backdrop-filter: blur(24px) saturate(140%); }
@@ -1207,6 +1423,7 @@
 	.subtitle-panel__tracks button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.subtitle-panel__tracks button:hover { background: rgba(255,255,255,0.06); }
 	.subtitle-panel__tracks button.active { border-color: rgba(255,255,255,0.12); color: #fff; background: rgba(255,255,255,0.1); }
+	.subtitle-panel__tracks button:disabled { opacity: .55; cursor: default; }
 	.subtitle-panel__appearance { gap: 12px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); }
 	.subtitle-panel__appearance label { display: grid; gap: 5px; font-size: 0.68rem; }
 	.subtitle-panel__setting-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -1292,7 +1509,7 @@
 	.mobile-player-play { width: 70px; height: 70px; border-radius: 50%; color: #101820; background: rgba(236,244,248,.95); box-shadow: 0 8px 30px rgba(0,0,0,.25); }
 	.mobile-player-skip { width: 54px; height: 54px; border-radius: 50%; color: #edf4f7; background: rgba(20,31,42,.52); backdrop-filter: blur(16px); }
 	.mobile-player-skip span { position: absolute; top: 23px; font-size: 9px; font-weight: 750; line-height: 1; }
-	.mobile-player-tools { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; margin-top: 22px; }
+	.mobile-player-tools { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 4px; margin-top: 22px; }
 	.mobile-player-tools button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; min-width: 0; min-height: 54px; border: 0; border-radius: 12px; color: rgba(230,239,246,.7); background: transparent; font: inherit; font-size: .64rem; cursor: pointer; }
 	.mobile-player-tools button.active { color: #e7f5fc; background: rgba(146,184,204,.12); }
 	.mobile-player-speed { position: relative; min-width: 0; }
@@ -1302,6 +1519,8 @@
 	.mobile-player-speed__menu button { width: 100%; min-height: 44px; font-size: .8rem; }
 	.mobile-player-dimmer { position: absolute; inset: 0; z-index: 1; background: #000; pointer-events: none; }
 	.mobile-player-gestures { position: absolute; inset: 0; z-index: 2; display: grid; grid-template-columns: 1fr 1fr; }
+	.mobile-player-lock-shield { position: absolute; inset: 0; z-index: 20; display: flex; align-items: flex-start; justify-content: flex-end; padding: max(18px,env(safe-area-inset-top)) 18px 18px; background: transparent; touch-action: manipulation; }
+	.mobile-player-lock-shield button { display: flex; align-items: center; gap: 9px; min-height: 44px; padding: 0 14px; border: 1px solid rgba(228,239,247,.16); border-radius: 999px; color: #edf4f7; background: rgba(17,27,38,.8); backdrop-filter: blur(16px); font: inherit; font-size: .75rem; cursor: pointer; }
 	.mobile-player-gesture { position: relative; min-width: 0; padding: 0; border: 0; background: transparent; touch-action: none; user-select: none; -webkit-tap-highlight-color: transparent; }
 	.mobile-player-level { position: absolute; top: 50%; left: 15px; display: flex; flex-direction: column; align-items: center; gap: 12px; color: rgba(235,243,249,.7); transform: translateY(-50%); opacity: 0; transition: opacity 150ms; pointer-events: none; }
 	.mobile-player-gesture:last-child .mobile-player-level { left: auto; right: 15px; }
@@ -1331,6 +1550,7 @@
 	@media (prefers-reduced-transparency: reduce) {
 		.player-control-deck,
 		.player-glass-button { background: #161a1f; -webkit-backdrop-filter: none; backdrop-filter: none; }
+		.player-overlay--mobile .player-control-deck { background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 	}
 
 	@media (prefers-reduced-motion: reduce) {

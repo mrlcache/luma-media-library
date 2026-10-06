@@ -6,27 +6,35 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
+import {createHash} from 'node:crypto';
 import {Transcoder} from '../media-server/src/transcode.mjs';
 
 const root=await mkdtemp(path.join(os.tmpdir(),'luma-stream-browser-'));
 const transcoder=new Transcoder(path.resolve('media-server/tools'));
 const exec=promisify(execFile);let browser,server,socket;let gets=0;
 try {
-  const input=path.join(root,'source.mkv');
-  await exec(transcoder.ffmpeg,['-y','-v','error','-f','lavfi','-i','testsrc2=s=320x180:r=24','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t','12','-c:v','libx264','-g','48','-c:a','aac',input],{windowsHide:true,timeout:30000});
+  const realMedia = Boolean(process.env.LUMA_TEST_MEDIA);
+  const offset = Number(process.env.LUMA_TEST_OFFSET || 5);
+  const input=process.env.LUMA_TEST_MEDIA || path.join(root,'source.mkv');
+  if (!realMedia) await exec(transcoder.ffmpeg,['-y','-v','error','-f','lavfi','-i','testsrc2=s=320x180:r=24','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t','12','-c:v','libx264','-g','48','-c:a','aac',input],{windowsHide:true,timeout:30000});
   const file={path:input,info:await stat(input)};
-  const plan=await transcoder.plan(file,'mp4','480p',0,5);
+  const plan=await transcoder.plan(file,'mp4','480p',0,offset);
   const helper=ts.transpileModule(await readFile(new URL('../src/lib/platform/compatible-stream.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText.replace(/^export /gm,'');
   const html=`<video id="video" muted playsinline></video><script>${helper}
     window.result=(async()=>{const video=document.querySelector('video');let error='',ended=false;video.onended=()=>ended=true;
-    const stream=openCompatibleStream(video,'/stream',${plan.duration-5},e=>error=e.message);
+    const stream=openCompatibleStream(video,'/stream',${plan.duration-offset},e=>error=e.message);
     await stream.ready;await video.play();await new Promise(r=>setTimeout(r,3000));
     const early={time:video.currentTime,duration:video.duration,error,ended};
     await new Promise(r=>setTimeout(r,5000));
     const result={...early,finished:ended,finalTime:video.currentTime};video.pause();stream.stop();return result;})();</script>`;
+  const packagedPolicy=JSON.parse(await readFile(new URL('../mobile/src-tauri/tauri.conf.json',import.meta.url),'utf8')).app.security.csp;
+  assert.match(packagedPolicy,/media-src[^;]*\bblob:/,'Packaged policy must allow the MediaSource object URL');
+  const fixtureScript=html.slice(html.indexOf('<script>')+8,html.lastIndexOf('</script>'));
+  const scriptHash=createHash('sha256').update(fixtureScript).digest('base64');
+  const fixturePolicy=packagedPolicy.replace("script-src 'self'",`script-src 'self' 'sha256-${scriptHash}'`);
   server=http.createServer((req,res)=>{
-    if(req.url==='/stream'){gets++;transcoder.stream(file,req,res,5,'mp4','480p',0,'fixture').catch(e=>{res.writeHead(500);res.end(e.message);});}
-    else{res.writeHead(200,{'Content-Type':'text/html'});res.end(html);}
+    if(req.url==='/stream'){gets++;transcoder.stream(file,req,res,offset,'mp4','480p',0,'fixture').catch(e=>{res.writeHead(500);res.end(e.message);});}
+    else{res.writeHead(200,{'Content-Type':'text/html','Content-Security-Policy':fixturePolicy});res.end(html);}
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const profile=path.join(root,'profile');
@@ -42,7 +50,10 @@ try {
     socket.onmessage=event=>{const msg=JSON.parse(event.data);if(msg.id===1){clearTimeout(timeout);if(msg.result?.exceptionDetails)reject(new Error(JSON.stringify(msg.result.exceptionDetails)));else resolve(msg.result.result.value);}};
     socket.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression:'window.result',awaitPromise:true,returnByValue:true}}));
   });
-  assert.equal(result.error,'');assert.equal(result.ended,false);assert.ok(result.time>2,JSON.stringify(result));assert.ok(Math.abs(result.duration-(plan.duration-5))<.15,JSON.stringify(result));assert.equal(result.finished,true);assert.ok(Math.abs(result.finalTime-result.duration)<.15);assert.equal(gets,1);
+  assert.equal(result.error,'');assert.equal(result.ended,false);assert.ok(result.time>2,JSON.stringify(result));assert.ok(Math.abs(result.duration-(plan.duration-offset))<.15,JSON.stringify(result));
+  if (!realMedia) {assert.equal(result.finished,true);assert.ok(Math.abs(result.finalTime-result.duration)<.15);}
+  else {assert.equal(result.finished,false);assert.ok(result.finalTime>7,JSON.stringify(result));}
+  assert.equal(gets,1);
   console.log('Real Chromium playback passed: resumed stream plays beyond first fragments, full duration, one GET.',result);
 } finally {
   if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify({id:99,method:'Browser.close'}));

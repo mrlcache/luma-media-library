@@ -32,16 +32,19 @@ def quadratic(p0, p1, p2, steps=60):
     ]
 
 
-def render_icon(size):
+def render_icon(size, *, reduced=False, background=True):
     # Render each ICO/PNG size independently; a downscaled large icon loses the spark.
     sampling = 8 if size <= 64 else 4
     canvas = size * sampling
     image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((0, 0, canvas - 1, canvas - 1), radius=canvas * 9 / 32, fill=BG)
-    if size <= 48:
+    if background:
+        draw.rounded_rectangle((0, 0, canvas - 1, canvas - 1), radius=canvas * 9 / 32, fill=BG)
+    if size <= 48 or reduced:
         # Micro mark: retain the curved trail and spark without crossing tiny strokes.
-        factor = canvas / 32
+        # Match favicon.svg's reduced mark scale so regenerated PNG fallbacks
+        # keep the same padding as the vector icon.
+        factor = canvas / 32 * 0.85
         origin = (0, 0)
         width = round((2.6 if size <= 16 else 2.2) * factor)
         runs = [[(5, 26)] + cubic((5, 26), (8.5, 20), (12.5, 16.5), (17, 14))]

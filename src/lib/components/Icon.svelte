@@ -14,6 +14,7 @@
 	import PlayIcon from 'phosphor-svelte/lib/PlayIcon';
 	import PauseIcon from 'phosphor-svelte/lib/PauseIcon';
 	import XIcon from 'phosphor-svelte/lib/XIcon';
+	import TrashIcon from 'phosphor-svelte/lib/TrashIcon';
 	import ArrowLeftIcon from 'phosphor-svelte/lib/ArrowLeftIcon';
 	import CaretRightIcon from 'phosphor-svelte/lib/CaretRightIcon';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
@@ -32,6 +33,8 @@
 	import FolderIcon from 'phosphor-svelte/lib/FolderIcon';
 	import CodeIcon from 'phosphor-svelte/lib/CodeIcon';
 	import HardDrivesIcon from 'phosphor-svelte/lib/HardDrivesIcon';
+	import LockKeyIcon from 'phosphor-svelte/lib/LockKeyIcon';
+	import LockKeyOpenIcon from 'phosphor-svelte/lib/LockKeyOpenIcon';
 
 	export type IconName =
 		| 'home'
@@ -50,6 +53,7 @@
 		| 'play'
 		| 'pause'
 		| 'close'
+		| 'trash'
 		| 'arrow-left'
 		| 'chevron-right'
 		| 'chevron-down'
@@ -67,7 +71,9 @@
 		| 'forward-ten'
 		| 'download'
 		| 'folder'
-		| 'code';
+		| 'code'
+		| 'lock'
+		| 'unlock';
 
 	type IconWeight = 'thin' | 'light' | 'regular' | 'bold' | 'fill' | 'duotone';
 	type Props = { name: IconName; size?: number; weight?: IconWeight; mirrored?: boolean };
@@ -91,6 +97,7 @@
 		play: PlayIcon,
 		pause: PauseIcon,
 		close: XIcon,
+		trash: TrashIcon,
 		'arrow-left': ArrowLeftIcon,
 		'chevron-right': CaretRightIcon,
 		'chevron-down': CaretDownIcon,
@@ -108,7 +115,9 @@
 		'forward-ten': ArrowClockwiseIcon,
 		download: DownloadSimpleIcon,
 		folder: FolderIcon,
-		code: CodeIcon
+		code: CodeIcon,
+		lock: LockKeyIcon,
+		unlock: LockKeyOpenIcon
 	};
 
 	let Glyph = $derived(icons[name]);

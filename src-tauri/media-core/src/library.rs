@@ -24,6 +24,7 @@ const GROUPED_CATALOG_CTE: &str = "WITH current_items AS (
       ON items.root_id = files.root_id AND items.relative_path = files.relative_path
     LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
     WHERE files.generation = roots.current_generation
+      AND NOT EXISTS (SELECT 1 FROM media_extras WHERE media_id = items.id)
 ), grouped AS (
     SELECT MIN(id) AS id,
            COALESCE(MAX(NULLIF(metadata_title, '')), MIN(local_title), MIN(display_name)) AS title,
@@ -98,6 +99,7 @@ pub struct LibraryScanSummary {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogMedia {
     pub id: i64,
+    pub playback_uuid: String,
     pub title: String,
     pub extension: String,
     pub size_bytes: u64,
@@ -147,6 +149,7 @@ pub struct CatalogPage {
 #[serde(rename_all = "camelCase")]
 pub struct LocalEpisodeFile {
     pub media_id: i64,
+    pub playback_uuid: String,
     pub file_name: String,
     pub path: String,
     pub season: Option<u16>,
@@ -158,6 +161,7 @@ pub struct LocalEpisodeFile {
 pub struct LocalTitleDetail {
     pub media: CatalogMedia,
     pub files: Vec<LocalEpisodeFile>,
+    pub extras: Vec<LocalEpisodeFile>,
     pub watched_before: Option<EpisodePosition>,
     pub tmdb_id: Option<u64>,
 }
@@ -173,6 +177,8 @@ pub struct EpisodePosition {
 #[serde(rename_all = "camelCase")]
 pub struct ContinueWatchingItem {
     pub id: i64,
+    pub playback_id: i64,
+    pub playback_uuid: String,
     pub title: String,
     pub kind: Option<String>,
     pub year: Option<u16>,
@@ -203,6 +209,30 @@ pub struct LibraryStore {
     connection: Connection,
 }
 
+fn move_file(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    match std::fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(error) if matches!(error.raw_os_error(), Some(17 | 18)) => {
+            std::fs::copy(source, destination)?;
+            if let Err(remove_error) = std::fs::remove_file(source) {
+                let _ = std::fs::remove_file(destination);
+                return Err(remove_error);
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn rollback_moves(moved: &[(PathBuf, PathBuf)]) {
+    for (source, destination) in moved.iter().rev() {
+        if let Some(parent) = source.parent() { let _ = std::fs::create_dir_all(parent); }
+        if std::fs::rename(destination, source).is_err() {
+            if std::fs::copy(destination, source).is_ok() { let _ = std::fs::remove_file(destination); }
+        }
+    }
+}
+
 impl LibraryStore {
     /// One entry per TMDb title, across the complete active library (not a catalog page).
     pub fn recommendation_profile(&self) -> Result<Vec<(u64, String, String, Option<i64>)>, String> {
@@ -214,6 +244,7 @@ impl LibraryStore {
              JOIN library_roots AS roots ON roots.id = files.root_id AND files.generation = roots.current_generation
              LEFT JOIN playback_activity AS activity ON activity.media_id = items.id
              WHERE metadata.tmdb_id > 0 AND metadata.kind IN ('movie', 'series')
+               AND NOT EXISTS (SELECT 1 FROM media_extras WHERE media_id = items.id)
              GROUP BY metadata.kind, metadata.tmdb_id
              ORDER BY MAX(activity.updated_at) DESC, MAX(files.modified_at) DESC"
         ).map_err(|error| format!("Could not read recommendation profile: {error}"))?;
@@ -405,7 +436,55 @@ impl LibraryStore {
             );"
         ).map_err(|error| format!("Could not prepare series watch status: {error}"))?;
 
+        let extras_initialized: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media_extras')", [], |row| row.get(0)).map_err(|error| error.to_string())?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS media_extras (media_id INTEGER PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE)").map_err(|error| error.to_string())?;
+        if !extras_initialized {
+            let mut statement = connection.prepare("SELECT id, relative_path FROM media_items").map_err(|error| error.to_string())?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))).map_err(|error| error.to_string())?;
+            for row in rows {
+                let (id, relative) = row.map_err(|error| error.to_string())?;
+                if is_extra_media_path(Path::new(&relative)) {
+                    connection.execute("INSERT OR IGNORE INTO media_extras(media_id) VALUES (?1)", [id]).map_err(|error| error.to_string())?;
+                }
+            }
+        }
+        // Persist identities separately from paths and row numbers. Moving a file
+        // keeps its identity; deleting it cannot redirect an old player to a new row.
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS media_identity (
+                media_id INTEGER PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+                uuid TEXT NOT NULL UNIQUE
+             );
+             CREATE TRIGGER IF NOT EXISTS media_identity_insert AFTER INSERT ON media_items BEGIN
+                INSERT INTO media_identity(media_id, uuid) VALUES (NEW.id,
+                    lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+                    substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',1 + (random() & 3),1) ||
+                    substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))));
+             END;
+             INSERT INTO media_identity(media_id, uuid)
+             SELECT id, lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+                    substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',1 + (random() & 3),1) ||
+                    substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))
+             FROM media_items WHERE id NOT IN (SELECT media_id FROM media_identity);"
+        ).map_err(|error| format!("Could not prepare media identities: {error}"))?;
         Ok(Self { connection })
+    }
+
+    pub fn playback_uuid(&self, media_id: i64) -> Result<String, String> {
+        self.connection.query_row("SELECT uuid FROM media_identity WHERE media_id=?1", [media_id], |row| row.get(0))
+            .map_err(|error| format!("Could not identify this library file: {error}"))
+    }
+
+    pub fn media_id_for_uuid(&self, uuid: &str) -> Result<Option<i64>, String> {
+        self.connection.query_row("SELECT media_id FROM media_identity WHERE uuid=?1", [uuid], |row| row.get(0))
+            .optional().map_err(|error| format!("Could not identify this library file: {error}"))
+    }
+
+    pub fn require_media_identity(&self, media_id: i64, uuid: Option<&str>) -> Result<(), String> {
+        if let Some(uuid) = uuid {
+            if self.media_id_for_uuid(uuid)? == Some(media_id) { return Ok(()); }
+        }
+        Err("This library item changed. Refresh the library before moving or deleting it.".into())
     }
 
     pub fn record_playback_activity(&mut self, media_id: i64) -> Result<(), String> {
@@ -451,7 +530,8 @@ impl LibraryStore {
              JOIN media_files AS files ON files.root_id = items.root_id AND files.relative_path = items.relative_path
              JOIN library_roots AS roots ON roots.id = files.root_id AND files.generation = roots.current_generation
              LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
-             WHERE items.id = ?1 AND COALESCE(metadata.kind, items.local_kind) = 'series'",
+            WHERE items.id = ?1 AND COALESCE(metadata.kind, items.local_kind) = 'series'
+              AND NOT EXISTS (SELECT 1 FROM media_extras WHERE media_id = items.id)",
             [media_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         ).optional().map_err(|error| format!("Could not identify the selected episode: {error}"))?;
         let Some((name, path, series_key)) = selected else { return Ok(()); };
@@ -474,7 +554,8 @@ impl LibraryStore {
                  LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
                  WHERE CASE WHEN metadata.tmdb_id IS NOT NULL
                             THEN COALESCE(metadata.kind, '') || ':' || metadata.tmdb_id
-                            ELSE 'series:' || items.local_key || ':' || COALESCE(items.local_year, '') END = ?1"
+                            ELSE 'series:' || items.local_key || ':' || COALESCE(items.local_year, '') END = ?1
+                   AND NOT EXISTS (SELECT 1 FROM media_extras WHERE media_id = items.id)"
             ).map_err(|error| error.to_string())?;
             let rows = statement.query_map([&series_key], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
                 .map_err(|error| error.to_string())?;
@@ -520,6 +601,7 @@ impl LibraryStore {
                     JOIN library_roots AS roots
                       ON roots.id = files.root_id AND roots.current_generation = files.generation
                     LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
+                    WHERE NOT EXISTS (SELECT 1 FROM media_extras WHERE media_id = items.id)
                  ), ranked AS (
                     SELECT *, ROW_NUMBER() OVER (PARTITION BY group_key ORDER BY updated_at DESC) AS rank
                     FROM candidates
@@ -564,12 +646,8 @@ impl LibraryStore {
             return Err("Playback progress is invalid.".to_owned());
         }
         if position_seconds < 10.0 {
-            self.connection
-                .execute(
-                    "DELETE FROM playback_progress WHERE media_id = ?1",
-                    [media_id],
-                )
-                .map_err(|error| format!("Could not clear playback progress: {error}"))?;
+            // Opening a resume item can emit a brief zero-position update while
+            // the player is restoring its saved seek. Keep the existing marker.
             return Ok(());
         }
         if position_seconds >= duration_seconds - 20.0
@@ -626,13 +704,9 @@ impl LibraryStore {
         let count = requested_count.clamp(1, 24);
         let mut statement = self
             .connection
-            .prepare(
-                "WITH candidates AS (
-                    SELECT items.id, COALESCE(NULLIF(metadata.title, ''), items.local_title, files.display_name) AS title,
-                           COALESCE(metadata.kind, items.local_kind) AS kind,
-                           COALESCE(metadata.release_year, items.local_year) AS release_year,
-                           metadata.overview, metadata.vote_average,
-                           metadata.poster_url, metadata.backdrop_url,
+            .prepare(&format!(
+                "{GROUPED_CATALOG_CTE}, progress_rows AS (
+                    SELECT items.id AS playback_id,
                            progress.position_seconds, progress.duration_seconds,
                            progress.updated_at,
                            CASE WHEN metadata.tmdb_id IS NOT NULL
@@ -648,31 +722,41 @@ impl LibraryStore {
                       ON roots.id = files.root_id AND roots.current_generation = files.generation
                     LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
                     WHERE progress.duration_seconds > 0
+                      AND NOT EXISTS (SELECT 1 FROM media_extras WHERE media_id = items.id)
+                 ), candidates AS (
+                    SELECT grouped.id, progress_rows.playback_id, grouped.title,
+                           grouped.kind, grouped.release_year, grouped.overview,
+                           grouped.vote_average, grouped.poster_url, grouped.backdrop_url,
+                           progress_rows.position_seconds, progress_rows.duration_seconds,
+                           progress_rows.updated_at, progress_rows.group_key
+                    FROM progress_rows
+                    JOIN grouped ON grouped.group_key = progress_rows.group_key
                  ), ranked AS (
                     SELECT *, ROW_NUMBER() OVER (PARTITION BY group_key ORDER BY updated_at DESC) AS rank
                     FROM candidates
                  )
-                 SELECT id, title, kind, release_year, overview, vote_average,
+                 SELECT id, playback_id, title, kind, release_year, overview, vote_average,
                         poster_url, backdrop_url,
                         position_seconds, duration_seconds, updated_at
-                 FROM ranked WHERE rank = 1 ORDER BY updated_at DESC LIMIT ?1",
-            )
+                 FROM ranked WHERE rank = 1 ORDER BY updated_at DESC LIMIT ?1"
+            ))
             .map_err(|error| format!("Could not prepare playback history: {error}"))?;
         let rows = statement
             .query_map([count], |row| {
-                let year: Option<i64> = row.get(3)?;
                 Ok(ContinueWatchingItem {
                     id: row.get(0)?,
-                    title: row.get(1)?,
-                    kind: row.get(2)?,
-                    year: year.and_then(|value| u16::try_from(value).ok()),
-                    overview: row.get(4)?,
-                    vote_average: row.get(5)?,
-                    poster_url: row.get(6)?,
-                    backdrop_url: row.get(7)?,
-                    position_seconds: row.get(8)?,
-                    duration_seconds: row.get(9)?,
-                    updated_at: row.get(10)?,
+                    playback_id: row.get(1)?,
+                    playback_uuid: self.playback_uuid(row.get(1)?) .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    title: row.get(2)?,
+                    kind: row.get(3)?,
+                    year: row.get::<_, Option<i64>>(4)?.and_then(|value| u16::try_from(value).ok()),
+                    overview: row.get(5)?,
+                    vote_average: row.get(6)?,
+                    poster_url: row.get(7)?,
+                    backdrop_url: row.get(8)?,
+                    position_seconds: row.get(9)?,
+                    duration_seconds: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             })
             .map_err(|error| format!("Could not read playback history: {error}"))?;
@@ -706,43 +790,7 @@ impl LibraryStore {
                 "The indexed media file is no longer inside its library folder.".to_owned(),
             );
         }
-        let directory = media_path
-            .parent()
-            .ok_or_else(|| "The media file has no parent folder.".to_owned())?;
-        let stem = media_path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        let mut subtitles = Vec::new();
-        let entries = std::fs::read_dir(directory)
-            .map_err(|error| format!("Could not inspect nearby subtitle files: {error}"))?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            if !matches!(extension.to_ascii_lowercase().as_str(), "srt" | "vtt") {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            let candidate_stem = name.rsplit_once('.').map(|(base, _)| base).unwrap_or(name);
-            if candidate_stem.eq_ignore_ascii_case(stem)
-                || candidate_stem.get(stem.len()..).is_some_and(|suffix| {
-                    candidate_stem[..stem.len()].eq_ignore_ascii_case(stem)
-                        && suffix.starts_with('.')
-                })
-            {
-                if let Ok(canonical) = std::fs::canonicalize(&path) {
-                    if canonical.starts_with(&root) && canonical.is_file() {
-                        subtitles.push(canonical);
-                    }
-                }
-            }
-        }
-        subtitles.sort();
-        Ok(subtitles)
+        crate::subtitles::discover_subtitle_files(&root, &media_path)
     }
 
     pub fn catalog_page(
@@ -800,6 +848,7 @@ impl LibraryStore {
                 let year: Option<i64> = row.get(6)?;
                 Ok(CatalogMedia {
                     id: row.get(0)?,
+                    playback_uuid: String::new(),
                     title: row.get(1)?,
                     extension: row.get(2)?,
                     size_bytes: size_bytes.max(0) as u64,
@@ -813,13 +862,15 @@ impl LibraryStore {
                 })
             })
             .map_err(|error| format!("Could not read the library catalog: {error}"))?;
-        let items = rows
+        let mut items = rows
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("Could not read a library item: {error}"))?;
         drop(statement);
         snapshot
             .commit()
             .map_err(|error| format!("Could not finish reading the library catalog: {error}"))?;
+
+        for item in &mut items { item.playback_uuid = self.playback_uuid(item.id)?; }
 
         Ok(CatalogPage {
             items,
@@ -843,6 +894,7 @@ impl LibraryStore {
                 Ok((
                     CatalogMedia {
                         id: row.get(0)?,
+                        playback_uuid: self.playback_uuid(row.get(0)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
                         title: row.get(1)?,
                         extension: row.get(2)?,
                         size_bytes: size_bytes.max(0) as u64,
@@ -860,6 +912,17 @@ impl LibraryStore {
             .optional()
             .map_err(|error| format!("Could not read this title's details: {error}"))?;
         let Some((media, group_key)) = selected else {
+            let extra: Option<(String, String, String, i64, String)> = self.connection.query_row("SELECT files.display_name, files.extension, roots.canonical_path, files.size_bytes, files.relative_path FROM media_extras JOIN media_items AS items ON items.id=media_extras.media_id JOIN library_roots AS roots ON roots.id=items.root_id JOIN media_files AS files ON files.root_id=items.root_id AND files.relative_path=items.relative_path AND files.generation=roots.current_generation WHERE items.id=?1", [media_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional().map_err(|error| error.to_string())?;
+            if let Some((name, extension, root, size, relative)) = extra {
+                let Ok(canonical_root) = std::fs::canonicalize(&root) else { return Ok(None); };
+                let Ok(path) = std::fs::canonicalize(Path::new(&root).join(relative)) else { return Ok(None); };
+                if !path.starts_with(canonical_root) || !path.is_file() { return Ok(None); }
+                return Ok(Some(LocalTitleDetail {
+                    media: CatalogMedia { id:media_id, playback_uuid:self.playback_uuid(media_id)?, title:name.replace(['.', '_'], " "), extension, size_bytes:size.max(0) as u64, modified_at:None, kind:Some("movie".into()), year:None, overview:None, vote_average:None, poster_url:None, backdrop_url:None },
+                    files:vec![LocalEpisodeFile { media_id, playback_uuid:self.playback_uuid(media_id)?, file_name:name, path:path.to_string_lossy().into_owned(), season:None, episode:None }],
+                    extras:vec![], watched_before:None, tmdb_id:None,
+                }));
+            }
             return Ok(None);
         };
 
@@ -871,7 +934,8 @@ impl LibraryStore {
                ON files.root_id = items.root_id AND files.relative_path = items.relative_path
               AND files.generation = roots.current_generation
              LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
-             WHERE CASE WHEN metadata.tmdb_id IS NOT NULL
+             WHERE NOT EXISTS (SELECT 1 FROM media_extras WHERE media_id = items.id)
+               AND CASE WHEN metadata.tmdb_id IS NOT NULL
                         THEN COALESCE(metadata.kind, '') || ':' || metadata.tmdb_id
                         WHEN items.local_kind = 'series'
                         THEN 'series:' || items.local_key || ':' || COALESCE(items.local_year, '')
@@ -908,6 +972,7 @@ impl LibraryStore {
             let (season, episode) = episode_position(&file_name, &relative_path);
             files.push(LocalEpisodeFile {
                 media_id: episode_id,
+                playback_uuid: self.playback_uuid(episode_id)?,
                 file_name,
                 path: path.to_string_lossy().into_owned(),
                 season,
@@ -919,7 +984,29 @@ impl LibraryStore {
             [&group_key], |row| Ok(EpisodePosition { season: row.get(0)?, episode: row.get(1)? })
         ).optional().map_err(|error| format!("Could not read series watch status: {error}"))?;
         let tmdb_id = self.tmdb_target(media.id)?.map(|(id, _)| id);
-        Ok(Some(LocalTitleDetail { media, files, watched_before, tmdb_id }))
+        let mut extras = Vec::new();
+        let mut extra_statement = self.connection.prepare("SELECT items.id, files.display_name, roots.canonical_path, items.relative_path FROM media_extras JOIN media_items AS items ON items.id=media_extras.media_id JOIN library_roots AS roots ON roots.id=items.root_id JOIN media_files AS files ON files.root_id=items.root_id AND files.relative_path=items.relative_path AND files.generation=roots.current_generation ORDER BY files.relative_path COLLATE NOCASE").map_err(|error| error.to_string())?;
+        let rows = extra_statement.query_map([], |row| Ok((row.get::<_, i64>(0)?,row.get::<_, String>(1)?,row.get::<_, String>(2)?,row.get::<_, String>(3)?))).map_err(|error| error.to_string())?;
+        for row in rows {
+            let (id, file_name, root, relative) = row.map_err(|error| error.to_string())?;
+            let Ok(root) = std::fs::canonicalize(root) else { continue; };
+            let mut base = root.clone();
+            for component in Path::new(&relative).components() {
+                if is_extra_media_folder(Path::new(component.as_os_str())) { break; }
+                base.push(component);
+            }
+            if !files.iter().any(|file| Path::new(&file.path).starts_with(&base)) { continue; }
+            // An Extras folder shared by a multi-title library cannot be assigned safely.
+            if base == root {
+                let main_count: i64 = self.connection.query_row("SELECT COUNT(*) FROM media_files AS files JOIN library_roots AS roots ON roots.id=files.root_id JOIN media_items AS items ON items.root_id=files.root_id AND items.relative_path=files.relative_path WHERE roots.canonical_path=?1 AND files.generation=roots.current_generation AND NOT EXISTS(SELECT 1 FROM media_extras WHERE media_id=items.id)", [root.to_string_lossy().as_ref()], |row| row.get(0)).map_err(|error| error.to_string())?;
+                if main_count != 1 { continue; }
+            }
+            let Ok(path) = std::fs::canonicalize(root.join(relative)) else { continue; };
+            if path.starts_with(&root) && path.is_file() {
+                extras.push(LocalEpisodeFile { media_id:id, playback_uuid:self.playback_uuid(id)?, file_name, path:path.to_string_lossy().into_owned(), season:None, episode:None });
+            }
+        }
+        Ok(Some(LocalTitleDetail { media, files, extras, watched_before, tmdb_id }))
     }
 
     pub fn tmdb_target(&self, media_id: i64) -> Result<Option<(u64, String)>, String> {
@@ -969,6 +1056,136 @@ impl LibraryStore {
             );
         }
         Ok(Some(file))
+    }
+
+    /// Move every indexed file belonging to a grouped title (including its Extras) into
+    /// another configured library root while retaining media IDs and playback metadata.
+    pub fn move_title(&mut self, media_id: i64, destination_root: &Path) -> Result<(), String> {
+        let detail = self.catalog_detail(media_id)?.ok_or_else(|| "This title is no longer in the library.".to_owned())?;
+        let destination_root = std::fs::canonicalize(destination_root)
+            .map_err(|error| format!("Could not open the destination library folder: {error}"))?;
+        if !destination_root.is_dir() {
+            return Err("The destination must be an existing library folder.".into());
+        }
+        let registered: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM library_roots WHERE canonical_path = ?1)",
+            [destination_root.to_string_lossy().as_ref()], |row| row.get(0)
+        ).map_err(|error| format!("Could not verify the destination library folder: {error}"))?;
+        if !registered { return Err("Choose a folder that is already included in your library.".into()); }
+        let (target_root_id, target_generation): (i64, i64) = self.connection.query_row(
+            "SELECT id, current_generation FROM library_roots WHERE canonical_path = ?1",
+            [destination_root.to_string_lossy().as_ref()], |row| Ok((row.get(0)?, row.get(1)?))
+        ).map_err(|error| format!("Could not locate the destination folder: {error}"))?;
+
+        let mut ids: Vec<i64> = detail.files.iter().chain(detail.extras.iter()).map(|file| file.media_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.is_empty() { return Err("No indexed files were found for this title.".into()); }
+
+        #[derive(Clone)]
+        struct MoveRecord { id: i64, file_id: i64, source: PathBuf, destination: PathBuf, relative: String, display_name: String, extension: String, size: i64, modified: Option<i64>, generation: i64 }
+        let mut records = Vec::with_capacity(ids.len());
+        let mut planned_destinations = std::collections::HashSet::new();
+        for id in ids {
+            let row: Option<(String, String, i64, String, String, i64, Option<i64>)> = self.connection.query_row(
+                "SELECT roots.canonical_path, items.relative_path, files.id, files.display_name, files.extension, files.size_bytes, files.modified_at
+                 FROM media_items AS items JOIN library_roots AS roots ON roots.id = items.root_id
+                 JOIN media_files AS files ON files.root_id = items.root_id AND files.relative_path = items.relative_path AND files.generation = roots.current_generation
+                 WHERE items.id = ?1", [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+            ).optional().map_err(|error| format!("Could not find an indexed file: {error}"))?;
+            let Some((source_root, relative, file_id, display_name, extension, size, modified)) = row else {
+                return Err("A file belonging to this title is no longer indexed. Refresh the library and try again.".into());
+            };
+            let relative_path = Path::new(&relative);
+            if relative_path.as_os_str().is_empty() || relative_path.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+                return Err("The library contains an unsafe file path; move cancelled.".into());
+            }
+            let canonical_source_root = std::fs::canonicalize(&source_root).map_err(|e| format!("Could not open a source library folder: {e}"))?;
+            let source = std::fs::canonicalize(canonical_source_root.join(relative_path)).map_err(|e| format!("Could not open an indexed file: {e}"))?;
+            if !source.starts_with(&canonical_source_root) || !source.is_file() { return Err("A file is outside its registered library folder; move cancelled.".into()); }
+            let destination = destination_root.join(relative_path);
+            if !planned_destinations.insert(destination.clone()) {
+                return Err(format!("More than one file has the same relative path ({}), so this title cannot be moved to that folder without overwriting media.", relative));
+            }
+            let occupied: bool = self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM media_items WHERE root_id = (SELECT id FROM library_roots WHERE canonical_path = ?1) AND relative_path = ?2 AND id != ?3)",
+                params![destination_root.to_string_lossy().as_ref(), relative, id], |row| row.get(0)
+            ).map_err(|error| format!("Could not check the destination path: {error}"))?;
+            if occupied || (destination.exists() && destination != source) {
+                return Err(format!("The destination already contains a file at {}.", relative));
+            }
+            records.push(MoveRecord { id, file_id, source, destination, relative, display_name, extension, size, modified, generation: target_generation });
+        }
+
+        let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for record in &records {
+            if record.source == record.destination { continue; }
+            let parent = record.destination.parent().ok_or_else(|| "The destination path is invalid.".to_owned())?;
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                rollback_moves(&moved);
+                return Err(format!("Could not create the destination folder: {error}"));
+            }
+            let canonical_parent = match std::fs::canonicalize(parent) {
+                Ok(path) if path.starts_with(&destination_root) => path,
+                _ => { rollback_moves(&moved); return Err("The destination path leaves the selected library folder.".into()); }
+            };
+            let _ = canonical_parent;
+            if let Err(error) = move_file(&record.source, &record.destination) {
+                rollback_moves(&moved);
+                return Err(format!("Could not move {}: {error}", record.display_name));
+            }
+            moved.push((record.source.clone(), record.destination.clone()));
+        }
+
+        let transaction = match self.connection.transaction() {
+            Ok(transaction) => transaction,
+            Err(error) => { rollback_moves(&moved); return Err(format!("Could not update the library index: {error}")); }
+        };
+        for record in &records {
+            let result = (|| -> Result<(), rusqlite::Error> {
+                transaction.execute("UPDATE media_items SET root_id = ?1, relative_path = ?2 WHERE id = ?3", params![target_root_id, record.relative, record.id])?;
+                transaction.execute("UPDATE media_files SET root_id = ?1, relative_path = ?2, display_name = ?3, extension = ?4, size_bytes = ?5, modified_at = ?6, generation = ?7 WHERE id = ?8", params![target_root_id, record.relative, record.display_name, record.extension, record.size, record.modified, record.generation, record.file_id])?;
+                Ok(())
+            })();
+            if let Err(error) = result {
+                drop(transaction);
+                rollback_moves(&moved);
+                return Err(format!("Could not update the library index: {error}"));
+            }
+        }
+        if let Err(error) = transaction.commit() {
+            rollback_moves(&moved);
+            return Err(format!("Could not finish updating the library index: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Permanently remove the indexed files and their library metadata.
+    pub fn permanently_delete_title(&mut self, media_id: i64) -> Result<(), String> {
+        let detail = self.catalog_detail(media_id)?.ok_or_else(|| "This title is no longer in the library.".to_owned())?;
+        let mut ids: Vec<i64> = detail.files.iter().chain(detail.extras.iter()).map(|file| file.media_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.is_empty() { return Err("No indexed files were found for this title.".into()); }
+        let mut paths = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let row: Option<(String, String)> = self.connection.query_row(
+                "SELECT roots.canonical_path, items.relative_path FROM media_items AS items JOIN library_roots AS roots ON roots.id = items.root_id JOIN media_files AS files ON files.root_id = items.root_id AND files.relative_path = items.relative_path AND files.generation = roots.current_generation WHERE items.id = ?1",
+                [id], |row| Ok((row.get(0)?, row.get(1)?))
+            ).optional().map_err(|error| format!("Could not inspect a title file: {error}"))?;
+            let Some((root, relative)) = row else { return Err("A file belonging to this title is no longer indexed; deletion cancelled.".into()); };
+            let canonical_root = std::fs::canonicalize(root).map_err(|error| format!("Could not open a library folder: {error}"))?;
+            let file = std::fs::canonicalize(canonical_root.join(relative)).map_err(|error| format!("Could not open a title file: {error}"))?;
+            if !file.starts_with(&canonical_root) || !file.is_file() { return Err("A title file is outside its registered library folder; deletion cancelled.".into()); }
+            paths.push(file);
+        }
+        for path in &paths {
+            std::fs::remove_file(path).map_err(|error| format!("Could not permanently delete {}: {error}", path.file_name().unwrap_or_default().to_string_lossy()))?;
+        }
+        let transaction = self.connection.transaction().map_err(|error| format!("Could not update the library index: {error}"))?;
+        for id in ids { transaction.execute("DELETE FROM media_items WHERE id = ?1", [id]).map_err(|error| format!("Could not remove a deleted file from the library index: {error}"))?; }
+        transaction.commit().map_err(|error| format!("Could not finish removing the title from the library: {error}"))?;
+        Ok(())
     }
 
     pub fn status(&self, is_scanning: bool) -> Result<LibraryStatus, String> {
@@ -1042,6 +1259,7 @@ impl LibraryStore {
                    ON items.root_id = files.root_id AND items.relative_path = files.relative_path
                  LEFT JOIN media_metadata AS metadata ON metadata.media_id = items.id
                  WHERE files.generation = roots.current_generation
+                   AND NOT EXISTS (SELECT 1 FROM media_extras WHERE media_id = items.id)
                    AND (metadata.media_id IS NULL OR metadata.looked_up_at < ?1)
                  ORDER BY items.id LIMIT ?2",
             )
@@ -1559,6 +1777,9 @@ fn write_records(
                 &record.local_key,
             ])
             .map_err(|error| format!("Could not save a media identity: {error}"))?;
+        if is_extra_media_path(Path::new(&record.relative_path)) {
+            transaction.execute("INSERT OR IGNORE INTO media_extras(media_id) SELECT id FROM media_items WHERE root_id=?1 AND relative_path=?2", params![root_id, &record.relative_path]).map_err(|error| error.to_string())?;
+        }
         statement
             .execute(params![
                 root_id,
@@ -1575,6 +1796,18 @@ fn write_records(
     Ok(())
 }
 
+fn is_extra_media_folder(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return false; };
+    let normalized: String = name.chars().filter(|character| character.is_alphanumeric()).flat_map(char::to_lowercase).collect();
+    matches!(normalized.as_str(), "extra" | "extras" | "featurette" | "featurettes"
+        | "sample" | "samples" | "behindthescenes" | "bonus" | "bonusfeatures"
+        | "specialfeatures" | "deletedscenes" | "interviews" | "trailers")
+}
+
+fn is_extra_media_path(relative_path: &Path) -> bool {
+    relative_path.parent().is_some_and(|parent| parent.components().any(|part| is_extra_media_folder(Path::new(part.as_os_str()))))
+}
+
 fn is_video_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -1588,6 +1821,245 @@ fn is_video_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{LibraryStore, MediaMetadata, MetadataLookup};
+
+    #[test]
+    fn moving_a_title_to_another_library_root_keeps_its_identity_and_progress() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        let destination = temporary.path().join("destination");
+        let episode = source.join("Example/Season 01/Example.S01E01.mkv");
+        let extra = source.join("Example/Extras/Behind the scenes.mp4");
+        std::fs::create_dir_all(episode.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(extra.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(&episode, b"episode").unwrap();
+        std::fs::write(&extra, b"extra").unwrap();
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        store.scan_root(source.to_str().unwrap()).unwrap();
+        store.import_completed_files(&source, &[extra]).unwrap();
+        store.scan_root(destination.to_str().unwrap()).unwrap();
+        let before = store.catalog_page(0, 10).unwrap().items.into_iter().find(|item| item.title == "Example").unwrap();
+        store.record_playback_activity(before.id).unwrap();
+        store.move_title(before.id, &destination).unwrap();
+        assert!(!episode.exists());
+        let moved_episode = destination.join("Example/Season 01/Example.S01E01.mkv");
+        let moved_extra = destination.join("Example/Extras/Behind the scenes.mp4");
+        assert!(moved_episode.is_file());
+        assert!(moved_extra.is_file());
+        let after = store.catalog_detail(before.id).unwrap().unwrap();
+        assert_eq!(after.media.id, before.id);
+        assert_eq!(after.media.playback_uuid, before.playback_uuid);
+        assert_eq!(after.files[0].playback_uuid, before.playback_uuid);
+        assert_eq!(store.media_id_for_uuid(&before.playback_uuid).unwrap(), Some(before.id));
+        let canonical_destination = std::fs::canonicalize(&destination).unwrap();
+        assert!(std::path::Path::new(&after.files[0].path).starts_with(&canonical_destination));
+        assert!(std::path::Path::new(&after.extras[0].path).starts_with(&canonical_destination));
+        assert_eq!(store.playback_history(10).unwrap()[0].id, before.id);
+    }
+
+    #[test]
+    fn uuid_survives_reopen_rescan_and_migration_but_never_a_reused_numeric_id() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        let database = temporary.path().join("library.sqlite3");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("First.mp4"), b"video").unwrap();
+        let mut store = LibraryStore::open(&database).unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        // Simulate an existing index from before the identity migration.
+        store.connection.execute_batch("DROP TRIGGER media_identity_insert; DROP TABLE media_identity;").unwrap();
+        drop(store);
+        let mut store = LibraryStore::open(&database).unwrap();
+        let first = store.catalog_page(0, 10).unwrap().items.remove(0);
+        assert_eq!(first.playback_uuid.len(), 36);
+        assert_eq!(&first.playback_uuid[14..15], "4");
+        assert!("89ab".contains(&first.playback_uuid[19..20]));
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        assert_eq!(store.catalog_page(0, 10).unwrap().items[0].playback_uuid, first.playback_uuid);
+        drop(store);
+        let store = LibraryStore::open(&database).unwrap();
+        assert_eq!(store.playback_uuid(first.id).unwrap(), first.playback_uuid);
+        // Even if SQLite reuses a number, the removed UUID cannot point at it.
+        let root_id:i64 = store.connection.query_row("SELECT root_id FROM media_items WHERE id=?1", [first.id], |row| row.get(0)).unwrap();
+        store.connection.execute("DELETE FROM media_items WHERE id=?1", [first.id]).unwrap();
+        store.connection.execute("INSERT INTO media_items(id,root_id,relative_path) VALUES (?1,?2,'First.mp4')", rusqlite::params![first.id,root_id]).unwrap();
+        assert_eq!(store.media_id_for_uuid(&first.playback_uuid).unwrap(), None);
+        assert_ne!(store.playback_uuid(first.id).unwrap(), first.playback_uuid);
+        assert!(store.require_media_identity(first.id, Some(&first.playback_uuid)).is_err());
+        assert!(store.require_media_identity(first.id, None).is_err());
+        assert!(store.require_media_identity(first.id, Some(&store.playback_uuid(first.id).unwrap())).is_ok());
+    }
+
+    #[test]
+    fn episode_and_continue_watching_uuids_identify_each_file_and_each_computer() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Example.S01E01.mp4"), b"video").unwrap();
+        std::fs::write(root.join("Example.S01E02.mp4"), b"video").unwrap();
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        let id = store.catalog_page(0,10).unwrap().items[0].id;
+        let detail = store.catalog_detail(id).unwrap().unwrap();
+        assert_eq!(detail.files.len(), 2);
+        assert_ne!(detail.files[0].playback_uuid, detail.files[1].playback_uuid);
+        let second = &detail.files[1];
+        store.save_playback_progress(second.media_id, 12.0, 120.0).unwrap();
+        assert_eq!(store.continue_watching(10).unwrap()[0].playback_uuid, second.playback_uuid);
+        let mut other = LibraryStore::open(&temporary.path().join("other-computer.sqlite3")).unwrap();
+        other.scan_root(root.to_str().unwrap()).unwrap();
+        assert_eq!(other.media_id_for_uuid(&second.playback_uuid).unwrap(), None);
+    }
+
+    #[test]
+    fn permanent_title_deletion_removes_media_from_disk_and_catalog() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        let episode = root.join("Example/Season 01/Example.S01E01.mkv");
+        let extra = root.join("Example/Extras/Behind the scenes.mp4");
+        std::fs::create_dir_all(episode.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(extra.parent().unwrap()).unwrap();
+        std::fs::write(&episode, b"episode").unwrap();
+        std::fs::write(&extra, b"extra").unwrap();
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        store.import_completed_files(&root, &[extra.clone()]).unwrap();
+        let id = store.catalog_page(0, 10).unwrap().items[0].id;
+        store.permanently_delete_title(id).unwrap();
+        assert!(!episode.exists());
+        assert!(!extra.exists());
+        assert!(store.catalog_detail(id).unwrap().is_none());
+        assert_eq!(store.catalog_page(0, 10).unwrap().total, 0);
+    }
+
+    #[test]
+    fn extras_are_excluded_from_scans_and_completed_torrent_imports() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        let episode = root.join("Example/Season 01/Example.S01E01.mkv");
+        let extra = root.join("Example/Featurettes/Making.Of.mkv");
+        let film = root.join("Extraordinary/Extraordinary.mp4");
+        for path in [&episode, &extra, &film] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"video").unwrap();
+        }
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        let summary = store.scan_root(root.to_str().unwrap()).unwrap();
+        assert_eq!(summary.file_count, 3);
+        assert_eq!(store.catalog_page(0, 10).unwrap().total, 2);
+        assert_eq!(store.import_completed_files(&root, &[extra]).unwrap(), 1);
+        assert_eq!(store.catalog_page(0, 10).unwrap().total, 2);
+        let page = store.catalog_page(0, 10).unwrap();
+        let series = page.items.iter().find(|item| item.title == "Example").unwrap();
+        let detail = store.catalog_detail(series.id).unwrap().unwrap();
+        assert_eq!(detail.files.len(), 1);
+        assert_eq!(detail.extras.len(), 1);
+        assert!(store.catalog_detail(detail.extras[0].media_id).unwrap().is_some());
+        assert!(!store.metadata_candidates(100).unwrap().iter().any(|candidate| candidate.media_id == detail.extras[0].media_id));
+        assert!(!super::is_extra_media_path(std::path::Path::new("Extras (2005)/Season 01/Extras.S01E01.mkv")));
+        assert!(super::is_extra_media_path(std::path::Path::new("Example/BEHIND-THE-SCENES/clip.mp4")));
+    }
+
+    #[test]
+    fn extra_media_never_becomes_a_resume_source_or_recommendation_seed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        let film = root.join("Film.mp4");
+        let bonus = root.join("Extras/Film behind the scenes.mp4");
+        let trailer = root.join("Extras/Trailer.mp4");
+        for path in [&film, &bonus, &trailer] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"video").unwrap();
+        }
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        let film_id = store.catalog_page(0, 10).unwrap().items[0].id;
+        let item_id = |relative: &str| -> i64 {
+            store.connection.query_row("SELECT id FROM media_items WHERE relative_path=?1", [relative], |row| row.get(0)).unwrap()
+        };
+        let bonus_id = item_id("Extras/Film behind the scenes.mp4");
+        let trailer_id = item_id("Extras/Trailer.mp4");
+        let metadata = |tmdb_id, title: &str| MediaMetadata {
+            tmdb_id, kind: "movie".to_owned(), title: title.to_owned(), year: Some(2024),
+            overview: String::new(), vote_average: None, poster_url: Some("poster".to_owned()), backdrop_url: None,
+        };
+        store.save_metadata_lookups(&[
+            MetadataLookup { media_ids: vec![film_id, bonus_id], metadata: Some(metadata(987, "Film")) },
+            MetadataLookup { media_ids: vec![trailer_id], metadata: Some(metadata(654, "Trailer")) },
+        ]).unwrap();
+        assert!(store.recommendation_profile().unwrap().iter().any(|(id, _, _, _)| *id == 987));
+        assert!(!store.recommendation_profile().unwrap().iter().any(|(id, _, _, _)| *id == 654));
+
+        store.save_playback_progress(film_id, 120.0, 600.0).unwrap();
+        store.record_playback_activity(film_id).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        store.save_playback_progress(bonus_id, 240.0, 600.0).unwrap();
+        store.record_playback_activity(bonus_id).unwrap();
+
+        let resume = store.continue_watching(10).unwrap();
+        assert_eq!(resume.len(), 1);
+        assert_eq!(resume[0].playback_id, film_id);
+        assert_eq!(resume[0].position_seconds, 120.0);
+        let history = store.playback_history(10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, film_id);
+    }
+
+    #[test]
+    fn playing_a_series_extra_does_not_mark_episodes_watched() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        let first = root.join("Show.S01E01.mp4");
+        let second = root.join("Show.S01E02.mp4");
+        let extra = root.join("Extras/Show.S01E03.mp4");
+        for path in [&first, &second, &extra] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"video").unwrap();
+        }
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        let series_id = store.catalog_page(0, 10).unwrap().items[0].id;
+        let id_for = |relative: &str| -> i64 {
+            store.connection.query_row("SELECT id FROM media_items WHERE relative_path=?1", [relative], |row| row.get(0)).unwrap()
+        };
+        let first_id = id_for("Show.S01E01.mp4");
+        let second_id = id_for("Show.S01E02.mp4");
+        let extra_id = id_for("Extras/Show.S01E03.mp4");
+        let metadata = MediaMetadata {
+            tmdb_id: 1234, kind: "series".to_owned(), title: "Show".to_owned(), year: Some(2024),
+            overview: String::new(), vote_average: None, poster_url: Some("poster".to_owned()), backdrop_url: None,
+        };
+        store.save_metadata_lookups(&[MetadataLookup { media_ids: vec![first_id, second_id, extra_id], metadata: Some(metadata) }]).unwrap();
+        store.save_playback_progress(first_id, 120.0, 600.0).unwrap();
+        store.save_playback_progress(second_id, 180.0, 600.0).unwrap();
+
+        store.mark_previous_episodes_watched(extra_id).unwrap();
+
+        assert_eq!(store.playback_position(first_id).unwrap(), Some(120.0));
+        assert_eq!(store.playback_position(second_id).unwrap(), Some(180.0));
+        assert!(store.catalog_detail(series_id).unwrap().unwrap().watched_before.is_none());
+    }
+
+    #[test]
+    fn refreshing_removes_previously_indexed_extras_without_deleting_files() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        let clip = root.join("Extras/clip.mp4");
+        std::fs::create_dir_all(clip.parent().unwrap()).unwrap();
+        std::fs::write(&clip, b"video").unwrap();
+        let mut store = LibraryStore::open(&temporary.path().join("library.sqlite3")).unwrap();
+        // Emulate a previously indexed extra using an explicitly selected root.
+        store.scan_root(clip.parent().unwrap().to_str().unwrap()).unwrap();
+        assert_eq!(store.catalog_page(0, 10).unwrap().total, 1);
+        let root_id: i64 = store.connection.query_row("SELECT id FROM library_roots", [], |row| row.get(0)).unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        store.connection.execute("UPDATE library_roots SET canonical_path=?1 WHERE id=?2", rusqlite::params![canonical_root.to_str().unwrap(), root_id]).unwrap();
+        store.connection.execute("UPDATE media_files SET relative_path='Extras/clip.mp4'", []).unwrap();
+        store.connection.execute("UPDATE media_items SET relative_path='Extras/clip.mp4'", []).unwrap();
+        store.scan_root(root.to_str().unwrap()).unwrap();
+        assert_eq!(store.catalog_page(0, 10).unwrap().total, 0);
+        assert!(clip.exists());
+    }
 
     #[test]
     fn torrent_import_indexes_only_supplied_files_and_preserves_existing_identity() {
@@ -2131,6 +2603,12 @@ mod tests {
         assert_eq!(resume[0].title, "First Film");
         assert_eq!(resume[0].overview.as_deref(), Some("A test synopsis."));
         assert_eq!(resume[0].vote_average, Some(7.8));
+
+        store
+            .save_playback_progress(media.id, 0.0, 600.0)
+            .expect("ignore the player's initial position while it restores resume");
+        assert_eq!(store.playback_position(media.id).expect("preserved resume"), Some(120.0));
+        assert_eq!(store.continue_watching(12).expect("preserved home resume").len(), 1);
 
         store
             .save_playback_progress(media.id, 590.0, 600.0)

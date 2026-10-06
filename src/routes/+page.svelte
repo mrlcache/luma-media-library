@@ -49,6 +49,13 @@
 
 	function toMediaItem(item: CatalogMedia | ContinueWatchingItem | PlaybackHistoryItem): MediaItem {
 		const kind = item.kind === 'series' ? 'series' : 'movie';
+		const isResume = 'durationSeconds' in item;
+		const normalizedTitle = item.title.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+		const catalogMatch = isResume ? catalogItems.find((candidate) =>
+			candidate.title.trim().toLocaleLowerCase().replace(/\s+/g, ' ') === normalizedTitle &&
+			(candidate.kind === null || candidate.kind === kind) &&
+			(candidate.year === null || item.year === null || candidate.year === item.year)
+		) : undefined;
 		const rating = 'voteAverage' in item ? item.voteAverage : null;
 		const duration = 'durationSeconds' in item ? item.durationSeconds : 0;
 		const position = 'positionSeconds' in item ? item.positionSeconds : 0;
@@ -58,7 +65,9 @@
 			: `${remainingMinutes}m left`;
 
 		return {
-			id: String(item.id),
+			id: String(catalogMatch?.id ?? item.id),
+			playbackUuid: 'playbackUuid' in item ? item.playbackUuid : undefined,
+			...(isResume ? { playbackId: item.playbackId ?? item.id } : {}),
 			title: item.title,
 			kind,
 			year: item.year ?? 0,
@@ -288,7 +297,7 @@
 		document.addEventListener('appearance-preferences-changed', syncMotionPreference);
 		const refreshPlaybackHistory = () => {
 			if (!desktopCatalog || document.visibilityState !== 'visible') return;
-			if (!discovery && !discoveryLoading) updateDiscovery();
+			updateDiscovery();
 			void Promise.all([readContinueWatching(12), readPlaybackHistory(12)])
 				.then(([resume, history]) => {
 					if (disposed) return;
@@ -323,7 +332,8 @@
 		}
 		}
 		refreshLocal();
-		const cleanupDiscovery = () => { disposed = true; window.clearInterval(rotate); window.removeEventListener('luma-library-changed', libraryChanged); };
+		const refreshRecommendations = window.setInterval(() => { if (!document.hidden) updateDiscovery(); }, 60 * 1000);
+		const cleanupDiscovery = () => { disposed = true; window.clearInterval(rotate); window.clearInterval(refreshRecommendations); window.removeEventListener('luma-library-changed', libraryChanged); };
 
 		if (!desktopCatalog) {
 			return () => {

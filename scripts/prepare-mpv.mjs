@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sevenZip from '7zip-bin';
+import { copyRuntimeFile } from './copy-runtime.mjs';
 
 const run = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -68,7 +69,7 @@ if (!runtimeDlls.some((entry) => entry.name.toLowerCase() === 'libmpv-2.dll')) t
 await mkdir(enginePath, { recursive: true });
 await mkdir(debugEnginePath, { recursive: true });
 for (const runtimeDll of runtimeDlls) {
-	await copyFile(join(runtimeDirectory, runtimeDll.name), join(enginePath, runtimeDll.name));
-	await copyFile(join(runtimeDirectory, runtimeDll.name), join(debugEnginePath, runtimeDll.name));
+	await copyRuntimeFile(join(runtimeDirectory, runtimeDll.name), join(enginePath, runtimeDll.name));
+	await copyRuntimeFile(join(runtimeDirectory, runtimeDll.name), join(debugEnginePath, runtimeDll.name));
 }
 console.log(`Prepared MPV ${version}: libmpv-2.dll and ${runtimeDlls.length - 1} runtime DLL(s).`);

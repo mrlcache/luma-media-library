@@ -14,7 +14,7 @@ export async function searchTitles(query: string): Promise<SearchResults> {
 	const downloaded = local.status === 'fulfilled' ? (local.value?.items ?? []).map(cardMedia) : [];
 	const items = remote.status === 'fulfilled' ? remote.value.map(discoveryMedia).map((item) => {
 		const installed = downloaded.find((candidate) => sameFavorite(candidate, item));
-		return installed ? { ...item, id: installed.id, installed: true } : item;
+		return installed ? { ...item, id: installed.id, playbackUuid:installed.playbackUuid, installed: true } : item;
 	}) : [];
 	for (const item of downloaded) if (!items.some((candidate) => sameFavorite(candidate, item))) items.push({ ...item, genres: [item.kind === 'series' ? 'Series' : 'Movie'] });
 	const unique = items.filter((item, index) => items.findIndex((candidate) => sameFavorite(candidate, item)) === index);

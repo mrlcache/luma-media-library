@@ -15,6 +15,7 @@ export type TmdbTrailer = { key: string; name: string; isTeaser?: boolean };
 
 export type CatalogMedia = {
 	id: number;
+	playbackUuid?: string;
 	title: string;
 	extension: string;
 	sizeBytes: number;
@@ -29,6 +30,7 @@ export type CatalogMedia = {
 
 export type LocalEpisodeFile = {
 	mediaId: number;
+	playbackUuid?: string;
 	fileName: string;
 	path: string;
 	season: number | null;
@@ -39,11 +41,14 @@ export type LocalTitleDetail = {
 	tmdbId?: number | null;
 	media: CatalogMedia;
 	files: LocalEpisodeFile[];
+	extras?: LocalEpisodeFile[];
 	watchedBefore?: { season: number; episode: number } | null;
 };
 
 export type ContinueWatchingItem = {
 	id: number;
+	playbackId: number;
+	playbackUuid?: string;
 	title: string;
 	kind: MediaKind | null;
 	year: number | null;
@@ -68,8 +73,8 @@ export type PlaybackHistoryItem = {
 	updatedAt: number;
 };
 
-export type SubtitleFileSource = { label: string; path: string };
-export type ResolvedMediaFile = { path: string; subtitles: SubtitleFileSource[]; resumePositionSeconds: number; mediaId?: number };
+export type SubtitleFileSource = { label: string; path: string; language?: string; streamIndex?: number | null; supported?: boolean };
+export type ResolvedMediaFile = { path: string; subtitles: SubtitleFileSource[]; resumePositionSeconds: number; mediaId?: number; playbackUuid?: string; subtitleWarning?: string | null };
 
 export type OpenSubtitleSearchResult = {
 	fileId: number;
@@ -91,7 +96,9 @@ export type Episode = {
 };
 
 export type MediaItem = {
+	playbackUuid?: string;
 	installed?: boolean;
+	playbackId?: number;
 	tmdbId?: number;
 	id: string;
 	title: string;

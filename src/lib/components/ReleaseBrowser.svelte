@@ -25,6 +25,7 @@
 	let generation = 0;
 	let activeRequestSignal: AbortSignal | undefined;
 	let retry = $state(0);
+	let consumedRetry = 0;
 	let filtered = $derived(sortReleases(releases.filter((release) => (!quality || release.quality === quality) &&
 		(!codec || release.codec === codec) && (!source || release.source === source) && (!fileType || (fileType === 'unknown' ? !release.fileType : release.fileType === fileType))), sort));
 	let formats = $derived([...new Set(releases.map((release) => release.fileType).filter(Boolean))].sort());
@@ -36,18 +37,19 @@
 	}
 
 	$effect(() => {
-		retry;
+		const forceRefresh = retry !== consumedRetry;
+		consumedRetry = retry;
 		const currentMedia = media;
 		const currentScope = scope;
 		const current = ++generation;
 		const controller = new AbortController();
 		activeRequestSignal = controller.signal;
 		releases = []; errors = []; feedback = ''; visibleCount = 20; loading = true;
-		void search(currentMedia, currentScope, current, controller.signal);
+		void search(currentMedia, currentScope, current, controller.signal, forceRefresh);
 		return () => { controller.abort(); generation++; };
 	});
 
-	async function search(item: MediaItem, target: ReleaseScope, current: number, signal: AbortSignal) {
+	async function search(item: MediaItem, target: ReleaseScope, current: number, signal: AbortSignal, forceRefresh = false) {
 		try {
 			if (import.meta.env.VITE_LUMA_MOBILE_DEMO === 'true') {
 				const { demoReleases } = await import('$lib/platform/mobile-demo');
@@ -70,7 +72,7 @@
 						if (seenPages.has(page)) break;
 						seenPages.add(page);
 						const data = await request({ action: 'source', source: provider, id: String(id), kind: item.kind,
-							query: releaseQuery(item.title, item.year, target), page: String(page) }, signal);
+							query: releaseQuery(item.title, item.year, target), page: String(page), ...(forceRefresh ? { refresh: '1' } : {}) }, signal);
 						if (signal.aborted || current !== generation) return;
 						const matches = (data.results ?? []).map(normalizeRelease).filter((release: TorrentRelease) => releaseMatches(release, item, target));
 						const merged = new Map(releases.map((release) => [keyOf(release), release]));
@@ -91,7 +93,7 @@
 	}
 
 	function canDownload(release: TorrentRelease) {
-		return /^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(release.infoHash) || !!release.downloadKey;
+		return !!release.magnet || /^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(release.infoHash) || !!release.downloadKey;
 	}
 
 	async function download(release: TorrentRelease) {
@@ -108,7 +110,9 @@
 			}
 			if (!isDesktopRuntime()) throw new Error('Downloads are available in Luma desktop.');
 			const hash = release.infoHash;
-			if (/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(hash)) {
+			if (release.magnet) {
+				await addMagnet(release.magnet);
+			} else if (/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(hash)) {
 				await addMagnet(`magnet:?xt=urn:${hash.length === 64 ? 'btmh:1220' : 'btih:'}${hash}&dn=${encodeURIComponent(release.name)}`);
 			} else if (release.downloadKey) {
 				const result = await request({ action: 'resolve', key: release.downloadKey }, activeRequestSignal);

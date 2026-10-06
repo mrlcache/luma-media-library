@@ -1,5 +1,7 @@
 mod library;
 mod naming;
+mod subtitles;
+pub use subtitles::{discover_subtitle_files, decode_subtitle_text};
 
 pub use library::{
     CatalogMedia, CatalogPage, ContinueWatchingItem, LibraryScanSummary, LibraryState,

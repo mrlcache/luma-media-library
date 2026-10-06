@@ -3,7 +3,7 @@ import type { MediaItem } from '../types';
 export type ReleaseScope = { type: 'movie' } | { type: 'season'; season: number } | { type: 'episode'; season: number; episode: number };
 export type TorrentRelease = {
 	name: string; source: string; uploader: string; group: string; sizeBytes: number; size: string;
-	seeds: number; peers: number; infoHash: string; url: string; downloadKey: string | null;
+	seeds: number; peers: number; infoHash: string; magnet: string; url: string; downloadKey: string | null;
 	quality: string; codec: string; fileType: string; qxr: boolean;
 };
 export type ReleaseSort = 'seeds' | 'size' | 'name';
@@ -19,9 +19,13 @@ export function normalizeRelease(raw: Record<string, unknown>): TorrentRelease {
 	const codecText = `${name} ${text(raw.codec)}`;
 	const codec = /\b(?:x265|h[ .]?265|hevc)\b/i.test(codecText) ? 'HEVC' : /\b(?:x264|h[ .]?264|avc)\b/i.test(codecText) ? 'H.264' : /\bav1\b/i.test(codecText) ? 'AV1' : '';
 	const fileType = /\.(mkv|mp4|avi|m4v|ts)(?:$|[\s\]])/i.exec(`${text(raw.filename)} ${name}`)?.[1]?.toUpperCase() ?? text(raw.fileType).toUpperCase();
+	const infoHash = text(raw.infoHash);
+	const magnet = text(raw.magnet) || (/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(infoHash)
+		? `magnet:?xt=urn:${infoHash.length === 64 && /^[a-f0-9]+$/i.test(infoHash) ? `btmh:1220${infoHash}` : `btih:${infoHash}`}&dn=${encodeURIComponent(name)}`
+		: '');
 	return { name, source: text(raw.source), uploader: text(raw.uploader), group: text(raw.group) || (qxr ? 'QXR' : ''),
 		sizeBytes: numeric(raw.sizeBytes), size: text(raw.size), seeds: numeric(raw.seeds), peers: numeric(raw.peers),
-		infoHash: text(raw.infoHash), url: text(raw.url), downloadKey: text(raw.downloadKey) || null, quality, codec, fileType, qxr };
+		infoHash, magnet, url: text(raw.url), downloadKey: text(raw.downloadKey) || null, quality, codec, fileType, qxr };
 }
 
 export function releaseMatches(release: TorrentRelease, media: Pick<MediaItem, 'title' | 'year'>, scope: ReleaseScope): boolean {

@@ -1,10 +1,32 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { searchProwlarr, resolveProwlarrRelease } from './prowlarr-preview.mjs';
+import { createReleaseCache } from './release-cache.mjs';
 
 // Shared release resolver used by development previews and the desktop service.
-export function createReleaseSearch() {
-	const cache = new Map();
+/** @param {{ cachePath?: string, now?: () => number, requestHandler?: (params: URLSearchParams) => Promise<any> }} [options] */
+export function createReleaseSearch({ cachePath, now = Date.now, requestHandler } = {}) {
+	const cache = createReleaseCache({ filePath: cachePath, now });
+	const refreshes = new Map();
+	const lastRefreshAttempt = new Map();
+	/** @type {Map<string, Promise<void>>} */
+	const warming = new Map();
+	const warmTails = [Promise.resolve(), Promise.resolve()];
+	let warmSlot = 0;
+	let lastPrune = 0;
+	const refreshAfterMs = 20 * 60 * 1000;
+	const refreshCooldownMs = 20 * 60 * 1000;
+	/** @param {any} data */
+	function addMagnets(data) {
+		if (!Array.isArray(data?.results)) return data;
+		return { ...data, results: data.results.map(/** @param {any} item */ (item) => {
+			if ((typeof item?.magnet === 'string' && /^magnet:\?xt=urn:bt(?:ih|mh):/i.test(item.magnet)) || typeof item?.infoHash !== 'string') return item;
+			const hash = item.infoHash.trim();
+			if (!/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(hash)) return item;
+			const urn = hash.length === 64 && /^[a-f0-9]+$/i.test(hash) ? `btmh:1220${hash}` : `btih:${hash}`;
+			return { ...item, magnet: `magnet:?xt=urn:${urn}&dn=${encodeURIComponent(String(item.name || ''))}` };
+		}) };
+	}
 	/** @param {string} url @param {boolean} json @param {Record<string, string>} headers @returns {Promise<any>} */
 	async function request(url, json = true, headers = {}) {
 		const response = await fetch(url, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'Luma/0.1 (search preview)', ...headers } });
@@ -75,16 +97,67 @@ export function createReleaseSearch() {
 		}
 		throw new Error('Fonte desconhecida.');
 	}
-	return async (/** @type {URLSearchParams} */ params) => {
-		if (params.get('action') === 'resolve') return handle(params);
-		const key=params.toString();
-		const saved=cache.get(key);
-		if(saved && saved.until>Date.now()) return saved.data;
-		const data=await handle(params);
-		if(cache.size>=32)cache.delete(cache.keys().next().value);
-		cache.set(key,{data,until:Date.now()+60000});
-		return data;
+	const execute = requestHandler || handle;
+	/** Resolve opaque indexer links while the provider is online, with two workers. @param {any} data */
+	function preserveDownloads(data) {
+		if (!Array.isArray(data?.results)) return;
+		for (const item of data.results) {
+			if (item.magnet || typeof item.downloadKey !== 'string' || warming.has(item.downloadKey)) continue;
+			const key = item.downloadKey;
+			const slot = warmSlot++ % warmTails.length;
+			const task = warmTails[slot].catch(() => {}).then(async () => {
+				const resolvedKey = `resolve:${key}`;
+				if (await cache.get(resolvedKey).catch(() => null)) return;
+				const resolved = await execute(new URLSearchParams({ action: 'resolve', key }));
+				if (resolved?.magnet || resolved?.torrent) await cache.set(resolvedKey, resolved).catch(() => {});
+			});
+			warming.set(key, task);
+			warmTails[slot] = task.catch(() => {});
+			void task.finally(() => warming.delete(key)).catch(() => {});
+		}
+	}
+	/** @param {string} key @param {URLSearchParams} params */
+	async function refreshInBackground(key, params) {
+		if (refreshes.has(key) || now() - (lastRefreshAttempt.get(key) || 0) < refreshCooldownMs) return;
+		lastRefreshAttempt.set(key, now());
+		const refresh = execute(params).then(async (data) => {
+			const result = addMagnets(data);
+			await cache.set(key, result, { viewed: false });
+			preserveDownloads(result);
+		}).catch(() => {}).finally(() => refreshes.delete(key));
+		refreshes.set(key, refresh);
+	}
+	const search = async (/** @type {URLSearchParams} */ params) => {
+		if (now() - lastPrune > 60 * 60 * 1000) {
+			lastPrune = now();
+			await cache.prune().catch(() => {});
+			for (const [key, timestamp] of lastRefreshAttempt) if (now() - timestamp >= refreshCooldownMs) lastRefreshAttempt.delete(key);
+		}
+		const isResolve = params.get('action') === 'resolve';
+		const forceRefresh = params.get('refresh') === '1';
+		const normalized = new URLSearchParams(params);
+		normalized.delete('refresh');
+		normalized.sort();
+		const cacheKey = isResolve ? `resolve:${params.get('key') || ''}` : `search:${normalized.toString()}`;
+		const saved = await cache.get(cacheKey).catch(() => null);
+		if (saved && !forceRefresh) {
+			if (!isResolve && now() - saved.refreshedAt >= refreshAfterMs) void refreshInBackground(cacheKey, new URLSearchParams(params));
+			preserveDownloads(saved.data);
+			return saved.data;
+		}
+		try {
+			const data = addMagnets(await execute(params));
+			await cache.set(cacheKey, data).catch(() => {});
+			preserveDownloads(data);
+			return data;
+		} catch (error) {
+			if (!saved) throw error;
+			preserveDownloads(saved.data);
+			return saved.data;
+		}
 	};
+	search.settled = async () => { await Promise.allSettled([...refreshes.values()]); await Promise.allSettled(warmTails); await cache.flush().catch(() => {}); };
+	return search;
 }
 /** @returns {import('vite').Plugin} */
 export function torrentSearchPreview() {

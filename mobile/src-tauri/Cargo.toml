@@ -1,6 +1,6 @@
 [package]
 name = "luma-mobile"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "GPL-2.0-or-later"
 
@@ -17,12 +17,16 @@ tauri-runtime = "=2.11.3"
 tauri-runtime-wry = "=2.11.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 base64 = "0.23"
 librqbit = { version = "9.0.1", default-features = false, features = ["rust-tls"] }
 tokio = { version = "1", features = ["sync"] }
 
 [workspace]
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.dev]
 debug = 0

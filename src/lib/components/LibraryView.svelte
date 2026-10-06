@@ -237,6 +237,7 @@
 	</div>
 	</div>
 
+	<div class="library-results">
 	<div class="result-line" aria-live="polite">
 		{#if isGlobalSearch}
 			<strong>{query.trim().length < 2 ? 'Search TMDb' : tmdbLoading ? 'Searching…' : `${filteredTmdbResults.length} ${filteredTmdbResults.length === 1 ? 'result' : 'results'}`}</strong>
@@ -306,6 +307,7 @@
 	{:else}
 		<EmptyLibraryCard title="Local library is in the desktop app" description="Open the desktop app to scan and browse your media folders." centered />
 	{/if}
+	</div>
 	</div>
 </div>
 

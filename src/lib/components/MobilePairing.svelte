@@ -2,7 +2,7 @@
 	import {onMount} from 'svelte';
 	import {goto} from '$app/navigation';
 	import {invoke} from '@tauri-apps/api/core';
-	import {nativeMobile,readMobileConnection} from '$lib/platform/mobile-connection';
+	import {nativeMobile,readMobileConnection,wifiDevMobile} from '$lib/platform/mobile-connection';
 	import {isDesktopRuntime,invalidateCatalogPageCache} from '$lib/platform/desktop';
 	import {resetDiscovery} from '$lib/media/discovery';
 	import Icon from './Icon.svelte';
@@ -56,11 +56,11 @@
 	onMount(()=>{
 		if(preview){visible=true;return;}
 		if(!isDesktopRuntime()||import.meta.env.VITE_LUMA_MOBILE_DEMO==='true')return;
-		const show=()=>{back();visible=true;void discover();};
+		const show=()=>{if(wifiDevMobile)return;back();visible=true;void discover();};
 		window.addEventListener('luma-pair-computer',show);
 		if(nativeMobile){
 			void readMobileConnection().then(connection=>{
-				if(!connection?.paired && sessionStorage.getItem('luma.phone-only')!=='1')show();
+				if(!wifiDevMobile && !connection?.paired && sessionStorage.getItem('luma.phone-only')!=='1')show();
 			}).catch(error=>message=String(error));
 		}else{
 			let checking=false;
@@ -74,7 +74,7 @@
 	});
 </script>
 
-{#if (nativeMobile || preview) && visible}
+{#if !wifiDevMobile && (nativeMobile || preview) && visible}
 	<div class="pair-screen">
 		<div class="pair-content">
 			<img class="pair-logo" src="/luma-wordmark.svg" alt="Luma" width="120" height="44"/>

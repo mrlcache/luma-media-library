@@ -47,7 +47,7 @@ pub async fn discover_luma_computers() -> Result<Vec<serde_json::Value>, String>
                 if value.get("service").and_then(|s|s.as_str())!=Some("luma") || !peer.is_ipv4() {continue;}
                 let Some(port)=value.get("port").and_then(|p|p.as_u64()).filter(|p| (1024..=65535).contains(p)) else {continue;};
                 let url=format!("http://{}:{port}",peer.ip());
-                found.insert(url.clone(),serde_json::json!({"url":url,"name":value.get("name").and_then(|s|s.as_str()).unwrap_or("Luma Desktop")}));
+                found.insert(url.clone(),serde_json::json!({"url":url,"name":value.get("name").and_then(|s|s.as_str()).unwrap_or("Luma Desktop"),"identity":value.get("identity").and_then(|s|s.as_str()).unwrap_or("")}));
             }
         }
         Ok(found.into_values().collect())

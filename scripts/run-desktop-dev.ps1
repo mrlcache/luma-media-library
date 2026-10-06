@@ -24,7 +24,7 @@ if ($frontendListener) {
     $configPath = Join-Path $logDirectory 'reuse-frontend.json'
     [System.IO.File]::WriteAllText($configPath, '{"build":{"beforeDevCommand":""}}', [System.Text.UTF8Encoding]::new($false))
     $tauriCli = Join-Path $projectDirectory 'node_modules/@tauri-apps/cli/tauri.js'
-    $devArguments = '"{0}" dev --config "{1}"' -f $tauriCli,$configPath
+    $devArguments = '"{0}" dev --no-watch --config "{1}"' -f $tauriCli,$configPath
 } else {
     $devArguments = '"{0}" run desktop:dev' -f $npmCli
 }

@@ -114,8 +114,12 @@ impl TmdbState {
         Ok(response.results.into_iter().filter(|item|!item.adult).filter_map(|item|discovery_item(item,Some(kind))).take(8).collect())
     }
     pub async fn discovery_list(&self, endpoint: &str, kind: Option<&str>) -> Result<Vec<TmdbSearchResult>, String> {
+        self.discovery_list_page(endpoint, kind, 1).await
+    }
+
+    pub async fn discovery_list_page(&self, endpoint: &str, kind: Option<&str>, page: u32) -> Result<Vec<TmdbSearchResult>, String> {
         let response = self.client.get(format!("{API_BASE}/{endpoint}"))
-            .bearer_auth(self.read_token()?).query(&[("language", "en-US"), ("include_adult", "false")])
+            .bearer_auth(self.read_token()?).query(&[("language", "en-US"), ("include_adult", "false"), ("page", &page.to_string())])
             .send().await.map_err(|_| "Could not load recommendations from TMDb.".to_owned())?;
         ensure_success(response.status())?;
         let response = response.json::<SearchResponse>().await.map_err(|_| "TMDb returned unreadable recommendations.".to_owned())?;

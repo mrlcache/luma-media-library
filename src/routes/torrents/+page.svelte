@@ -4,8 +4,9 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { isMobilePreview } from '$lib/platform/mobile-preview';
 	import { requestRelease } from '$lib/torrents/request';
-	import { nativeMobile, localMobileInvoke, getTorrentTarget, setTorrentTarget } from '$lib/platform/mobile-connection';
+	import { nativeMobile, localMobileInvoke, getTorrentTarget, setTorrentTarget, readComputerLibraryStatus } from '$lib/platform/mobile-connection';
 	import { takePreparedDownload, type PendingDownload } from '$lib/torrents/pending-download';
+	import { formatTorrentTargetError, isCurrentTorrentTarget } from '$lib/torrents/target-routing';
 	import { nativeAcrylicStatus, requestNativeAcrylic } from '$lib/platform/native-acrylic';
 	import ArrowDownIcon from 'phosphor-svelte/lib/ArrowDownIcon';
 	import ArrowUpIcon from 'phosphor-svelte/lib/ArrowUpIcon';
@@ -23,8 +24,9 @@
 	let foldersLoading = $state(false);
 	let folderError = $state('');
 	let downloadDirectory = $state('');
+	let destinationDirectory = $state('');
 	let folderOptions = $derived([
-		{value:'',label:downloadDirectory ? `Downloads · ${downloadDirectory.replace(/^\\\\\?\\/, '')}` : 'Default downloads folder'},
+		{value:'',label:destinationDirectory ? `Downloads · ${destinationDirectory.replace(/^\\\\\?\\/, '')}` : 'Default downloads folder'},
 		...computerFolders.map(path => ({value:path,label:path.replace(/^\\\\\?\\/, '')}))
 	]);
 	let transfers = $state<TorrentTransfer[]>([]);
@@ -56,12 +58,20 @@
 	$effect(() => {
 		if (!addOpen) return;
 		let cancelled = false;
-		foldersLoading = true; folderError = '';
+		foldersLoading = true; folderError = ''; destinationDirectory = '';
 		const target = downloadTarget;
-		void (nativeMobile && target === 'phone' ? localMobileInvoke<{folders:string[]}>('get_library_status') : readLibraryStatus()).then(status => {
+		const folders = nativeMobile
+			? target === 'phone'
+				? localMobileInvoke<{folders:string[]}>('get_library_status')
+				: readComputerLibraryStatus<{folders:string[]}>()
+			: readLibraryStatus();
+		void folders.then(status => {
 			if (!cancelled) computerFolders = status?.folders ?? [];
-		}).catch(() => { if (!cancelled) folderError = 'Could not load your library folders.'; })
+		}).catch((error) => { if (!cancelled) folderError = formatTorrentTargetError(target, `Could not load download folders. ${errorMessage(error)}`); })
 			.finally(() => { if (!cancelled) foldersLoading = false; });
+		void readTorrentSnapshot(target).then(snapshot => {
+			if (!cancelled) destinationDirectory = snapshot.downloadDirectory;
+		}).catch(() => { /* Keep the default choice available if its path cannot be read. */ });
 		return () => { cancelled = true; };
 	});
 
@@ -78,27 +88,37 @@
 		return `${Math.ceil(seconds / 3600)} h`;
 	}
 	function percent(item: TorrentTransfer) { return Math.round(item.progress * 100); }
-	function errorMessage(error: unknown) { return error instanceof Error ? error.message : String(error); }
+	function errorMessage(error: unknown) {
+		if (error instanceof Error) return error.message;
+		if (typeof error === 'string') return error;
+		if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') return error.message;
+		try { return JSON.stringify(error) ?? String(error); }
+		catch { return String(error); }
+	}
 
 	async function refresh() {
 		const target = getTorrentTarget();
 		try {
-			const snapshot = await readTorrentSnapshot();
-			if (target !== getTorrentTarget()) return;
+			const snapshot = await readTorrentSnapshot(target);
+			if (!isCurrentTorrentTarget(target, getTorrentTarget())) return;
 			transfers = snapshot.transfers.sort((a, b) => a.queuePosition - b.queuePosition);
 			downloadDirectory = snapshot.downloadDirectory;
 			if (!transfers.some((item) => item.infoHash === selectedId)) { selectedId = ''; detailsOpen = false; }
 			loadError = '';
-		} catch (error) { loadError = errorMessage(error); }
+		} catch (error) {
+			if (isCurrentTorrentTarget(target, getTorrentTarget())) loadError = formatTorrentTargetError(target, errorMessage(error));
+		}
 	}
-	async function act(operation: () => Promise<unknown>) {
+	async function act(operation: () => Promise<unknown>, target = getTorrentTarget()) {
 		if (busy) return;
 		busy = true;
 		try {
 			await operation();
 			await refresh();
 		}
-		catch (error) { loadError = errorMessage(error); }
+		catch (error) {
+			if (isCurrentTorrentTarget(target, getTorrentTarget())) loadError = formatTorrentTargetError(target, errorMessage(error));
+		}
 		finally { busy = false; }
 	}
 
@@ -115,22 +135,30 @@
 	});
 
 	function setStatus(item: TorrentTransfer) {
-		void act(() => setTorrentPaused(item.infoHash, item.status !== 'Paused'));
+		const target = getTorrentTarget();
+		void act(() => setTorrentPaused(item.infoHash, item.status !== 'Paused', target), target);
 	}
 
 	function setAll(paused: boolean) {
-		void act(async () => { for (const item of transfers) await setTorrentPaused(item.infoHash, paused); });
+		const target = getTorrentTarget();
+		const items = [...transfers];
+		void act(async () => { for (const item of items) await setTorrentPaused(item.infoHash, paused, target); }, target);
 		queueOpen = false;
 	}
 
 	function moveSelected(direction: -1 | 1) {
-		if (selected) { const id = selected.infoHash; void act(() => moveTorrentQueue(id, direction)); }
+		if (selected) {
+			const id = selected.infoHash;
+			const target = getTorrentTarget();
+			void act(() => moveTorrentQueue(id, direction, target), target);
+		}
 		queueOpen = false;
 	}
 
 	function applyLimits() {
 		const values: Record<string, number> = { Unlimited: 0, '20 MB/s': 20 * 1024 * 1024, '10 MB/s': 10 * 1024 * 1024, '5 MB/s': 5 * 1024 * 1024, '2 MB/s': 2 * 1024 * 1024, '1 MB/s': 1024 * 1024 };
-		void act(() => setTorrentLimits(values[downloadLimit], values[uploadLimit]));
+		const target = getTorrentTarget();
+		void act(() => setTorrentLimits(values[downloadLimit], values[uploadLimit], target), target);
 	}
 
 	function addTorrent() {
@@ -144,7 +172,9 @@
 			try {
 				if (release) {
 					const hash = release.infoHash;
-					if (/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(hash)) {
+					if (release.magnet) {
+						selectedId = await addMagnet(release.magnet, destination, target);
+					} else if (/^(?:[a-f0-9]{40}|[a-z2-7]{32}|[a-f0-9]{64})$/i.test(hash)) {
 						selectedId = await addMagnet(`magnet:?xt=urn:${hash.length === 64 ? 'btmh:1220' : 'btih:'}${hash}&dn=${encodeURIComponent(release.name)}`, destination, target);
 					} else if (release.downloadKey) {
 						const result = await requestRelease({action:'resolve',key:release.downloadKey});
@@ -156,17 +186,18 @@
 				} else selectedId = await addMagnet(input, destination, target);
 				if (mobilePreview) { setTorrentTarget(target); queueTarget = target; }
 				torrentInput = ''; pendingRelease = null; addOpen = false;
-			} catch (error) { addError = errorMessage(error); throw error; }
-		});
+			} catch (error) { addError = formatTorrentTargetError(target, errorMessage(error)); throw error; }
+		}, target);
 	}
 
 	async function addFromFile() {
 		if (nativeMobile) { torrentFileInput?.click(); return; }
 		const destination = computerFolder || undefined;
+		const target = downloadTarget;
 		try {
 			const path = await chooseTorrentFile();
-			if (path) await act(async () => { selectedId = await addTorrentFile(path, destination); pendingRelease = null; addOpen = false; });
-		} catch (error) { loadError = errorMessage(error); }
+			if (path) await act(async () => { selectedId = await addTorrentFile(path, destination, target); pendingRelease = null; addOpen = false; }, target);
+		} catch (error) { loadError = formatTorrentTargetError(target, errorMessage(error)); }
 	}
 	async function importTorrentFile(event:Event) {
 		const input = event.currentTarget as HTMLInputElement;
@@ -177,16 +208,25 @@
 			if (file.size > 5_000_000) throw new Error('Torrent metadata is too large.');
 			const bytes = new Uint8Array(await file.arrayBuffer());
 			let binary = ''; for (let offset=0;offset<bytes.length;offset+=8192) binary += String.fromCharCode(...bytes.subarray(offset,offset+8192));
-			await act(async () => { selectedId = await addTorrentData(btoa(binary),computerFolder || undefined,target); setTorrentTarget(target); queueTarget = target; pendingRelease = null; addOpen = false; });
-		} catch(error) { addError = errorMessage(error); }
+			await act(async () => {
+				try {
+					selectedId = await addTorrentData(btoa(binary),computerFolder || undefined,target);
+					setTorrentTarget(target); queueTarget = target; pendingRelease = null; addOpen = false;
+				} catch (error) {
+					addError = formatTorrentTargetError(target, errorMessage(error));
+					throw error;
+				}
+			}, target);
+		} catch(error) { addError = formatTorrentTargetError(target, errorMessage(error)); }
 		finally { input.value = ''; }
 	}
 
 	function removeSelected() {
 		if (!selected) return;
 		const id = selected.infoHash;
+		const target = getTorrentTarget();
 		if (window.confirm(`Remove “${selected.name}” from the queue? Downloaded files will be kept.`))
-			void act(() => removeTorrent(id));
+			void act(() => removeTorrent(id, target), target);
 	}
 </script>
 
@@ -224,12 +264,12 @@
 		</header>
 
 		<section class="overview" aria-label="Transfer overview">
-			{#if mobilePreview}<div class="queue-device"><AppSelect value={queueTarget} label="Show downloads on" options={[{value:'pc',label:'Computer'},{value:'phone',label:'This phone'}]} onchange={(value) => { queueTarget = value; setTorrentTarget(value); selectedId = ''; transfers = []; void refresh(); }} /></div>{/if}
+			{#if mobilePreview}<div class="queue-device"><AppSelect value={queueTarget} label="Show downloads on" options={[{value:'pc',label:'Computer'},{value:'phone',label:'This phone'}]} onchange={(value) => { queueTarget = value; setTorrentTarget(value); selectedId = ''; transfers = []; loadError = ''; void refresh(); }} /></div>{/if}
 			<div class="summary-rate"><ArrowDownIcon size={17} /><span>Download</span><strong>{formatRate(totalDown)}</strong></div>
 			<div class="summary-rate"><ArrowUpIcon size={17} /><span>Upload</span><strong>{formatRate(totalUp)}</strong></div>
 			<span class="summary-activity">{activeDownloads} downloading <span>·</span> {seedingCount} seeding</span>
 		</section>
-		{#if loadError}<div class="engine-error" role="alert">Torrent engine: {loadError} <button type="button" onclick={() => void refresh()}>Retry</button></div>{/if}
+		{#if loadError}<div class="engine-error" role="alert">{loadError} <button type="button" onclick={() => void refresh()}>Retry</button></div>{/if}
 
 		<div class="content-grid">
 			<section class="transfers-panel" aria-label="Torrents">
@@ -266,7 +306,7 @@
 				<div class="list-scroll" class:list-scroll--empty={visibleTransfers.length === 0} data-lenis-prevent>
 					<div class="table-head"><span>Name</span><span>Size</span><span>Progress</span><span>Down</span><span>Up</span><span>ETA</span></div>
 					{#each visibleTransfers as transfer (transfer.infoHash)}
-						<button class="transfer-row" class:selected={selectedId === transfer.infoHash} type="button" onclick={() => (selectedId = transfer.infoHash)} aria-label={`View ${transfer.name} details`}>
+						<button class="transfer-row" class:selected={selectedId === transfer.infoHash} type="button" onclick={() => { selectedId = mobilePreview && selectedId === transfer.infoHash ? '' : transfer.infoHash; if (mobilePreview) detailsOpen = false; }} aria-pressed={selectedId === transfer.infoHash} aria-label={`View ${transfer.name} details`}>
 							<span class="file-cell"><span class="file-icon"><Icon name="download" size={18} /></span><span class="file-copy"><strong>{transfer.name}</strong><small><span class="status-dot" class:downloading={transfer.status === 'Downloading'} class:seeding={transfer.status === 'Seeding'} class:paused={transfer.status === 'Paused'}></span>{transfer.error || transfer.status}</small></span></span>
 							<span class="muted-cell">{formatBytes(transfer.sizeBytes)}</span>
 							<span class="progress-cell"><span>{percent(transfer)}%</span><span class="progress-track"><span class:complete={percent(transfer) === 100} style={`width: ${percent(transfer)}%`}></span></span></span>
@@ -304,8 +344,8 @@
 					<AppSelect bind:value={computerFolder} label="Phone download folder" options={folderOptions} disabled={busy || foldersLoading} />
 				{:else}
 					<AppSelect bind:value={computerFolder} label="Computer download folder" options={folderOptions} disabled={busy || foldersLoading} />
-					{#if folderError}<p class="destination-preview" role="status">{folderError}</p>{/if}
 				{/if}
+				{#if folderError}<p class="destination-preview" role="status">{folderError}</p>{/if}
 			</div>
 			{#if pendingRelease}<div class="selected-release"><Icon name="download" size={18} /><span>{pendingRelease.name}</span></div>
 			{:else}<label>Magnet link<input bind:value={torrentInput} placeholder="Paste a magnet link" /></label>{/if}
@@ -382,7 +422,8 @@
 	.table-head { padding: 10px 20px; border-top: 1px solid var(--line-subtle); border-bottom: 1px solid var(--line-subtle); color: var(--text-dim); background: rgba(6, 10, 15, .16); font-size: .57rem; font-weight: 730; letter-spacing: .075em; text-transform: uppercase; }
 	.transfer-row { width: 100%; min-height: 73px; padding: 10px 20px; border: 0; border-bottom: 1px solid var(--line-subtle); color: var(--text-soft); background: transparent; text-align: left; cursor: pointer; }
 	.transfer-row:last-child { border-bottom: 0; }
-	.transfer-row:hover, .transfer-row.selected { background: rgba(158, 198, 214, .08); }
+	.transfer-row.selected { background: rgba(158, 198, 214, .08); }
+	@media (hover: hover) and (pointer: fine) { .transfer-row:hover { background: rgba(158, 198, 214, .08); } }
 	.transfer-row.selected { box-shadow: inset 2px 0 var(--accent); }
 	.file-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
 	.file-icon { display: grid; flex: none; place-items: center; width: 35px; height: 35px; border: 1px solid rgba(198,221,231,.15); border-radius: 9px; color: #c6d9e2; background: rgba(180,207,219,.08); }

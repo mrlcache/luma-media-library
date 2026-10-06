@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { getMedia } from '$lib/data';
 import { tmdbImageSize } from '$lib/media/artwork';
-import { isDesktopRuntime, readLocalTitleDetail } from '$lib/platform/desktop';
+import { isDesktopRuntime, readContinueWatching, readLocalTitleDetail } from '$lib/platform/desktop';
 import type { MediaItem } from '$lib/types';
 import type { PageLoad } from './$types';
 import { get } from 'svelte/store';
@@ -25,11 +25,13 @@ export const load: PageLoad = async ({ params }) => {
 		return { item, localDetail: null, transfer };
 	}
 	if (/^\d+$/.test(params.slug) && isDesktopRuntime()) {
-		const localDetail = await readLocalTitleDetail(Number(params.slug));
+		const mediaId = Number(params.slug);
+		const localDetail = await readLocalTitleDetail(mediaId).catch(() => null);
 		if (localDetail) {
 			const record = localDetail.media;
 			const item: MediaItem = {
 				id: String(record.id),
+				playbackUuid: record.playbackUuid,
 				tmdbId: localDetail.tmdbId ?? undefined,
 				title: record.title,
 				kind: record.kind === 'series' ? 'series' : 'movie',
@@ -43,6 +45,22 @@ export const load: PageLoad = async ({ params }) => {
 				match: ''
 			};
 			return { item, localDetail };
+		}
+		// A resumed computer title can be opened on a paired phone even when the
+		// phone's own library does not contain that file. Keep the item resolvable
+		// from the playback row instead of falling through to the sample catalog.
+		const resume = await readContinueWatching(24).catch(() => []);
+		const item = resume.find((entry) => entry.id === mediaId);
+		if (item) {
+			const resumedItem: MediaItem = {
+					id: String(item.id), title: item.title, kind: item.kind === 'series' ? 'series' : 'movie',
+					installed: true, playbackId: item.playbackId, playbackUuid: item.playbackUuid,
+					year: item.year ?? 0, genres: [], rating: item.voteAverage?.toFixed(1) ?? '', runtime: '',
+					poster: tmdbImageSize(item.posterUrl, 'w780'),
+					backdrop: tmdbImageSize(item.backdropUrl ?? item.posterUrl, 'original'),
+					synopsis: item.overview ?? '', match: ''
+			};
+			return { item: resumedItem, localDetail: null };
 		}
 	}
 

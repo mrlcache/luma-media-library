@@ -66,6 +66,7 @@ export function normalizeProwlarrResults(data, indexerId, kind, register) {
 			size: '', sizeBytes: Number(item.size) || 0,
 			seeds: Number(item.seeders) || 0, peers: Number(item.leechers) || 0,
 			infoHash: String(item.infoHash || ''), filename: String(item.fileName || ''),
+			magnet: typeof item.magnetUrl === 'string' && /^magnet:\?xt=urn:bt(?:ih|mh):/i.test(item.magnetUrl) ? item.magnetUrl : '',
 			url: typeof item.infoUrl === 'string' && item.infoUrl.startsWith('https://') ? item.infoUrl : '',
 			fileType: null
 		}))
@@ -89,7 +90,16 @@ export async function searchProwlarr(query, kind, fetcher = fetch) {
 			headers, redirect: 'error', signal: AbortSignal.timeout(90000)
 		}); }
 		catch { throw new Error('Não foi possível consultar o Prowlarr local. Abra o painel e confira se ele está rodando.'); }
-		if (!response.ok) throw new Error(`Prowlarr respondeu HTTP ${response.status}. Confira o teste do indexador 1337x no painel.`);
+		if (!response.ok) {
+			let detail = '';
+			try {
+				const body = await response.clone().json();
+				if (typeof body?.message === 'string') detail = body.message;
+			} catch { /* Keep a safe generic message for non-JSON errors. */ }
+			throw new Error(detail
+				? `Prowlarr respondeu HTTP ${response.status}: ${detail}`
+				: `Prowlarr respondeu HTTP ${response.status}. Confira o teste do indexador 1337x no painel.`);
+		}
 		try { return await response.json(); }
 		catch { throw new Error('Prowlarr não retornou JSON válido.'); }
 	}
@@ -100,7 +110,25 @@ export async function searchProwlarr(query, kind, fetcher = fetch) {
 	if (!indexer.enable) throw new Error('O indexador 1337x está desativado no Prowlarr. Configure e teste o acesso no painel.');
 	if (!Number.isSafeInteger(indexer.id) || indexer.id <= 0) throw new Error('Identificador do indexador 1337x inválido.');
 	const params = new URLSearchParams({ query, type: 'search', indexerIds: String(indexer.id), categories: String(category) });
-	return normalizeProwlarrResults(await request(`/api/v1/search?${params}`), indexer.id, kind, (item) => {
+	let searchResults;
+	try {
+		searchResults = await request(`/api/v1/search?${params}`);
+	} catch (error) {
+		if (!(error instanceof Error) || !/all selected indexers being unavailable/i.test(error.message)) throw error;
+		try {
+			const statuses = await request('/api/v1/indexerstatus');
+			const status = Array.isArray(statuses) ? statuses.find((/** @type {any} */ item) => item.indexerId === indexer.id) : null;
+			if (status?.disabledTill) {
+				const until = new Date(status.disabledTill);
+				const when = Number.isNaN(until.getTime()) ? String(status.disabledTill) : until.toLocaleString();
+				throw new Error(`1337x está configurado, mas o Prowlarr o desativou temporariamente após falhas de acesso. Tente novamente depois de ${when}.`);
+			}
+		} catch (statusError) {
+			if (statusError instanceof Error && statusError.message.startsWith('1337x está configurado')) throw statusError;
+		}
+		throw new Error('1337x está configurado, mas o Prowlarr informa que o indexador está indisponível. Abra o painel do Prowlarr e teste o indexador.');
+	}
+	return normalizeProwlarrResults(searchResults, indexer.id, kind, (item) => {
 		if (typeof item.downloadUrl !== 'string') return null;
 		let url;
 		try { url = new URL(item.downloadUrl); } catch { return null; }

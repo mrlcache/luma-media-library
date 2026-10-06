@@ -526,9 +526,11 @@ fn spawn_discovery_listener(
                     continue;
                 }
                 let port = config.port;
+                let identity = bridge_identity(&config.token);
                 drop(config);
                 let message = serde_json::json!({
                     "service": "luma",
+                    "identity": identity,
                     "name": std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Luma Desktop".into()),
                     "port": port,
                 })
@@ -538,6 +540,10 @@ fn spawn_discovery_listener(
         })
         .map_err(|e| format!("Could not start LAN discovery listener: {e}"))?;
     Ok(())
+}
+fn bridge_identity(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(token.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 fn cast(
     state: &BridgeState,
@@ -559,9 +565,11 @@ fn cast(
         return Err("The selected TV is outside the local network.".into());
     }
     let library = app.state::<media_core::LibraryState>();
-    let path = media_core::LibraryStore::open(&library.db_path)?
+    let store = media_core::LibraryStore::open(&library.db_path)?;
+    let path = store
         .resolve_media_path(media_id)?
         .ok_or_else(|| "This media file is no longer in the library.".to_owned())?;
+    let playback_uuid = store.playback_uuid(media_id)?;
     let exp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -577,7 +585,7 @@ fn cast(
     let host = lan_ip();
     let media_url = format!(
         "http://{host}:{port}/api/v1/media/{media_id}?expires={exp}&signature={}",
-        sign(&token, media_id, exp)
+        sign(&media_signature_key(&token, &playback_uuid), media_id, exp)
     );
     let title = path
         .file_name()
@@ -840,7 +848,7 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
         return;
     }
     if method == "OPTIONS" {
-        let _=write!(stream,"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Range\r\nAccess-Control-Max-Age: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let _=write!(stream,"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Range\r\nAccess-Control-Max-Age: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return;
     }
     if path == "/api/v1/health" && method == "GET" {
@@ -873,7 +881,15 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
             .unwrap_or_default()
             .as_secs();
         let token = state.lock().map(|c| c.token.clone()).unwrap_or_default();
-        if exp < now || exp > now + 21600 || !valid_signature(&token, id, exp, sig) {
+        let playback_uuid = media_core::LibraryStore::open(
+            &app.state::<media_core::LibraryState>().db_path,
+        )
+        .and_then(|store| store.playback_uuid(id));
+        if exp < now
+            || exp > now + 21600
+            || !playback_uuid
+                .is_ok_and(|uuid| valid_media_signature(&token, &uuid, id, exp, sig))
+        {
             reply(
                 stream,
                 401,
@@ -883,7 +899,8 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
             return;
         }
         let base = format!("/api/v1/media/{id}");
-        if path == format!("{base}/compatible") && matches!(method.as_str(), "GET" | "HEAD") {
+        let hls_initial = path == format!("{base}/hls/index.m3u8");
+        if (path == format!("{base}/compatible") || hls_initial) && matches!(method.as_str(), "GET" | "HEAD") {
             let start = match fields.get("start") {
                 None => 0.0,
                 Some(value) => match value.parse::<f64>() {
@@ -908,23 +925,28 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
             let allowed: &[u64] = match quality { "480p" => &[0,800000,1200000,2000000], "720p" => &[0,1500000,2500000,4000000], "1080p" => &[0,3000000,5000000,8000000], _ => &[0] };
             let session = fields.get("session").copied().unwrap_or("");
             if !allowed.contains(&bitrate) || session.len()>64 || !session.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c==b'-') {reply(stream,400,"Invalid stream options","text/plain");return;}
-            stream_compatible(stream, app, id, start, method == "HEAD", quality, bitrate, session);
+            if hls_initial {
+                proxy_hls(stream, app, id, &method, &format!("file-{id}?start={start}&quality={quality}&bitrate={bitrate}&session={session}"), exp, sig);
+            } else {
+                stream_compatible(stream, app, id, start, method == "HEAD", quality, bitrate, session);
+            }
+        } else if let Some(tail) = path.strip_prefix(&format!("{base}/hls/session/")) {
+            let valid = tail.split_once('/').is_some_and(|(session, file)| {
+                !session.is_empty() && session.len() <= 64 && session.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                && (file == "index.m3u8" || file.strip_prefix("segment-").and_then(|v| v.strip_suffix(".ts")).is_some_and(|v| !v.is_empty() && v.len() <= 10 && v.bytes().all(|c| c.is_ascii_digit())))
+            });
+            if !valid || !matches!(method.as_str(), "GET" | "HEAD" | "DELETE") || (method == "DELETE" && !tail.ends_with("/index.m3u8")) {
+                reply(stream, 400, "Invalid HLS request", "text/plain"); return;
+            }
+            let upstream = if method == "DELETE" { format!("session/{}", tail.split('/').next().unwrap_or_default()) } else { format!("session/{tail}") };
+            proxy_hls(stream, app, id, &method, &upstream, exp, sig);
         } else if path == base && method == "GET" {
             stream_media(stream, app, id, &data[..split]);
         } else if let Some(index) = path
             .strip_prefix(&format!("{base}/subtitles/"))
             .and_then(|v| v.parse::<usize>().ok())
         {
-            let source =
-                crate::resolve_media_file(id, app.state::<media_core::LibraryState>(), app.clone());
-            match source
-                .and_then(|source| {
-                    source
-                        .subtitles
-                        .get(index)
-                        .map(|s| s.path.clone())
-                        .ok_or("Subtitle not found".into())
-                })
+            match crate::resolve_subtitle_path(id, index, &app.state::<media_core::LibraryState>().db_path, app.clone())
                 .and_then(|path| std::fs::read_to_string(path).map_err(|e| e.to_string()))
             {
                 Ok(text) if text.len() <= 8 * 1024 * 1024 => {
@@ -982,17 +1004,27 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
     match dispatch(app, command, &args) {
         Ok(mut v) => {
             if command == "resolve_media_file" {
-                if let Some(id) = args.get("mediaId").and_then(|x| x.as_i64()) {
+                if let Some(id) = v.get("mediaId").and_then(|x| x.as_i64()).or_else(|| args.get("mediaId").and_then(|x| x.as_i64())) {
                     let exp = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs()
                         + 21600;
                     let token = state.lock().map(|c| c.token.clone()).unwrap_or_default();
+                    let Some(playback_uuid) = v.get("playbackUuid").and_then(|value| value.as_str()) else {
+                        reply(
+                            stream,
+                            409,
+                            "{\"error\":\"The media file identity could not be verified.\"}",
+                            "application/json",
+                        );
+                        return;
+                    };
+                    let identity_key = media_signature_key(&token, playback_uuid);
                     let url = format!(
                         "{}/api/v1/media/{id}?expires={exp}&signature={}",
                         info(&state.lock().unwrap()).base_url.unwrap_or_default(),
-                        sign(&token, id, exp)
+                        sign(&identity_key, id, exp)
                     );
                     if let Some(obj) = v.as_object_mut() {
                         obj.insert("path".into(), serde_json::Value::String(url.clone()));
@@ -1001,7 +1033,7 @@ fn handle(stream: &mut TcpStream, app: &tauri::AppHandle, state: &Arc<Mutex<Brid
                             obj.get_mut("subtitles").and_then(|v| v.as_array_mut())
                         {
                             for (index, subtitle) in subtitles.iter_mut().enumerate() {
-                                subtitle["path"]=serde_json::Value::String(format!("{}/api/v1/media/{id}/subtitles/{index}?expires={exp}&signature={}",info(&state.lock().unwrap()).base_url.unwrap_or_default(),sign(&token,id,exp)));
+                                subtitle["path"]=serde_json::Value::String(format!("{}/api/v1/media/{id}/subtitles/{index}?expires={exp}&signature={}",info(&state.lock().unwrap()).base_url.unwrap_or_default(),sign(&identity_key,id,exp)));
                             }
                         }
                     }
@@ -1026,6 +1058,12 @@ fn sign(key: &str, id: i64, exp: u64) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+fn media_signature_key(token: &str, playback_uuid: &str) -> String {
+    format!("{token}:{playback_uuid}")
+}
+fn valid_media_signature(token: &str, playback_uuid: &str, id: i64, exp: u64, sig: &str) -> bool {
+    valid_signature(&media_signature_key(token, playback_uuid), id, exp, sig)
 }
 fn valid_signature(key: &str, id: i64, exp: u64, sig: &str) -> bool {
     use hmac::{Hmac, Mac};
@@ -1119,6 +1157,75 @@ fn stream_media(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, headers: &[u
         }
     }
 }
+fn rewrite_hls_playlist(playlist: &str, id: i64, session: &str, exp: u64, sig: &str) -> Result<Vec<u8>, &'static str> {
+    if session.is_empty() || session.len() > 64 || !session.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') {
+        return Err("Invalid HLS session");
+    }
+    if !playlist.starts_with("#EXTM3U") { return Err("Invalid HLS playlist"); }
+    let mut rewritten = String::new();
+    for line in playlist.lines() {
+        if line.starts_with('#') || line.is_empty() { rewritten.push_str(line); }
+        else {
+            if !line.strip_prefix("segment-").and_then(|v| v.strip_suffix(".ts")).is_some_and(|v| !v.is_empty() && v.len() <= 10 && v.bytes().all(|c| c.is_ascii_digit())) { return Err("Unexpected HLS segment"); }
+            rewritten.push_str(&format!("/api/v1/media/{id}/hls/session/{session}/{line}?expires={exp}&signature={sig}"));
+        }
+        rewritten.push('\n');
+    }
+    Ok(rewritten.into_bytes())
+}
+
+fn proxy_hls(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, method: &str, tail: &str, exp: u64, sig: &str) {
+    use sha2::{Digest, Sha256};
+    let state = app.state::<media_core::LibraryState>();
+    let path = match media_core::LibraryStore::open(&state.db_path).and_then(|store| store.resolve_media_path(id))
+        .and_then(|path| path.ok_or_else(|| "Media not found".to_owned())).and_then(|path| std::fs::canonicalize(path).map_err(|e| e.to_string())) {
+        Ok(path) => path, Err(_) => { reply(s, 404, "Media file not found", "text/plain"); return; }
+    };
+    let path = path.to_string_lossy();
+    let normalized = path.strip_prefix(r"\\?\UNC\").map(|rest| format!(r"\\{rest}"))
+        .unwrap_or_else(|| path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned());
+    let identity = format!("{:x}", Sha256::digest(normalized.replace('\\', "/").to_lowercase().as_bytes()));
+    if let Err(error) = app.state::<crate::media_server::MediaServerState>().request("status") {
+        reply(s, 503, &error, "text/plain"); return;
+    }
+    let client = match reqwest::blocking::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(6)).timeout(std::time::Duration::from_secs(35)).build() {
+        Ok(client) => client, Err(error) => {reply(s, 502, &error.to_string(), "text/plain"); return;}
+    };
+    let request_method = match reqwest::Method::from_bytes(method.as_bytes()) { Ok(value) => value, Err(_) => return };
+    let mut response = match client.request(request_method, format!("{ADMIN_ORIGIN}/api/mobile-hls/{tail}"))
+        .header("X-Luma-Control", "1").header("X-Luma-Media-Identity", &identity).send() {
+        Ok(response) => response, Err(error) => { reply(s, 502, &format!("HLS request failed: {error}"), "text/plain"); return; }
+    };
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        let mut body = String::new(); let _ = response.take(65536).read_to_string(&mut body);
+        reply(s, status, &body, "text/plain"); return;
+    }
+    if response.headers().get("X-Luma-Media-Identity").and_then(|v| v.to_str().ok()) != Some(identity.as_str()) {
+        reply(s, 409, "The HLS session belongs to another media file", "text/plain"); return;
+    }
+    let content_type = if tail.contains(".ts") { "video/mp2t" } else { "application/vnd.apple.mpegurl" };
+    let mut headers = String::new();
+    for name in ["X-Luma-Duration", "X-Luma-Bitrate-Limit", "X-Luma-Source-Bitrate"] {
+        if let Some(value) = response.headers().get(name).and_then(|v| v.to_str().ok()).filter(|v| v.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)) {
+            headers.push_str(&format!("{name}: {value}\r\n"));
+        }
+    }
+    let session = response.headers().get("X-Luma-Hls-Session").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+    let mut body = Vec::new();
+    if method != "HEAD" && method != "DELETE" {
+        if let Err(error) = response.by_ref().take(32 * 1024 * 1024 + 1).read_to_end(&mut body) { reply(s, 502, &error.to_string(), "text/plain"); return; }
+        if body.len() > 32 * 1024 * 1024 { reply(s, 502, "HLS segment is too large", "text/plain"); return; }
+        if content_type == "application/vnd.apple.mpegurl" {
+            let playlist = match String::from_utf8(body) { Ok(value) => value, Err(_) => { reply(s, 502, "Invalid HLS playlist", "text/plain"); return; } };
+            body = match rewrite_hls_playlist(&playlist, id, &session, exp, sig) { Ok(value) => value, Err(error) => {reply(s, 502, error, "text/plain"); return;} };
+        }
+    }
+    let _ = write!(s, "HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Luma-Duration, X-Luma-Bitrate-Limit, X-Luma-Source-Bitrate\r\n{headers}Connection: close\r\n\r\n", body.len());
+    if method != "HEAD" { let _ = s.write_all(&body); }
+}
+
 fn stream_compatible(s: &mut TcpStream, app: &tauri::AppHandle, id: i64, start: f64, head: bool, quality: &str, bitrate: u64, session: &str) {
     use sha2::{Digest, Sha256};
     let state = app.state::<media_core::LibraryState>();
@@ -1295,6 +1402,25 @@ fn dispatch(
         "get_library_status" => json(crate::get_library_status(
             app.state::<media_core::LibraryState>(),
         )?),
+        "move_library_title" => {
+            tauri::async_runtime::block_on(crate::move_library_title(
+                val(a, "mediaId", 0),
+                val(a, "destinationRoot", String::new()),
+                a.get("playbackUuid").and_then(|value| value.as_str()).map(str::to_owned),
+                app.state::<media_core::LibraryState>(),
+                app.clone(),
+            ))?;
+            json(())
+        }
+        "permanently_delete_library_title" => {
+            tauri::async_runtime::block_on(crate::permanently_delete_library_title(
+                val(a, "mediaId", 0),
+                a.get("playbackUuid").and_then(|value| value.as_str()).map(str::to_owned),
+                app.state::<media_core::LibraryState>(),
+                app.clone(),
+            ))?;
+            json(())
+        }
         "get_catalog_page" => json(crate::get_catalog_page(
             val(a, "offset", 0),
             val(a, "count", 48),
@@ -1308,11 +1434,12 @@ fn dispatch(
             app.state::<media_core::LibraryState>(),
             app.clone(),
         )?),
-        "resolve_media_file" => json(crate::resolve_media_file(
+        "resolve_media_file" => json(tauri::async_runtime::block_on(crate::resolve_media_file(
             val(a, "mediaId", 0),
+            a.get("playbackUuid").and_then(|value| value.as_str()).map(str::to_owned),
             app.state::<media_core::LibraryState>(),
             app.clone(),
-        )?),
+        ))?),
         "save_playback_progress" => {
             crate::save_playback_progress(
                 val(a, "mediaId", 0),
@@ -1562,12 +1689,34 @@ pub async fn release_search(
 mod tests {
     use super::*;
     #[test]
+    fn hls_segments_keep_the_original_media_signature() {
+        let signature = sign("secret", 11, 1234);
+        let playlist = rewrite_hls_playlist("#EXTM3U\n#EXTINF:4,\nsegment-000001.ts\n", 11, "session-1", 1234, &signature).unwrap();
+        let text = String::from_utf8(playlist).unwrap();
+        assert!(text.contains(&format!("/api/v1/media/11/hls/session/session-1/segment-000001.ts?expires=1234&signature={signature}")));
+        assert!(valid_signature("secret", 11, 1234, &signature));
+        for segment in ["../private.ts", "https://example.com/segment.ts", "segment-1.ts?x=1", "segment-.ts"] {
+            assert!(rewrite_hls_playlist(&format!("#EXTM3U\n{segment}\n"), 11, "session-1", 1234, &signature).is_err());
+        }
+        assert!(rewrite_hls_playlist("#EXTM3U\n", 11, "../escape", 1234, &signature).is_err());
+    }
+    #[test]
     fn media_signature_is_scoped_to_id_and_expiry() {
         let sig = sign("secret", 17, 1234);
         assert!(valid_signature("secret", 17, 1234, &sig));
         assert!(!valid_signature("secret", 18, 1234, &sig));
         assert!(!valid_signature("wrong", 17, 1234, &sig));
         assert!(!valid_signature("secret", 17, 1235, &sig));
+    }
+
+    #[test]
+    fn media_signature_cannot_follow_a_reused_row_to_a_different_uuid() {
+        let old_key = "secret:original-file-uuid";
+        let signature = sign(old_key, 17, 1234);
+        assert!(valid_media_signature("secret", "original-file-uuid", 17, 1234, &signature));
+        assert!(!valid_media_signature("secret", "replacement-file-uuid", 17, 1234, &signature));
+        let legacy_signature = sign("secret", 17, 1234);
+        assert!(!valid_media_signature("secret", "original-file-uuid", 17, 1234, &legacy_signature));
     }
     #[test]
     fn malformed_signature_is_rejected() {

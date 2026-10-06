@@ -3,12 +3,14 @@
 </p>
 
 <p align="center">
-  <strong>A local media library for Windows.</strong><br />
+  <strong>A media library for Windows, with an Android companion in preview.</strong><br />
   Bring your movies, series, playback and subtitles together in one quiet interface.
 </p>
 
 <p align="center">
-  <a href="https://github.com/mrlcache/luma-media-library/releases/download/v0.1.3/Luma_0.1.3_x64-setup.exe"><strong>Download for Windows ↗</strong></a>
+  <a href="https://github.com/mrlcache/luma-media-library/releases/download/v0.2.2/Luma_0.2.2_x64-setup.exe"><strong>Download for Windows ↗</strong></a>
+  &nbsp; · &nbsp;
+  <a href="https://github.com/mrlcache/luma-media-library/releases/download/v0.2.2/Luma-Mobile-0.2.2-armv7.apk"><strong>Android preview APK ↗</strong></a>
   &nbsp; · &nbsp;
   <a href="https://github.com/mrlcache/luma-media-library/releases">Release notes</a>
   &nbsp; · &nbsp;
@@ -17,7 +19,7 @@
   <a href="https://github.com/mrlcache/luma-media-library/issues">Report an issue</a>
 </p>
 
-<p align="center"><sub>v0.1.3 &nbsp; / &nbsp; Windows x64 &nbsp; / &nbsp; GPL-2.0-or-later</sub></p>
+<p align="center"><sub>v0.2.2 preview &nbsp; / &nbsp; Windows x64 + Android ARM32 &nbsp; / &nbsp; GPL-2.0-or-later</sub></p>
 
 ---
 
@@ -35,13 +37,21 @@ Your catalog and playback history are stored locally. Luma does not include movi
 
 ## Get started
 
-1. **Install Luma.** [Download the Windows installer](https://github.com/mrlcache/luma-media-library/releases/download/v0.1.3/Luma_0.1.3_x64-setup.exe), open the `.exe`, and follow the installation wizard.
+1. **Install Luma.** [Download the Windows installer](https://github.com/mrlcache/luma-media-library/releases/download/v0.2.2/Luma_0.2.2_x64-setup.exe), open the `.exe`, and follow the installation wizard.
 2. **Add your collection.** Open **Settings → Local library → Choose folder** and select a folder containing your videos. Use **Add folder** for another location.
 3. **Pick something to watch.** Browse your library and press **Play**. Subtitle controls are available in the player.
 
 MPV and the torrent engine are included in the installer. Metadata and artwork use online services; TMDb credentials must be configured in the local app profile. OpenSubtitles search and downloads use your own API key and account. Local playback works with your own files.
 
-## Built for the desktop
+## Android companion preview
+
+[Download the APK](https://github.com/mrlcache/luma-media-library/releases/download/v0.2.2/Luma-Mobile-0.2.2-armv7.apk) and use **Find computers** or enter your computer's address to pair with the matching Windows build on your private network. The companion browses your PC library, resumes playback, and can request HLS transcoding for formats the phone cannot play directly. It also offers a separate phone download destination.
+
+This APK targets **ARM32 / armeabi-v7a and Android 8 or newer**, including the Galaxy A02s. ARM64-only devices need a separate build. It embeds the interface, requires no development web server, and contains no sample media or embedded service credentials. It is a **debug-signed testing build**, not a production Android release. Playback on every device, codec, subtitle format, and casting target has not been validated.
+
+The Windows installer and APK are available together in the [0.2.2 preview release](https://github.com/mrlcache/luma-media-library/releases/tag/v0.2.2). See [Android build instructions](docs/android-demo.md), [Wi-Fi development](docs/android-wifi-dev.md), and the [code review findings](docs/audit-2026-10-05.md).
+
+## Built with
 
 Luma uses **Svelte 5** for the interface, **Tauri 2 and Rust** for the desktop shell, **SQLite** for the catalog, **MPV** for native playback, and **libtorrent** for downloads.
 
@@ -58,7 +68,7 @@ Native builds need the Windows C++ and Rust toolchains. See the [development gui
 
 - [Troubleshooting](docs/troubleshooting.md) — missing artwork, playback errors and app profiles.
 - [Issues](https://github.com/mrlcache/luma-media-library/issues) — report a bug or suggest an improvement. Include your Luma version, steps to reproduce, and a screenshot when useful.
-- [Releases](https://github.com/mrlcache/luma-media-library/releases) — Windows installers and changes by version.
+- [Releases](https://github.com/mrlcache/luma-media-library/releases) — Windows installers, Android preview APKs and changes by version.
 
 ## Open source
 

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync,existsSync,mkdirSync,writeFileSync } from 'node:fs';
 import { randomUUID,createHash } from 'node:crypto';
 import { MediaServer,lanInterfaces } from './server.mjs';
+import { MobileHls } from './mobile-hls.mjs';
 import { createReleaseSearch } from '../../scripts/torrent-search-preview.mjs';
 import { mobileQualities } from './transcode.mjs';
 const releaseSearch = createReleaseSearch();
@@ -21,6 +22,7 @@ const identityFile=path.join(runtime,'identity.json');
 const uuid=existsSync(identityFile)?JSON.parse(readFileSync(identityFile,'utf8')).uuid:randomUUID();
 writeFileSync(identityFile,JSON.stringify({uuid}));
 const media=new MediaServer({dbPath,host:selected.address,netmask:selected.netmask,port:Number(options.port||8941),uuid,tools:path.join(workspace,'tools')});
+const mobileHls=new MobileHls({media,workspace:runtime});
 await media.catalog.refresh(true);
 let busy=false;
 const stateFile=path.join(runtime,'server-state.json');
@@ -36,6 +38,7 @@ const admin=http.createServer(async(req,res)=>{
     const url=new URL(req.url,origin);
     if(url.pathname==='/'&&req.method==='GET'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https://image.tmdb.org data:; object-src 'none'; frame-ancestors 'none'"});res.end(page);return;}
     if(url.pathname==='/manrope.woff2'&&req.method==='GET'){const font=path.join(workspace,'web','manrope.woff2');if(existsSync(font)){res.writeHead(200,{'Content-Type':'font/woff2'});res.end(readFileSync(font));return;}}
+    if(await mobileHls.handle(req,res,url))return;
     const mobileStream=/^\/api\/mobile-stream\/(file-\d+)$/.exec(url.pathname);
     if(mobileStream&&['GET','HEAD'].includes(req.method)){
       if(req.headers['x-luma-control']!=='1'){res.writeHead(403);res.end();return;}
@@ -83,5 +86,5 @@ writeFileSync(path.join(runtime,'process.json'),JSON.stringify({pid:process.pid,
 if(options.start||savedState.enabled)try{await media.start();}catch(error){media.lastError=error.message;console.error('Media server startup:',error.message);}
 console.log(JSON.stringify({admin:origin,...media.status()}));
 let shuttingDown=false;
-async function shutdown(){if(shuttingDown)return;shuttingDown=true;await media.stop();admin.close(()=>process.exit(0));}
+async function shutdown(){if(shuttingDown)return;shuttingDown=true;await mobileHls.close();await media.stop();admin.close(()=>process.exit(0));}
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);

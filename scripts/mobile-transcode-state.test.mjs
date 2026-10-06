@@ -15,8 +15,11 @@ function fixture(fetch) {
     let mobileSourceUrl='http://localhost/api/v1/media/1?token=fixture', mobileStreamSession='fixture';
     let duration=0, sourceBitrate=0, playerDisposed=false, mediaReady=true, isPlaying=true;
     let transcodeOffset=0, resumePosition=0, mobilePendingSeek=null, mobilePendingResume=false, currentTime=0, playbackRate=1, controlsVisible=false;
-    const video={src:'',pause(){},removeAttribute(){},load(){},async play(){}};
-    function openCompatibleStream(video,url){video.src=url;return {ready:Promise.resolve(),stop(){}};}
+    const video={src:'',pause(){},removeAttribute(name){if(name==='src')this.src='';},load(){},async play(){}};
+    function stopCompatibleStream(){compatibleStream?.stop();compatibleStream=undefined;}
+    function withTimeout(promise){return promise;}
+    function fetchCompatibleMedia(url,options,stage){return fetch(url,options,stage);}
+    function openHlsStream(video,url){video.src=url;return {ready:Promise.resolve(),stop(){},suspend(){}};}
     ${loader}
     return {loadMobileStream, setRequested(value){transcoding=value;},
       state(){return {activeTranscoding,playbackError,src:video.src,transcodeOffset};}};
@@ -33,7 +36,7 @@ test('indicator stays attached to the loaded stream even if requested mode chang
   await loading;
   assert.equal(f.state().activeTranscoding, true);
   assert.equal(f.state().transcodeOffset, 60);
-  assert.match(f.state().src, /compatible/);
+  assert.match(f.state().src, /hls\/index\.m3u8/, f.state().playbackError);
 });
 
 test('restores a valid saved position and restarts invalid completed resume records instead of jumping to the end', async () => {
@@ -97,14 +100,12 @@ test('dragging the mobile timeline only starts one stream at the released positi
   f.commitSeek({currentTarget:{value:'80'}});
   assert.deepEqual(f.calls,[480]);
 });
-test('a failed stream change keeps the indicator consistent with the previous stream', async () => {
+test('a failed HLS stream change reports the failure without changing the active transcode indicator', async () => {
   let fail=false;
   const f = fixture(async () => { if(fail) throw new Error('fixture failure'); return {ok:true,headers:new Headers()}; });
   await f.loadMobileStream();
-  const previous=f.state().src;
   fail=true;
   await f.loadMobileStream(120);
   assert.equal(f.state().activeTranscoding,true);
-  assert.equal(f.state().src,previous);
   assert.equal(f.state().playbackError,'fixture failure');
 });

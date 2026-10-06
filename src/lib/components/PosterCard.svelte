@@ -97,5 +97,12 @@
 	.poster-card--catalog .poster-card__copy strong { font-size: 0.81rem; font-weight: 610; }
 	.poster-card--catalog .poster-card__play { border: 0; border-radius: 50%; color: var(--surface-0); background: var(--text-strong); transition-duration: 150ms; }
 	@media (max-width: 680px) { .poster-card--home .poster-card__play { display: none; } }
+	@media (hover: none) {
+		.poster-card, .poster-card__art, .poster-card__art img, .poster-card__play { transition-duration: 110ms; }
+		.poster-card:hover, .poster-card:focus-within { transform: none; }
+		.poster-card:hover .poster-card__art img, .poster-card:focus-within .poster-card__art img { filter: none; transform: none; }
+		.poster-card:hover .poster-card__scrim, .poster-card:focus-within .poster-card__scrim { opacity: .72; }
+		.poster-card__media { -webkit-touch-callout: none; }
+	}
 	@media (prefers-reduced-motion: reduce) { .poster-card__art img, .poster-card__scrim, .poster-card__play { transition: none; } }
 </style>

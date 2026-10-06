@@ -4,7 +4,7 @@ use media_core::{
 };
 use serde::Serialize;
 use std::sync::atomic::Ordering;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 mod artwork;
 mod hss_backdrop;
@@ -20,6 +20,7 @@ mod recommendations;
 mod torrent_engine;
 mod mobile_bridge;
 mod media_server;
+mod subtitles;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,28 +101,82 @@ fn get_local_title_detail(
     Ok(Some(detail))
 }
 
+#[tauri::command]
+async fn move_library_title(
+    media_id: i64,
+    destination_root: String,
+    playback_uuid: Option<String>,
+    state: tauri::State<'_, LibraryState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut store = LibraryStore::open(&db_path)?;
+        store.require_media_identity(media_id, playback_uuid.as_deref())?;
+        store.move_title(media_id, std::path::Path::new(&destination_root))
+    }).await.map_err(|error| format!("Moving this title could not finish: {error}"))??;
+    let _ = app.emit("library-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+async fn permanently_delete_library_title(
+    media_id: i64,
+    playback_uuid: Option<String>,
+    state: tauri::State<'_, LibraryState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut store = LibraryStore::open(&db_path)?;
+        store.require_media_identity(media_id, playback_uuid.as_deref())?;
+        store.permanently_delete_title(media_id)
+    }).await.map_err(|error| format!("Deleting this title could not finish: {error}"))??;
+    let _ = app.emit("library-changed", ());
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SubtitleSource {
     label: String,
     path: String,
+    language: String,
+    stream_index: Option<u32>,
+    supported: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ResolvedMediaFile {
+    media_id: i64,
+    playback_uuid: String,
     path: String,
     subtitles: Vec<SubtitleSource>,
     resume_position_seconds: f64,
+    subtitle_warning: Option<String>,
 }
 
 #[tauri::command]
-fn resolve_media_file(
+async fn resolve_media_file(
     media_id: i64,
+    playback_uuid: Option<String>,
     state: tauri::State<'_, LibraryState>,
     app: tauri::AppHandle,
 ) -> Result<ResolvedMediaFile, String> {
-    let store = LibraryStore::open(&state.db_path)?;
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let media_id = match playback_uuid {
+            Some(uuid) => LibraryStore::open(&db_path)?.media_id_for_uuid(&uuid)?.ok_or_else(||
+                "This media file is no longer in the library. Refresh the library and try again.".to_owned())?,
+            None => media_id,
+        };
+        resolve_media_source(media_id, &db_path, app)
+    }).await.map_err(|e| e.to_string())?
+}
+
+fn resolve_media_source(media_id: i64, db_path: &std::path::Path, app: tauri::AppHandle) -> Result<ResolvedMediaFile, String> {
+    let store = LibraryStore::open(db_path)?;
     let path = store.resolve_media_path(media_id)?.ok_or_else(|| {
         "This media file is no longer in the library. Refresh the library and try again.".to_owned()
     })?;
@@ -130,10 +185,9 @@ fn resolve_media_file(
         .allow_file(&path)
         .map_err(|error| format!("Could not authorize playback for this media file: {error}"))?;
 
-    let subtitle_dir = state
-        .db_path
+    let subtitle_dir = db_path
         .parent()
-        .unwrap_or(&state.db_path)
+        .unwrap_or(db_path)
         .join("subtitle-cache");
     let mut subtitles = Vec::new();
     for (index, subtitle) in store.subtitle_files(media_id)?.into_iter().enumerate() {
@@ -144,15 +198,17 @@ fn resolve_media_file(
         let playback_path = if subtitle
             .extension()
             .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("srt"))
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("srt") || extension.eq_ignore_ascii_case("vtt"))
         {
-            let contents = std::fs::read(&subtitle)
-                .map_err(|error| format!("Could not read a local subtitle: {error}"))?;
-            if contents.len() > 8 * 1024 * 1024 {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&contents);
-            let converted = srt_to_webvtt(text.trim_start_matches('\u{feff}'));
+            let contents = match subtitles::read_bounded_subtitle(&subtitle) {
+                Ok(contents) => contents,
+                Err(error) if error == "The subtitle is too large." => continue,
+                Err(error) => return Err(error),
+            };
+            let text = media_core::decode_subtitle_text(&contents);
+            let converted = if subtitle.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("srt")) {
+                srt_to_webvtt(text.trim_start_matches('\u{feff}'))
+            } else { text };
             std::fs::create_dir_all(&subtitle_dir)
                 .map_err(|error| format!("Could not prepare the subtitle cache: {error}"))?;
             let converted_path = subtitle_dir.join(format!("local-{media_id}-{index}.vtt"));
@@ -168,14 +224,53 @@ fn resolve_media_file(
         subtitles.push(SubtitleSource {
             label,
             path: playback_path.to_string_lossy().to_string(),
+            language: "und".into(),
+            stream_index: None,
+            supported: !playback_path.extension().is_some_and(|e| e.eq_ignore_ascii_case("idx")),
         });
     }
 
+    let subtitle_warning = match subtitles::embedded(&app, &path, &subtitle_dir) {
+        Ok(tracks) => {
+            subtitles.extend(tracks.into_iter().map(|track| SubtitleSource {
+                label: track.label, path: String::new(), language: track.language,
+                stream_index: Some(track.index), supported: track.supported,
+            }));
+            None
+        }
+        Err(error) => Some(error),
+    };
+
     Ok(ResolvedMediaFile {
+        media_id,
+        playback_uuid: store.playback_uuid(media_id)?,
         path: path.to_string_lossy().to_string(),
         subtitles,
         resume_position_seconds: store.playback_position(media_id)?.unwrap_or(0.0),
+        subtitle_warning,
     })
+}
+
+#[tauri::command]
+async fn resolve_subtitle_file(media_id: i64, subtitle_index: usize, state: tauri::State<'_, LibraryState>, app: tauri::AppHandle) -> Result<String, String> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || resolve_subtitle_path(media_id, subtitle_index, &db_path, app)).await.map_err(|e| e.to_string())?
+}
+
+fn resolve_subtitle_path(media_id: i64, subtitle_index: usize, db_path: &std::path::Path, app: tauri::AppHandle) -> Result<String, String> {
+    let source = resolve_media_source(media_id, db_path, app.clone())?;
+    let subtitle = source.subtitles.get(subtitle_index).ok_or("Subtitle not found")?;
+    if !subtitle.supported { return Err("This image subtitle requires burn-in for mobile playback.".into()); }
+    let cache = db_path.parent().unwrap_or(db_path).join("subtitle-cache");
+    let path = if subtitle.stream_index.is_some() {
+        subtitles::convert(&app, std::path::Path::new(&source.path), subtitle.stream_index, &cache)?
+    } else {
+        let path = std::path::PathBuf::from(&subtitle.path);
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vtt")) { path }
+        else { subtitles::convert(&app, &path, None, &cache)? }
+    };
+    app.asset_protocol_scope().allow_file(&path).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn srt_to_webvtt(contents: &str) -> String {
@@ -665,8 +760,11 @@ pub fn run() {
             get_library_status,
             get_catalog_page,
             get_local_title_detail,
+            move_library_title,
+            permanently_delete_library_title,
             media_server_request,
             resolve_media_file,
+            resolve_subtitle_file,
             save_playback_progress,
             record_playback_activity,
             open_media_in_desktop_player,

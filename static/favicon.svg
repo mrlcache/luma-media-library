@@ -1,6 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
 	<title>Luma</title>
 	<rect width="32" height="32" rx="9" fill="#111719" />
+	<g transform="translate(16 16) scale(.85) translate(-16 -16)">
 	<path d="M5 26C8.5 20 12.5 16.5 17 14" fill="none" stroke="#EAF0F2" stroke-width="2.2" stroke-linecap="round" />
 	<path fill="#EAF0F2" d="M22 3.5C23.4 8.3 24.2 9.1 29 10.5C24.2 11.9 23.4 12.7 22 17.5C20.6 12.7 19.8 11.9 15 10.5C19.8 9.1 20.6 8.3 22 3.5Z" />
+	</g>
 </svg>

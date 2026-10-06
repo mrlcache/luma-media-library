@@ -1,5 +1,7 @@
 # Android builds
 
+The public **0.2.2 preview** APK embeds the real mobile UI and pairs with the matching Windows 0.2.2 installer. It contains no demo media and does not depend on a hot-reload server. The current download targets ARM32 / `armeabi-v7a`, Android 8+, including Galaxy A02s. It is debug-signed for testing; production signing and encrypted pairing remain future work. Release assets and checksums are available on GitHub.
+
 ## Connected mobile build
 
 Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-android-demo.ps1 -Real` to generate `Downloads/Luma-Mobile.apk`. This build uses real backends and does not include the demo artwork, simulated torrents or test video. It targets ARM32 and Android 8+ for devices such as the Galaxy A02s. The existing test package identifier is retained so it can update the previously installed APK.

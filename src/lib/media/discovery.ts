@@ -4,7 +4,7 @@ import type { MediaItem, TmdbSearchResult, TmdbTrailer } from '$lib/types';
 
 export type DiscoveryFeed = { featured: TmdbSearchResult[]; sections: { title: string; items: TmdbSearchResult[] }[]; warning: string | null };
 const storageKey = 'luma.discovery.v1';
-const ttl = 30 * 60 * 1000;
+const ttl = 5 * 60 * 1000;
 let snapshot: { time: number; feed: DiscoveryFeed } | null = null;
 let pending: Promise<DiscoveryFeed> | null = null;
 const titles = new Map<string, TmdbSearchResult>();

@@ -1,5 +1,6 @@
 import type { CatalogMedia, ContinueWatchingItem, LocalTitleDetail, OpenSubtitleSearchResult, PlaybackHistoryItem, ResolvedMediaFile, TmdbSearchResult, TmdbTrailer } from '$lib/types';
 import { nativeMobile, localMobileInvoke, getTorrentTarget, type DownloadTarget } from './mobile-connection';
+import { identifyLibraryPlayback, verifyPlaybackIdentity } from './library-playback';
 
 export type DesktopPlayer = 'mpv' | 'vlc';
 
@@ -29,14 +30,14 @@ async function torrentInvoke<T>(command: string, args?: Record<string, unknown>,
 	return invoke<T>(command, args);
 }
 
-export const readTorrentSnapshot = () => torrentInvoke<TorrentSnapshot>('torrent_snapshot');
+export const readTorrentSnapshot = (target: DownloadTarget = getTorrentTarget()) => torrentInvoke<TorrentSnapshot>('torrent_snapshot', undefined, target);
 export const addMagnet = (uri: string, destination?: string, target?:DownloadTarget) => torrentInvoke<string>('torrent_add_magnet', { uri, destination }, target);
-export const addTorrentFile = (path: string, destination?: string) => torrentInvoke<string>('torrent_add_file', { path, destination });
+export const addTorrentFile = (path: string, destination?: string, target?:DownloadTarget) => torrentInvoke<string>('torrent_add_file', { path, destination }, target);
 export const addTorrentData = (encoded: string, destination?: string, target?:DownloadTarget) => torrentInvoke<string>('torrent_add_data', { encoded, destination }, target);
-export const setTorrentPaused = (infoHash: string, paused: boolean) => torrentInvoke<void>('torrent_set_paused', { infoHash, paused });
-export const moveTorrentQueue = (infoHash: string, direction: number) => torrentInvoke<void>('torrent_move_queue', { infoHash, direction });
-export const setTorrentLimits = (download: number, upload: number) => torrentInvoke<void>('torrent_set_limits', { download, upload });
-export const removeTorrent = (infoHash: string) => torrentInvoke<void>('torrent_remove', { infoHash });
+export const setTorrentPaused = (infoHash: string, paused: boolean, target: DownloadTarget = getTorrentTarget()) => torrentInvoke<void>('torrent_set_paused', { infoHash, paused }, target);
+export const moveTorrentQueue = (infoHash: string, direction: number, target: DownloadTarget = getTorrentTarget()) => torrentInvoke<void>('torrent_move_queue', { infoHash, direction }, target);
+export const setTorrentLimits = (download: number, upload: number, target: DownloadTarget = getTorrentTarget()) => torrentInvoke<void>('torrent_set_limits', { download, upload }, target);
+export const removeTorrent = (infoHash: string, target: DownloadTarget = getTorrentTarget()) => torrentInvoke<void>('torrent_remove', { infoHash }, target);
 
 export async function chooseTorrentFile(): Promise<string | null> {
 	if (!isDesktopRuntime()) return null;
@@ -148,6 +149,18 @@ export async function readLibraryStatus(): Promise<LibraryStatus | null> {
 
 	const { invoke } = await import('$lib/platform/invoke');
 	return invoke<LibraryStatus>('get_library_status');
+}
+
+export async function moveLibraryTitle(mediaId: number, destinationRoot: string, playbackUuid?: string): Promise<void> {
+	if (!isDesktopRuntime()) throw new Error('Moving library titles is available in the desktop app.');
+	const { invoke } = await import('$lib/platform/invoke');
+	return invoke<void>('move_library_title', { mediaId, destinationRoot, playbackUuid });
+}
+
+export async function permanentlyDeleteLibraryTitle(mediaId: number, playbackUuid?: string): Promise<void> {
+	if (!isDesktopRuntime()) throw new Error('Deleting library titles is available in the desktop app.');
+	const { invoke } = await import('$lib/platform/invoke');
+	return invoke<void>('permanently_delete_library_title', { mediaId, playbackUuid });
 }
 
 export async function readCatalogPage(
@@ -265,32 +278,18 @@ export async function readTitleTrailer(mediaId: number): Promise<TmdbTrailer | n
 	return pending;
 }
 
-export async function resolveMediaFile(mediaId: number, expectedTitle?: string, expectedEpisode?: string, expectedTmdbId?: number, expectedKind?: 'movie' | 'series'): Promise<ResolvedMediaFile> {
+export async function resolveMediaFile(mediaId: number, expectedTitle?: string, expectedEpisode?: string, expectedTmdbId?: number, expectedKind?: 'movie' | 'series', playbackUuid?: string): Promise<ResolvedMediaFile> {
 	if (!isDesktopRuntime()) throw new Error('Local playback is available in the desktop app.');
 	const { invoke } = await import('$lib/platform/invoke');
-	if (nativeMobile && mediaId < 1_000_000_000 && expectedTitle) {
-		const current = await invoke<LocalTitleDetail | null>('get_local_title_detail', { mediaId });
-		const normalize = (title: string) => title.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
-		const marker = expectedEpisode?.match(/S(\d+)E(\d+)/i);
-		const sameTitle = (detail: LocalTitleDetail | null) => !!detail && (!expectedKind || detail.media.kind === expectedKind) && (expectedTmdbId && detail.tmdbId ? detail.tmdbId === expectedTmdbId : normalize(detail.media.title) === normalize(expectedTitle));
-		const sameEpisode = (detail: LocalTitleDetail | null) => !marker || detail?.files.some(file => file.mediaId === mediaId && file.season === Number(marker[1]) && file.episode === Number(marker[2]));
-		if (!sameTitle(current) || !sameEpisode(current)) {
-			invalidateCatalogPageCache();
-			const page = await invoke<CatalogPage>('get_catalog_page', {offset:0,count:48,query:expectedTitle});
-			const matches = new Set<number>();
-			for (const item of page.items.filter(item => item.id < 1_000_000_000 && normalize(item.title) === normalize(expectedTitle))) {
-				const detail = await invoke<LocalTitleDetail | null>('get_local_title_detail', {mediaId:item.id});
-				if (!sameTitle(detail) || !detail) continue;
-				if (marker) {
-					for (const file of detail.files) if (file.season === Number(marker[1]) && file.episode === Number(marker[2])) matches.add(file.mediaId);
-				} else if (detail.media.kind === 'movie' || detail.files.length === 1) matches.add(detail.media.id);
-			}
-			if (matches.size !== 1) throw new Error('Couldn’t identify this video in your computer’s current library.');
-			mediaId = [...matches][0];
-		}
+	if (!playbackUuid && nativeMobile && mediaId < 1_000_000_000 && expectedTitle) {
+		mediaId = await identifyLibraryPlayback({
+			detail: id => invoke<LocalTitleDetail | null>('get_local_title_detail', {mediaId:id}),
+			page: (offset, count, query) => invoke<CatalogPage>('get_catalog_page', {offset, count, query})
+		}, mediaId, expectedTitle, expectedEpisode, expectedTmdbId, expectedKind);
 	}
 	try {
-		return {...await invoke<ResolvedMediaFile>('resolve_media_file', { mediaId }),mediaId};
+		const source = verifyPlaybackIdentity(await invoke<ResolvedMediaFile>('resolve_media_file', { mediaId, playbackUuid }), playbackUuid);
+		return {...source, mediaId:source.mediaId ?? mediaId};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		if (/Could not open the indexed media file|This media file is no longer in the library/i.test(message)) {
@@ -332,6 +331,11 @@ export async function localMediaUrl(path: string): Promise<string> {
 	if (!isDesktopRuntime()) throw new Error('Local media files require the desktop app.');
 	const { convertFileSrc } = await import('@tauri-apps/api/core');
 	return convertFileSrc(path);
+}
+
+export async function resolveSubtitleFile(mediaId: number, subtitleIndex: number): Promise<string> {
+	const { invoke } = await import('$lib/platform/invoke');
+	return invoke<string>('resolve_subtitle_file', { mediaId, subtitleIndex });
 }
 
 export async function setOpenSubtitlesApiKey(apiKey: string): Promise<void> {
@@ -405,7 +409,7 @@ export async function nativePlayerLoadSubtitle(path: string): Promise<NativePlay
 export async function chooseSubtitleFile(): Promise<string | null> {
 	if (!isDesktopRuntime()) return null;
 	const { open } = await import('@tauri-apps/plugin-dialog');
-	const selected = await open({ multiple: false, title: 'Choose a subtitle file', filters: [{ name: 'Subtitles', extensions: ['srt', 'vtt', 'ass', 'ssa', 'sub'] }] });
+	const selected = await open({ multiple: false, title: 'Choose a subtitle file', filters: [{ name: 'Subtitles', extensions: ['srt', 'vtt', 'ass', 'ssa', 'sub', 'idx'] }] });
 	return typeof selected === 'string' ? selected : null;
 }
 

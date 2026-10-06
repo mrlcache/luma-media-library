@@ -14,7 +14,11 @@ export function demoEpisodes(title:string) {
 
 export function demoReleases(title:string,scope:{type:string;season?:number;episode?:number}) {
   const marker=scope.type==='movie'?'2025':`S${String(scope.season??1).padStart(2,'0')}${scope.type==='episode'?`E${String(scope.episode??1).padStart(2,'0')}`:''}`;
-  return ['2160p','1080p','720p','480p'].flatMap((quality,index)=>['QXR','Sample'].map((group,offset)=>({name:`${title} ${marker} ${quality} x265 [${group}]`,source:'Demo',uploader:group,group,sizeBytes:(4-index)*1_000_000_000,size:'',seeds:80-index*15-offset*7,peers:12,infoHash:(100+index*2+offset).toString(16).padStart(40,'0'),url:'',downloadKey:null,quality,codec:'HEVC',fileType:'MKV',qxr:group==='QXR'})));
+  return ['2160p','1080p','720p','480p'].flatMap((quality,index)=>['QXR','Sample'].map((group,offset)=>{
+    const name=`${title} ${marker} ${quality} x265 [${group}]`;
+    const infoHash=(100+index*2+offset).toString(16).padStart(40,'0');
+    return {name,source:'Demo',uploader:group,group,sizeBytes:(4-index)*1_000_000_000,size:'',seeds:80-index*15-offset*7,peers:12,infoHash,magnet:`magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(name)}`,url:'',downloadKey:null,quality,codec:'HEVC',fileType:'MKV',qxr:group==='QXR'};
+  }));
 }
 
 export async function invokeMobileDemo(command:string,args:Record<string,unknown>={}) {

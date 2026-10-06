@@ -29,6 +29,40 @@ fn fuse(lists: &[(f64, Vec<TmdbSearchResult>)], owned: &HashSet<(String, u64)>) 
     candidates.into_iter().map(|(item,_)| item).collect()
 }
 
+type Seed = (u64, String, String, Option<i64>);
+
+fn recommendation_seeds(profile: &[Seed], cycle: u64) -> Vec<Seed> {
+    let mut seeds: Vec<_> = profile.iter().filter(|seed| seed.3.is_some()).take(3).cloned().collect();
+    seeds.extend(profile.iter().filter(|seed| seed.3.is_none()).take(1).cloned());
+    let mut selected: HashSet<_> = seeds.iter().map(|seed| (seed.1.clone(),seed.0)).collect();
+    let remaining: Vec<_> = profile.iter().filter(|seed| !selected.contains(&(seed.1.clone(),seed.0))).collect();
+    if !remaining.is_empty() {
+        let offset = cycle as usize % remaining.len();
+        for seed in remaining.iter().cycle().skip(offset).take(remaining.len()) {
+            if seeds.len() >= 6 { break; }
+            if selected.insert((seed.1.clone(),seed.0)) { seeds.push((*seed).clone()); }
+        }
+    }
+    seeds
+}
+
+// Keep strong matches while giving relevant candidates beyond the first page exposure.
+fn diversify(ranked: Vec<TmdbSearchResult>, cycle: u64) -> Vec<TmdbSearchResult> {
+    if ranked.len() <= 4 { return ranked; }
+    let anchors = &ranked[..4];
+    let pool = &ranked[4..ranked.len().min(36)];
+    let mut result = Vec::with_capacity(ranked.len());
+    let mut seen = HashSet::new();
+    let offset = (cycle as usize % pool.len()) * 8 % pool.len();
+    for index in 0..12 {
+        let item = if index < 8 && index % 2 == 0 { &anchors[(index/2 + cycle as usize % 4) % 4] }
+            else { &pool[(offset + if index < 8 { index/2 } else { index-4 }) % pool.len()] };
+        if seen.insert(key(item)) { result.push(item.clone()); }
+    }
+    for item in ranked { if seen.insert(key(&item)) { result.push(item); } }
+    result
+}
+
 #[tauri::command]
 pub async fn get_discovery_feed(library: tauri::State<'_, LibraryState>, tmdb: tauri::State<'_, TmdbState>) -> Result<DiscoveryFeed, String> {
     let db_path = library.db_path.clone();
@@ -44,27 +78,28 @@ pub async fn get_discovery_feed(library: tauri::State<'_, LibraryState>, tmdb: t
 async fn build_feed(profile: Vec<(u64, String, String, Option<i64>)>, tmdb: &TmdbState) -> Result<DiscoveryFeed, String> {
     let owned: HashSet<_> = profile.iter().map(|(id,kind,_,_)| (kind.clone(),*id)).collect();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+    let cycle = (now.max(0) / (5 * 60 * 1000)) as u64;
     let mut requests = Vec::new();
     // Include recent acquisitions as well as viewing, even with a long watch history.
-    let mut seeds: Vec<_> = profile.iter().filter(|(_,_,_,watched)| watched.is_some()).take(4).cloned().collect();
-    seeds.extend(profile.iter().filter(|(_,_,_,watched)| watched.is_none()).take(2).cloned());
-    let mut selected: HashSet<_> = seeds.iter().map(|(id,kind,_,_)| (kind.clone(),*id)).collect();
-    for seed in &profile {
-        if seeds.len() >= 6 { break; }
-        if selected.insert((seed.1.clone(),seed.0)) { seeds.push(seed.clone()); }
-    }
-    for (id,kind,title,watched) in seeds {
+    let seeds = recommendation_seeds(&profile, cycle);
+    for (seed_index, (id,kind,title,watched)) in seeds.into_iter().enumerate() {
         let client = tmdb.clone();
-        let weight = watched.map(|time| 1.0 + 4.0 * 2_f64.powf(-((now-time).max(0) as f64)/(30.0*86400000.0))).unwrap_or(1.0);
+        let weight = watched.map(|time| 1.0 + 6.0 * 2_f64.powf(-((now-time).max(0) as f64)/(7.0*86400000.0))).unwrap_or(0.6);
         requests.push((title, weight, tauri::async_runtime::spawn(async move {
             let endpoint = media_endpoint(&kind)?;
-            client.discovery_list(&format!("{endpoint}/{id}/recommendations"), Some(&kind)).await
+            let endpoint = format!("{endpoint}/{id}/recommendations");
+            if seed_index < 2 {
+                let (first, second) = tokio::join!(client.discovery_list_page(&endpoint, Some(&kind), 1), client.discovery_list_page(&endpoint, Some(&kind), 2));
+                let mut items = first?;
+                if let Ok(extra) = second { items.extend(extra); }
+                Ok(items)
+            } else { client.discovery_list(&endpoint, Some(&kind)).await }
         })));
     }
     let movie_client = tmdb.clone();
     let series_client = tmdb.clone();
-    let movies = tauri::async_runtime::spawn(async move { movie_client.discovery_list("trending/movie/week", Some("movie")).await });
-    let series = tauri::async_runtime::spawn(async move { series_client.discovery_list("trending/tv/week", Some("series")).await });
+    let movies = tauri::async_runtime::spawn(async move { movie_client.discovery_list("trending/movie/day", Some("movie")).await });
+    let series = tauri::async_runtime::spawn(async move { series_client.discovery_list("trending/tv/day", Some("series")).await });
     let mut lists = Vec::new();
     let mut because = None;
     let mut failed = false;
@@ -81,7 +116,7 @@ async fn build_feed(profile: Vec<(u64, String, String, Option<i64>)>, tmdb: &Tmd
     let movies = movies.unwrap_or_default();
     let series = series.unwrap_or_default();
     lists.push((0.35,movies.clone())); lists.push((0.35,series.clone()));
-    let ranked = fuse(&lists,&owned);
+    let ranked = diversify(fuse(&lists,&owned), cycle);
     let featured = ranked.iter().filter(|item| item.backdrop_url.is_some()).take(8).cloned().collect();
     let mut sections = Vec::new();
     let mut shown = HashSet::new();
@@ -117,6 +152,25 @@ mod tests {
         let owned=HashSet::from([("movie".into(),1)]);
         let ranked=fuse(&[(1.0,vec![item(1,"movie"),item(1,"series"),item(2,"movie"),item(2,"movie")])],&owned);
         assert_eq!(ranked.len(),2); assert_eq!(ranked[0].kind,"series");
+    }
+    #[test]
+    fn refresh_changes_exploration_without_losing_strong_matches_or_titles() {
+        let ranked: Vec<_> = (1..=45).map(|id| item(id,"movie")).collect();
+        let first=diversify(ranked.clone(),0); let next=diversify(ranked.clone(),1);
+        assert_eq!(first.iter().map(key).collect::<HashSet<_>>(), ranked.iter().map(key).collect());
+        assert_eq!(first.len(),ranked.len());
+        assert_ne!(first[..12].iter().map(key).collect::<HashSet<_>>(),next[..12].iter().map(key).collect());
+        for id in 1..=4 { assert!(next[..8].iter().any(|item|item.id==id)); }
+        assert_eq!(next.iter().map(key).collect::<Vec<_>>(),diversify(ranked,1).iter().map(key).collect::<Vec<_>>());
+    }
+    #[test]
+    fn older_seeds_rotate_while_recent_watching_stays_relevant() {
+        let profile: Vec<_> = (1..=10).map(|id|(id,"movie".into(),format!("Title {id}"),Some(1))).collect();
+        let first=recommendation_seeds(&profile,0); let next=recommendation_seeds(&profile,1);
+        assert_eq!(next.len(),6);
+        assert_eq!(next[..3],first[..3]);
+        assert_ne!(next[3..],first[3..]);
+        assert_eq!(next.iter().map(|seed|seed.0).collect::<HashSet<_>>().len(),6);
     }
     #[cfg(windows)]
     #[test]

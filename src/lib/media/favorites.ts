@@ -38,7 +38,7 @@ export function toggleFavorite(media: MediaItem): void {
 }
 export function cardMedia(item: LibraryCard): MediaItem {
 	const match = typeof item.id === 'string' ? /^tmdb-(movie|series)-(\d+)$/.exec(item.id) : null;
-	return { id: String(item.id), tmdbId: match ? Number(match[2]) : item.transfer?.metadata?.id,
+	return { id: String(item.id), playbackUuid:item.playbackUuid, tmdbId: match ? Number(match[2]) : item.transfer?.metadata?.id,
 		installed: typeof item.id === 'number', title: item.title, kind: item.kind === 'series' ? 'series' : 'movie',
 		year: item.year ?? 0, genres: [], rating: item.voteAverage?.toFixed(1) ?? '', runtime: '',
 		poster: item.posterUrl ?? '', backdrop: item.backdropUrl ?? '', synopsis: item.overview ?? '', match: '' };

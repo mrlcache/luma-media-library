@@ -24,6 +24,8 @@
 	const player = usePlayer();
 	let selectedSeason = $state(1);
 	let otherVersionsOpen = $state(false);
+	let extrasOpen = $state(false);
+	let extras = $derived(data.localDetail?.extras ?? []);
 	let episodeDownload = $state<SeriesEpisode | null>(null);
 	let trailer = $state<TmdbTrailer | null>(null);
 	let trailerOpen = $state(false);
@@ -57,17 +59,22 @@
 		if (data.transfer || data.item.installed === false) return;
 		if (mediaId === undefined || !data.localDetail) { player.open(data.item); return; }
 		const index = localEpisodes.findIndex((file) => file.mediaId === mediaId);
-		if (index < 0) { player.open({ ...data.item, id: String(mediaId) }); return; }
+		if (index < 0) return;
 		const queue = localEpisodes.slice(index).map((file, offset) => {
 			const queueIndex = index + offset;
 			return {
 				...data.item,
 				id: String(file.mediaId),
+				playbackUuid: file.playbackUuid,
 				episodeLabel: `${localEpisodeLabel(file, queueIndex)} · ${localEpisodeTitle(file, queueIndex)}`
 			};
 		});
 		for (let queueIndex = 0; queueIndex < queue.length - 1; queueIndex += 1) queue[queueIndex].nextEpisode = queue[queueIndex + 1];
 		if (queue[0]) player.open(queue[0]);
+	}
+
+	function playExtra(file: (typeof extras)[number]) {
+		player.open({ ...data.item, id:String(file.mediaId), playbackUuid:file.playbackUuid, title:file.fileName.replace(/[._]/g,' '), kind:'movie', tmdbId:undefined, episodeLabel:undefined, nextEpisode:undefined, progress:undefined, installed:true });
 	}
 
 	onMount(() => {
@@ -161,7 +168,7 @@
 
 	<section class="detail-hero">
 		{#if mobilePreview}<a class="detail-back" href="/library" aria-label="Go back" onclick={(event) => { if (window.history.length > 1) { event.preventDefault(); window.history.back(); } }}><Icon name="arrow-left" size={20} /></a>{/if}
-		<div class="detail-hero__backdrop" aria-hidden="true">{#if data.item.backdrop || data.item.poster}<img use:recoverRemoteArtwork src={data.item.backdrop || data.item.poster} alt="" />{/if}</div>
+		<div class="detail-hero__backdrop" aria-hidden="true">{#if data.item.backdrop || data.item.poster}<img use:recoverRemoteArtwork src={data.item.backdrop || data.item.poster} alt="" loading="eager" decoding="async" fetchpriority="high" />{/if}</div>
 		<div class="detail-hero__veil"></div>
 		<div class="detail-hero__content">
 			{#if !mobilePreview}<div class="detail-poster">{#if data.item.poster}<img use:recoverRemoteArtwork src={data.item.poster} alt={`Poster for ${data.item.title}`} width="520" height="780" />{/if}</div>{/if}
@@ -169,7 +176,7 @@
 				<h1 class="detail-title" aria-label={data.item.title}>
 					{#if titleLogo}
 						{#if !titleLogoReady}<span>{data.item.title}</span>{/if}
-						<img class="detail-title__logo" class:detail-title__logo--ready={titleLogoReady} src={titleLogo} alt="" onload={() => { titleLogoReady = true; }} onerror={() => { titleLogo = null; titleLogoResolved = true; }} />
+						<img class="detail-title__logo" class:detail-title__logo--ready={titleLogoReady} src={titleLogo} alt="" loading="eager" decoding="async" fetchpriority="high" onload={() => { titleLogoReady = true; }} onerror={() => { titleLogo = null; titleLogoResolved = true; }} />
 					{:else if titleLogoResolved}
 						{data.item.title}
 					{:else}
@@ -245,6 +252,12 @@
 		</section>
 	{/if}
 
+	{#if extras.length}
+		<section class="extras-section" aria-label="Extras">
+			<button class="extras-toggle" type="button" aria-expanded={extrasOpen} onclick={() => extrasOpen = !extrasOpen}>Extras<Icon name={extrasOpen ? 'chevron-down' : 'chevron-right'} size={15}/></button>
+			{#if extrasOpen}<div class="extras-list">{#each extras as file (file.mediaId)}<button type="button" class="extras-file" onclick={() => playExtra(file)}><Icon name="film" size={18}/><span>{file.fileName.replace(/[._]/g,' ')}</span><Icon name="play" size={16}/></button>{/each}</div>{/if}
+		</section>
+	{/if}
 	{#if related.length}<section class="related-section" aria-labelledby="related-heading">
 		<div class="section-heading"><h2 id="related-heading">More like this</h2></div>
 		<div class="related-grid">{#each related as item (item.id)}<PosterCard media={item} variant="catalog" />{/each}</div>
@@ -268,6 +281,11 @@
 {/if}
 
 <style>
+	.extras-section { max-width:var(--content-width); margin:28px auto 0; }
+	.extras-toggle { display:flex; align-items:center; gap:8px; padding:0; border:0; color:var(--text-muted); background:transparent; font:inherit; font-size:.85rem; cursor:pointer; }
+	.extras-list { display:grid; gap:8px; margin-top:14px; }
+	.extras-file { display:flex; align-items:center; gap:12px; min-height:48px; padding:12px 14px; border:1px solid var(--line-subtle); border-radius:12px; color:var(--text-soft); background:var(--surface-1); font:inherit; font-size:.82rem; text-align:left; cursor:pointer; }
+	.extras-file span { flex:1; min-width:0; overflow-wrap:anywhere; }
 	.detail-back { position:absolute; z-index:4; top:16px; left:18px; display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(255,255,255,.16); border-radius:50%; color:var(--text-strong); background:rgba(8,12,17,.65); backdrop-filter:blur(8px); text-decoration:none; }
 	.episode-status { display: inline-flex; align-items: center; gap: 5px; margin: 8px 12px 0 0; color: var(--text-muted); font-size: .65rem; }
 	.episode-thumb--empty { display: grid; place-items: center; color: var(--text-dim); }

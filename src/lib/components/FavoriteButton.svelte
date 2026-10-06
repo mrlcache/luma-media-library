@@ -21,5 +21,6 @@
 	.favorite-button:hover, .favorite-button--selected { color:var(--accent-soft); border-color:var(--line-strong); }
 	.favorite-button--compact { width:28px; height:28px; border-color:rgba(255,255,255,.14); border-radius:50%; background:rgba(8,12,17,.7); color:rgba(255,255,255,.85); backdrop-filter:blur(8px); }
 	.favorite-button--compact.favorite-button--selected { color:var(--accent-soft); }
+	@media (hover:none) { .favorite-button--compact { width:25px; height:25px; } .favorite-button--compact :global(svg) { width:14px; height:14px; } }
 	.favorite-error { position:absolute; z-index:5; padding:6px; border-radius:5px; background:#151d24; color:var(--text-soft); font-size:.68rem; }
 </style>

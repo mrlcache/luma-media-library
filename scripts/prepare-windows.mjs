@@ -3,6 +3,7 @@ import { readdir, stat, mkdir, copyFile, cp } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyRuntimeFile } from './copy-runtime.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = join(repoRoot, 'native', 'libtorrent-bridge');
@@ -12,8 +13,8 @@ const bridgeDll = join(bridgeBuild, 'Release', 'media_libtorrent_bridge.dll');
 // Bundle the runtime and resolver so release search also works after installation.
 const releaseRuntime = join(repoRoot, 'src-tauri', 'target', 'release-service');
 await mkdir(releaseRuntime, {recursive:true});
-await copyFile(process.execPath, join(releaseRuntime,'node.exe'));
-for(const file of ['release-service.mjs','torrent-search-preview.mjs','prowlarr-preview.mjs']) {
+await copyRuntimeFile(process.execPath, join(releaseRuntime,'node.exe'));
+for(const file of ['release-service.mjs','torrent-search-preview.mjs','prowlarr-preview.mjs','release-cache.mjs']) {
     await copyFile(join(repoRoot,'scripts',file),join(releaseRuntime,file));
 }
 
@@ -24,7 +25,7 @@ const mediaServerRoot = join(repoRoot, 'media-server');
 const bundledMediaServer = join(releaseRuntime, 'media-server');
 await mkdir(bundledMediaServer, {recursive:true});
 await mkdir(join(releaseRuntime, 'scripts'), {recursive:true});
-for (const file of ['torrent-search-preview.mjs', 'prowlarr-preview.mjs']) {
+for (const file of ['torrent-search-preview.mjs', 'prowlarr-preview.mjs', 'release-cache.mjs']) {
     await copyFile(join(repoRoot, 'scripts', file), join(releaseRuntime, 'scripts', file));
 }
 await cp(join(mediaServerRoot, 'src'), join(bundledMediaServer, 'src'), {recursive:true, force:true});
