@@ -1179,7 +1179,7 @@
 					<button class="mobile-player-skip" type="button" aria-label="Forward ten seconds" onclick={() => seekBy(10)}><Icon name="forward-ten" size={30} /><span>10</span></button>
 				</div>
 			{/if}
-			{#if !mobilePlayer || (!playbackError && !isLoading)}<div class="player-control-deck" style="corner-shape: squircle">
+			{#if !mobilePlayer || (!playbackError && !isLoading)}<div class={mobilePlayer ? 'mobile-player-control-deck' : 'player-control-deck'} style="corner-shape: squircle">
 				<div class="player-timeline">
 					<div class="player-timeline__meta"><span>{elapsedLabel}</span><span>{remainingLabel}</span></div>
 					<input
@@ -1335,7 +1335,7 @@
 	.player-video--hidden { visibility: hidden; }
 	.player-video::-webkit-media-controls,
 	.player-video::-webkit-media-controls-start-playback-button { display:none !important; -webkit-appearance:none; }
-	.player-video::cue { color: #fff; font-family: var(--caption-font, Manrope, sans-serif); font-size: var(--caption-size, 100%); background: rgba(0,0,0,0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
+	.player-video::cue { color: #fff; font-family: var(--caption-font, Manrope, sans-serif); font-size: var(--caption-size, 100%); background: transparent; text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
 	.player-message { position: absolute; top: 50%; left: 50%; z-index: 2; display: grid; justify-items: center; gap: 12px; width: min(440px, calc(100% - 36px)); color: rgba(244,247,249,0.72); font-size: 0.78rem; text-align: center; transform: translate(-50%,-50%); }
 	.desktop-volume-feedback { position:absolute; bottom:26px; left:26px; z-index:7; display:flex; align-items:center; gap:12px; padding:14px 18px; border:1px solid rgba(255,255,255,.12); border-radius:16px; color:#f4f7f9; background:rgba(14,18,22,.78); box-shadow:0 14px 42px rgba(0,0,0,.28); pointer-events:none; animation:volume-feedback-in 120ms ease-out; }
 	.desktop-volume-feedback strong { min-width:3ch; font-size:1rem; font-variant-numeric:tabular-nums; text-align:right; }
@@ -1500,8 +1500,10 @@
 	.player-overlay--mobile .player-now-playing strong { display: block; overflow: hidden; font-size: .9rem; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 	.player-overlay--mobile .player-now-playing > span { display: block; margin-bottom: 3px; font-size: .65rem; color: rgba(229,238,244,.55); }
 	.player-overlay--mobile .player-glass-button { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; background: rgba(27,37,47,.46); }
-	.player-overlay--mobile .player-control-deck { text-shadow: 0 1px 4px #000, 0 0 12px #000; }
-	.player-overlay--mobile .player-control-deck { left: 0; right: 0; bottom: 0; padding: 64px 22px max(22px, env(safe-area-inset-bottom)); border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+	/* Keep the handset deck out of the desktop glass/compositing rules entirely. */
+	.mobile-player-control-deck { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; padding: 64px 22px max(22px, env(safe-area-inset-bottom)); border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; pointer-events: auto; text-shadow: 0 1px 4px #000, 0 0 12px #000; }
+	/* Android WebView must not create backdrop-filter surfaces over live video. */
+	.player-overlay--mobile :global(*) { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 	.player-overlay--mobile .player-timeline { gap: 0; }
 	.player-overlay--mobile .player-timeline__meta { order: 2; font-size: .69rem; color: rgba(237,242,247,.68); }
 	.player-overlay--mobile .player-range { height: 36px; touch-action: none; }
@@ -1544,7 +1546,7 @@
 	.player-overlay--preview .player-stage__image { inset: 0; background-size: contain; background-repeat: no-repeat; filter: brightness(.8); transform: none; }
 	@media (orientation: landscape) and (max-height: 520px) {
 		.player-overlay--mobile .player-topbar { padding: max(12px,env(safe-area-inset-top)) 20px 50px; }
-		.player-overlay--mobile .player-control-deck { padding: 30px 24px max(12px,env(safe-area-inset-bottom)); }
+		.mobile-player-control-deck { padding: 30px 24px max(12px,env(safe-area-inset-bottom)); }
 		.mobile-player-tools { display: flex; justify-content: flex-end; margin-top: 8px; gap: 14px; }
 		.mobile-player-tools button { flex-direction: row; min-height: 40px; padding: 0 8px; }
 		.mobile-player-play { width: 60px; height: 60px; }
@@ -1553,7 +1555,7 @@
 	@media (prefers-reduced-transparency: reduce) {
 		.player-control-deck,
 		.player-glass-button { background: #161a1f; -webkit-backdrop-filter: none; backdrop-filter: none; }
-		.player-overlay--mobile .player-control-deck { background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+		.mobile-player-control-deck { background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 	}
 
 	@media (prefers-reduced-motion: reduce) {
