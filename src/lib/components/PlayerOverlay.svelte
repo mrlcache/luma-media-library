@@ -1501,9 +1501,9 @@
 	.player-overlay--mobile .player-now-playing > span { display: block; margin-bottom: 3px; font-size: .65rem; color: rgba(229,238,244,.55); }
 	.player-overlay--mobile .player-glass-button { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; background: rgba(27,37,47,.46); }
 	/* Keep the handset deck out of the desktop glass/compositing rules entirely. */
-	.mobile-player-control-deck { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; padding: 64px 22px max(22px, env(safe-area-inset-bottom)); border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; pointer-events: auto; text-shadow: 0 1px 4px #000, 0 0 12px #000; }
+	.mobile-player-control-deck { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; padding: 64px 22px max(22px, env(safe-area-inset-bottom)); border: 0; border-radius: 0; background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; pointer-events: auto; text-shadow: 0 1px 4px #000, 0 0 12px #000; }
 	/* Android WebView must not create backdrop-filter surfaces over live video. */
-	.player-overlay--mobile :global(*) { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+	.player-overlay--mobile :global(*) { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
 	.player-overlay--mobile .player-timeline { gap: 0; }
 	.player-overlay--mobile .player-timeline__meta { order: 2; font-size: .69rem; color: rgba(237,242,247,.68); }
 	.player-overlay--mobile .player-range { height: 36px; touch-action: none; }
