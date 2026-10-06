@@ -34,7 +34,20 @@ try {
 	await opaque.settled();
 	const afterRestart = createReleaseSearch({ cachePath, now: () => time, requestHandler: async () => { throw new Error('indexer offline'); } });
 	assert.equal((await afterRestart(new URLSearchParams({ action:'resolve', key:'temporary-indexer-key' }))).magnet, searched.results[0].magnet, 'opaque downloads are resolved and retained before the indexer goes offline');
-	await Promise.all([first.settled(), reopened.settled(), updated.settled(), opaque.settled(), afterRestart.settled()]);
+	const emptyParams = new URLSearchParams({action:'source', source:'1337x', query:'Recovered indexer'});
+	let online = false;
+	const recovering = createReleaseSearch({cachePath, now:() => time, requestHandler:async () => ({results:online ? [{name:'Recovered release', infoHash:hash}] : []})});
+	assert.equal((await recovering(emptyParams)).results.length, 0);
+	online = true;
+	time += 30_001;
+	assert.equal((await recovering(emptyParams)).results.length, 1, 'empty lists expire quickly when the indexer recovers');
+	const failedEmptyParams = new URLSearchParams({action:'source', source:'1337x', query:'Unavailable indexer'});
+	const empty = createReleaseSearch({cachePath, now:() => time, requestHandler:async () => ({results:[]})});
+	await empty(failedEmptyParams);
+	time += 30_001;
+	const unavailable = createReleaseSearch({cachePath, now:() => time, requestHandler:async () => {throw new Error('proxy offline');}});
+	await assert.rejects(unavailable(failedEmptyParams), /proxy offline/, 'an empty cached list must not hide a provider error');
+	await Promise.all([first.settled(), reopened.settled(), updated.settled(), opaque.settled(), afterRestart.settled(), recovering.settled(), empty.settled(), unavailable.settled()]);
 	console.log('Torrent search persistence and offline fallback checks passed.');
 } finally {
 	await rm(directory, { recursive: true, force: true });

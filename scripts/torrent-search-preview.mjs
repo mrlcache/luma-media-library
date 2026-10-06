@@ -140,7 +140,10 @@ export function createReleaseSearch({ cachePath, now = Date.now, requestHandler 
 		normalized.sort();
 		const cacheKey = isResolve ? `resolve:${params.get('key') || ''}` : `search:${normalized.toString()}`;
 		const saved = await cache.get(cacheKey).catch(() => null);
-		if (saved && !forceRefresh) {
+		// A recovered indexer must not remain hidden behind an old empty list.
+		const emptySource = !isResolve && Array.isArray(saved?.data?.results) && saved.data.results.length === 0;
+		const retryEmpty = emptySource && now() - saved.refreshedAt >= 30_000;
+		if (saved && !forceRefresh && !retryEmpty) {
 			if (!isResolve && now() - saved.refreshedAt >= refreshAfterMs) void refreshInBackground(cacheKey, new URLSearchParams(params));
 			preserveDownloads(saved.data);
 			return saved.data;
@@ -151,7 +154,7 @@ export function createReleaseSearch({ cachePath, now = Date.now, requestHandler 
 			preserveDownloads(data);
 			return data;
 		} catch (error) {
-			if (!saved) throw error;
+			if (!saved || emptySource) throw error;
 			preserveDownloads(saved.data);
 			return saved.data;
 		}

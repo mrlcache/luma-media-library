@@ -1,9 +1,49 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { dirname, resolve, join } from 'node:path';
+import { spawn } from 'node:child_process';
 
 const configPath = process.env.LUMA_PROWLARR_CONFIG || fileURLToPath(new URL('../.artifacts/tools/prowlarr/data/config.xml', import.meta.url));
 const downloads = new Map();
+const proxyStarts = new Map();
+
+// Only start an existing local FlareSolverr configured for this indexer.
+async function ensureLocalProxy(proxies, indexer) {
+	const proxy = Array.isArray(proxies) ? proxies.find(item => item.implementation === 'FlareSolverr'
+		&& (!item.tags?.length || item.tags.some(tag => indexer.tags?.includes(tag)))) : null;
+	const host = proxy?.fields?.find(field => field.name === 'host')?.value;
+	if (typeof host !== 'string') return;
+	let endpoint;
+	try { endpoint = new URL(host); } catch { return; }
+	if (endpoint.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(endpoint.hostname)) return;
+	endpoint.hostname = '127.0.0.1';
+	const healthy = async () => {
+		try { return (await fetch(endpoint, {signal:AbortSignal.timeout(2000)})).ok; } catch { return false; }
+	};
+	if (await healthy()) return;
+	if (proxyStarts.has(endpoint.origin)) return proxyStarts.get(endpoint.origin);
+	const starting = (async () => {
+		const profile = process.env.LUMA_APP_DATA || join(process.env.APPDATA || '', 'local.media.platform');
+		const configured = await readFile(join(profile, 'flaresolverr-executable'), 'utf8').catch(() => '');
+		const executable = configured.trim() || resolve(dirname(configPath), '../../flaresolverr/flaresolverr/flaresolverr.exe');
+		if (process.platform !== 'win32' || !/flaresolverr\.exe$/i.test(executable)) return;
+		try { await access(executable); } catch { return; }
+		const child = spawn(executable, [], {cwd:dirname(executable), windowsHide:true, detached:true, stdio:'ignore',
+			env:{...process.env, HOST:'127.0.0.1', PORT:endpoint.port || '80', LOG_LEVEL:'info'}});
+		let failed = false;
+		child.on('error', () => { failed = true; });
+		child.unref();
+		for (let attempt = 0; attempt < 30; attempt++) {
+			if (failed) throw new Error('Não foi possível iniciar o FlareSolverr local.');
+			if (await healthy()) return;
+			await new Promise(done => setTimeout(done, 1000));
+		}
+		throw new Error('O FlareSolverr local ainda não está pronto. Tente novamente em alguns segundos.');
+	})().finally(() => proxyStarts.delete(endpoint.origin));
+	proxyStarts.set(endpoint.origin, starting);
+	return starting;
+}
 
 /** Resolve only an opaque release returned by this connector; credentials stay in the proxy.
  * @param {string} key @param {typeof fetch} fetcher
@@ -109,6 +149,7 @@ export async function searchProwlarr(query, kind, fetcher = fetch) {
 	if (!indexer) throw new Error('Adicione o indexador 1337x no painel do Prowlarr para conectar esta fonte.');
 	if (!indexer.enable) throw new Error('O indexador 1337x está desativado no Prowlarr. Configure e teste o acesso no painel.');
 	if (!Number.isSafeInteger(indexer.id) || indexer.id <= 0) throw new Error('Identificador do indexador 1337x inválido.');
+	if (fetcher === fetch) await ensureLocalProxy(await request('/api/v1/indexerproxy'), indexer);
 	const params = new URLSearchParams({ query, type: 'search', indexerIds: String(indexer.id), categories: String(category) });
 	let searchResults;
 	try {
