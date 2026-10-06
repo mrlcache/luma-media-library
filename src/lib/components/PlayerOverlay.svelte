@@ -3,6 +3,7 @@
 </script>
 
 <script lang="ts">
+	import { NativeSeekTimeline } from '$lib/platform/native-seek';
 	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { bitratePresets, readTranscodePreferences, saveTranscodePreferences } from '$lib/platform/transcode-preferences';
 	import { playbackPosition, resumePlaybackPosition, reachedPlaybackEnd } from '$lib/platform/playback-timeline';
@@ -123,6 +124,11 @@
 	let desktopPlayerBusy = $state(false);
 	let selectedDesktopPlayer = $state<DesktopPlayer>('mpv');
 	let activeEngine = $state<DesktopPlayer | null>(null);
+	const nativeSeekTimeline = new NativeSeekTimeline();
+	let nativePollBusy = false;
+	let nativeSeekTimer: ReturnType<typeof setTimeout> | undefined;
+	let nativeSeekTarget = 0;
+	let nativeSeekBusy = false;
 	let nativePoll: ReturnType<typeof setInterval> | undefined;
 	let nativeLoadingTimeout: number | undefined;
 	let playerDisposed = false;
@@ -187,11 +193,13 @@
 		savePreferredDesktopPlayer(selectedDesktopPlayer);
 	}
 
-	function applyNativeSnapshot(snapshot: NativePlaybackSnapshot) {
+	function applyNativeSnapshot(snapshot: NativePlaybackSnapshot, generation = nativeSeekTimeline.generation) {
+		if (playerDisposed || generation !== nativeSeekTimeline.generation) return;
 		const ended = snapshot.ended;
 		activeEngine = snapshot.engine;
 		isPlaying = snapshot.playing;
-		currentTime = snapshot.positionSeconds;
+		const confirmedPosition = nativeSeekTimeline.position(snapshot.positionSeconds, generation);
+		if (confirmedPosition !== null && scrubPercent === null) currentTime = confirmedPosition;
 		duration = snapshot.durationSeconds;
 		volume = Math.round(snapshot.volume);
 		isMuted = snapshot.muted;
@@ -207,8 +215,8 @@
 			mediaReady = true;
 			isLoading = false;
 		}
-		if (Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
-		if (ended && !endedHandled) { endedHandled = true; void handlePlaybackEnded(); }
+		if (!nativeSeekTimeline.seeking && Math.abs(currentTime - lastSavedPosition) >= 10) void persistProgress();
+		if (!nativeSeekTimeline.seeking && ended && !endedHandled) { endedHandled = true; void handlePlaybackEnded(); }
 	}
 
 	async function startSelectedEngine(position = resumePosition) {
@@ -216,6 +224,8 @@
 		const mediaId = Number(media.id);
 		if (!Number.isSafeInteger(mediaId) || mediaId <= 0) return;
 		endedHandled = false;
+		if (nativeSeekTimer) { clearTimeout(nativeSeekTimer); nativeSeekTimer = undefined; }
+		nativeSeekTimeline.reset();
 		desktopPlayerBusy = true;
 		isLoading = true;
 		playbackError = '';
@@ -246,26 +256,27 @@
 			document.documentElement.dataset.nativePlayer = 'true';
 			if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
 			nativePoll = setInterval(() => {
+				if (nativePollBusy || nativeSeekBusy) return;
+				nativePollBusy = true;
+				const generation = nativeSeekTimeline.generation;
 				void nativePlayerStatus().then(async (state) => {
-					if (playerDisposed) return;
-					applyNativeSnapshot(state);
+					if (playerDisposed || generation !== nativeSeekTimeline.generation) return;
+					applyNativeSnapshot(state, generation);
 					if (pendingNativeSubtitlePath && state.durationSeconds > 0) {
 						const path = pendingNativeSubtitlePath;
 						pendingNativeSubtitlePath = null;
 						if (!state.subtitleTracks.some((track) => track.selected)) {
 							const updated = await nativePlayerLoadSubtitle(path);
 							if (playerDisposed) return;
-							applyNativeSnapshot(updated);
+							applyNativeSnapshot(updated, generation);
 						}
 					}
 					if (pendingNativeResume > 0 && state.durationSeconds > pendingNativeResume + 10) {
 						const seekTo = pendingNativeResume;
 						pendingNativeResume = 0;
-						const updated = await nativePlayerAction('seek', seekTo);
-						if (playerDisposed) return;
-						applyNativeSnapshot(updated);
+						if (generation === nativeSeekTimeline.generation) requestNativeSeek(seekTo);
 					}
-				}).catch((error) => { if (!playerDisposed) console.warn('Native player status unavailable', error); });
+				}).catch((error) => { if (!playerDisposed) console.warn('Native player status unavailable', error); }).finally(() => { nativePollBusy = false; });
 			}, 500);
 			if (nativeLoadingTimeout) clearTimeout(nativeLoadingTimeout);
 			nativeLoadingTimeout = window.setTimeout(() => {
@@ -310,6 +321,27 @@
 		revealControls();
 	}
 
+	function requestNativeSeek(target: number) {
+        pendingNativeResume = 0;
+        currentTime = Math.min(duration || Number.MAX_SAFE_INTEGER, Math.max(0, target));
+        nativeSeekTarget = currentTime;
+        nativeSeekTimeline.request(currentTime);
+        if (nativeSeekTimer) clearTimeout(nativeSeekTimer);
+        nativeSeekTimer = setTimeout(() => { nativeSeekTimer = undefined; void flushNativeSeek(); }, 60);
+    }
+    async function flushNativeSeek() {
+        if (nativeSeekBusy || playerDisposed) return;
+        if (nativeSeekTimer) { clearTimeout(nativeSeekTimer); nativeSeekTimer = undefined; }
+        nativeSeekBusy = true;
+        const generation = nativeSeekTimeline.generation;
+        try { applyNativeSnapshot(await nativePlayerAction('seek', nativeSeekTarget), generation); }
+        catch (error) { if (generation === nativeSeekTimeline.generation) { nativeSeekTimeline.reset(); console.warn(error); } }
+        finally {
+            nativeSeekBusy = false;
+            if (!playerDisposed && generation !== nativeSeekTimeline.generation && nativeSeekTimeline.seeking) void flushNativeSeek();
+        }
+    }
+
 	function seekBy(amount: number) {
 		if (previewOnly) { currentTime = Math.min(duration, Math.max(0, currentTime + amount)); return; }
 		if (mobilePlayer && activeTranscoding) {
@@ -325,7 +357,7 @@
 			return;
 		}
 		if (activeEngine) {
-			void nativePlayerAction('seek', Math.min(duration || Number.MAX_SAFE_INTEGER, Math.max(0, currentTime + amount))).then(applyNativeSnapshot).catch(console.warn);
+			requestNativeSeek(currentTime + amount);
 			revealControls();
 			return;
 		}
@@ -335,7 +367,7 @@
 
 	function toggleMuted() {
 		isMuted = !isMuted;
-		if (activeEngine) void nativePlayerAction('mute', isMuted ? 1 : 0).then(applyNativeSnapshot).catch(console.warn);
+		if (activeEngine) void nativePlayerAction('mute', isMuted ? 1 : 0).then((snapshot) => applyNativeSnapshot(snapshot)).catch(console.warn);
 		if (video) video.muted = isMuted;
 		revealControls();
 	}
@@ -348,7 +380,7 @@
 		volume = Math.round(Math.min(100, Math.max(0, value)));
 		isMuted = volume === 0;
 		if (!previewOnly) setPlayerLevel('volume', volume);
-		if (activeEngine) void nativePlayerAction('volume', volume).then(applyNativeSnapshot).catch(console.warn);
+		if (activeEngine) void nativePlayerAction('volume', volume).then((snapshot) => applyNativeSnapshot(snapshot)).catch(console.warn);
 		if (video) { video.volume = nativeMobile ? 1 : volume / 100; video.muted = volume === 0; isMuted = video.muted; }
 		if (showControls) revealControls();
 	}
@@ -361,7 +393,7 @@
 
 	function setPlaybackRate(value: number) {
 		playbackRate = value;
-		if (activeEngine) void nativePlayerAction('rate', playbackRate).then(applyNativeSnapshot).catch(console.warn);
+		if (activeEngine) void nativePlayerAction('rate', playbackRate).then((snapshot) => applyNativeSnapshot(snapshot)).catch(console.warn);
 		if (video) video.playbackRate = playbackRate;
 		revealControls();
 	}
@@ -370,7 +402,7 @@
 		if (duration <= 0) return;
 		if (previewOnly) { currentTime = duration * Number((event.currentTarget as HTMLInputElement).value) / 100; return; }
 		if (activeEngine) {
-			void nativePlayerAction('seek', duration * Number((event.currentTarget as HTMLInputElement).value) / 100).then(applyNativeSnapshot).catch(console.warn);
+			requestNativeSeek(duration * Number((event.currentTarget as HTMLInputElement).value) / 100);
 			revealControls();
 			return;
 		}
@@ -380,12 +412,12 @@
 		revealControls();
 	}
 	function previewSeek(event: Event) {
-		if (mobilePlayer && activeTranscoding && !previewOnly) {
+		if (activeEngine || (mobilePlayer && activeTranscoding && !previewOnly)) {
 			scrubPercent = Math.max(0, Math.min(100, Number((event.currentTarget as HTMLInputElement).value)));
 		} else seekToPercent(event);
 	}
 	function commitSeek(event: Event) {
-		if (mobilePlayer && activeTranscoding && !previewOnly) seekToPercent(event);
+		if (activeEngine || (mobilePlayer && activeTranscoding && !previewOnly)) seekToPercent(event);
 		scrubPercent = null;
 	}
 
@@ -468,7 +500,7 @@
 	function selectAudio(index: number) {
 		if (activeEngine) {
 			const track = audioTracks[index];
-			if (track?.nativeId !== undefined) void nativePlayerAction('audio-track', track.nativeId).then(applyNativeSnapshot).catch((error) => { playbackError = error instanceof Error ? error.message : 'Audio track could not be selected.'; });
+			if (track?.nativeId !== undefined) void nativePlayerAction('audio-track', track.nativeId).then((snapshot) => applyNativeSnapshot(snapshot)).catch((error) => { playbackError = error instanceof Error ? error.message : 'Audio track could not be selected.'; });
 			return;
 		}
 		const list = (video as HTMLVideoElement & { audioTracks?: { length: number; [index: number]: { enabled: boolean } } }).audioTracks;
@@ -479,7 +511,7 @@
 	}
 
 	function selectNativeSubtitle(id: number) {
-		void nativePlayerAction('subtitle-track', id).then(applyNativeSnapshot).catch((error) => { subtitleError = error instanceof Error ? error.message : 'Subtitle track could not be selected.'; });
+		void nativePlayerAction('subtitle-track', id).then((snapshot) => applyNativeSnapshot(snapshot)).catch((error) => { subtitleError = error instanceof Error ? error.message : 'Subtitle track could not be selected.'; });
 	}
 
 	async function selectNativeExternalSubtitle(track: { label: string; path?: string }) {
@@ -537,14 +569,14 @@
 		subtitleOffset = Number((event.currentTarget as HTMLInputElement).value);
 		const position = subtitleOffset * 1.5;
 		updatePlaybackPreference('subtitlePosition', position);
-		if (activeEngine === 'mpv') void nativePlayerAction('subtitle-position', position).then(applyNativeSnapshot).catch(console.warn);
+		if (activeEngine === 'mpv') void nativePlayerAction('subtitle-position', position).then((snapshot) => applyNativeSnapshot(snapshot)).catch(console.warn);
 		for (const track of Array.from(video.textTracks)) setCueOffset(track);
 	}
 
 	function changeSubtitleSize(event: Event) {
 		subtitleSize = Number((event.currentTarget as HTMLInputElement).value);
 		updatePlaybackPreference('subtitleSize', subtitleSize);
-		if (activeEngine === 'mpv') void nativePlayerAction('subtitle-size', subtitleSize).then(applyNativeSnapshot).catch(console.warn);
+		if (activeEngine === 'mpv') void nativePlayerAction('subtitle-size', subtitleSize).then((snapshot) => applyNativeSnapshot(snapshot)).catch(console.warn);
 	}
 
 	async function handlePlaybackEnded() {
@@ -1050,6 +1082,8 @@
 			if (nativeLoadingTimeout) clearTimeout(nativeLoadingTimeout);
 			if (desktopVolumeFeedbackTimer) clearTimeout(desktopVolumeFeedbackTimer);
 			if (nativePoll) clearInterval(nativePoll);
+			if (nativeSeekTimer) clearTimeout(nativeSeekTimer);
+			nativeSeekTimeline.reset();
 			void persistProgress();
 			if (activeEngine && nativeOwner === playerToken) {
 				nativeOwner = null;

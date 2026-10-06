@@ -474,7 +474,7 @@ pub struct PlaybackSnapshot {
     subtitle_tracks: Vec<PlaybackTrack>,
 }
 
-struct NativeSession { engine: Engine, surface: VideoSurface, parent: usize }
+struct NativeSession { engine: Engine, surface: VideoSurface, parent: usize, media_id: i64, db_path: std::path::PathBuf }
 
 const VIDEO_CLASS: &[u16] = &['M' as u16, 'e' as u16, 'd' as u16, 'i' as u16,
     'a' as u16, 'V' as u16, 'i' as u16, 'd' as u16, 'e' as u16, 'o' as u16, 0];
@@ -567,6 +567,22 @@ fn vlc_media_path(path: &Path) -> String {
 #[derive(Default)]
 pub struct NativePlayerState(Mutex<Option<NativeSession>>);
 
+impl NativePlayerState {
+    pub fn release_desktop_session(&self) {
+        if let Ok(mut slot) = self.0.lock() {
+            if let Some(session) = slot.take() {
+                let snapshot = session.engine.snapshot();
+                if snapshot.duration_seconds > 0.0 {
+                    if let Ok(mut store) = media_core::LibraryStore::open(&session.db_path) {
+                        let _ = store.save_playback_progress(session.media_id, snapshot.position_seconds, snapshot.duration_seconds);
+                    }
+                }
+                drop(session);
+            }
+        }
+    }
+}
+
 fn engine_paths(name: &str, folders: &[&str]) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -615,7 +631,7 @@ pub fn start_native_player(window: tauri::WebviewWindow, media_id: i64, engine: 
     };
     let engine = opened?;
     let snapshot = engine.snapshot();
-    *slot = Some(NativeSession { engine, surface, parent: parent as usize });
+    *slot = Some(NativeSession { engine, surface, parent: parent as usize, media_id, db_path: library.db_path.clone() });
     store.record_playback_activity(media_id)?;
     Ok(snapshot)
 }

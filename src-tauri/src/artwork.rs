@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use reqwest::{header::CONTENT_TYPE, redirect::Policy, Client, Url};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 
 const MAX_ARTWORK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 48 * 1024 * 1024;
@@ -9,9 +9,17 @@ const MAX_CACHE_BYTES: usize = 48 * 1024 * 1024;
 pub struct ArtworkState {
     client: Client,
     cache: Mutex<HashMap<String, String>>,
+    cache_enabled: AtomicBool,
 }
 
 impl ArtworkState {
+    pub fn release_desktop_cache(&self) {
+        self.cache_enabled.store(false, Ordering::Release);
+        if let Ok(mut cache) = self.cache.lock() { cache.clear(); cache.shrink_to_fit(); }
+    }
+
+    pub fn resume_desktop_cache(&self) { self.cache_enabled.store(true, Ordering::Release); }
+
     pub fn new() -> Result<Self, String> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let client = Client::builder()
@@ -25,7 +33,7 @@ impl ArtworkState {
             }))
             .build()
             .map_err(|error| format!("Could not prepare artwork requests: {error}"))?;
-        Ok(Self { client, cache: Mutex::new(HashMap::new()) })
+        Ok(Self { client, cache: Mutex::new(HashMap::new()), cache_enabled: AtomicBool::new(true) })
     }
 }
 
@@ -73,7 +81,7 @@ pub async fn load_remote_artwork(
     let data_url = format!("data:{content_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
     let mut cache = state.cache.lock().map_err(|_| "The artwork cache is unavailable.".to_owned())?;
     let cache_bytes: usize = cache.values().map(String::len).sum();
-    if cache_bytes + data_url.len() <= MAX_CACHE_BYTES {
+    if state.cache_enabled.load(Ordering::Acquire) && cache_bytes + data_url.len() <= MAX_CACHE_BYTES {
         cache.insert(url, data_url.clone());
     }
     Ok(data_url)

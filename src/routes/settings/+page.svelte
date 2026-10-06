@@ -36,9 +36,19 @@
 	let scanning = $state(false);
 	let libraryFeedback = $state('');
 	let appVersion = $state('');
+	let lowUsageMode = $state(false);
+	let savingLowUsage = $state(false);
+	let lowUsageFeedback = $state('');
+	async function changeLowUsage(enabled: boolean) {
+		savingLowUsage = true; lowUsageFeedback = '';
+		try { const { invoke } = await import('$lib/platform/invoke'); lowUsageMode = await invoke<boolean>('set_low_usage_mode', { enabled }); }
+		catch (error) { lowUsageFeedback = typeof error === 'string' ? error : 'Could not save Low Usage Mode.'; }
+		finally { savingLowUsage = false; }
+	}
 
 	onMount(() => {
 		void refreshLibraryStatus();
+		if (!mobilePreview && isDesktopRuntime()) void import('$lib/platform/invoke').then(({ invoke }) => invoke<boolean>('get_low_usage_mode')).then((enabled) => { lowUsageMode = enabled; }).catch(() => {});
 		void readDesktopBootstrap().then((bootstrap) => { appVersion = bootstrap?.version ?? ''; }).catch(() => {});
 		const acrylicRequester = Symbol('Settings surface');
 		requestNativeAcrylic(acrylicRequester, true);
@@ -186,6 +196,19 @@
 				</label>
 			</div>
 		</section>
+
+		{#if !mobilePreview && desktopAvailable}
+        <section class="settings-section" aria-labelledby="background-heading">
+            <div class="settings-section__heading"><h2 id="background-heading">Background server</h2><p>Keep your phone connected while the desktop window is closed.</p></div>
+            <div class="settings-list">
+                <label class="setting-row">
+                    <span class="setting-copy"><strong>Low Usage Mode</strong><small>Closing the window releases the interface and keeps streaming and downloads running. Reopen or quit Luma from the system tray.</small></span>
+                    <input class="toggle" type="checkbox" checked={lowUsageMode} disabled={savingLowUsage} onchange={(event) => { const input = event.currentTarget; void changeLowUsage(input.checked).then(() => { input.checked = lowUsageMode; }); }} />
+                </label>
+                {#if lowUsageFeedback}<p class="library-feedback" role="status">{lowUsageFeedback}</p>{/if}
+            </div>
+        </section>
+        {/if}
 
 		<section class="settings-section" aria-labelledby="library-heading">
 			<div class="settings-section__heading">

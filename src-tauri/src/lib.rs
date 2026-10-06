@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 
 mod artwork;
+mod low_usage;
 mod hss_backdrop;
 mod metadata;
 #[cfg(windows)]
@@ -675,6 +676,11 @@ async fn open_mobile_preview(app: tauri::AppHandle) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if args.iter().any(|arg| arg == "--quit") { app.exit(0); }
+            else if args.iter().any(|arg| arg == "--background") { low_usage::background(app); }
+            else { low_usage::reopen(app); }
+        }))
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -720,6 +726,7 @@ pub fn run() {
                 }
             }
             app.manage(frame_state);
+            low_usage::setup(app.handle())?;
             // Opt-in development handset preview. The installed app never creates it.
             #[cfg(debug_assertions)]
             if std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -744,6 +751,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            low_usage::get_low_usage_mode,
+            low_usage::set_low_usage_mode,
             open_mobile_preview,
             mobile_bridge::get_mobile_bridge_info,
             mobile_bridge::set_mobile_bridge_enabled,
@@ -800,8 +809,20 @@ pub fn run() {
             torrent_engine::torrent_set_limits,
             torrent_engine::torrent_remove,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run desktop application");
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) && window.state::<low_usage::LowUsageState>().enabled() {
+                window.state::<native_player::NativePlayerState>().release_desktop_session();
+                window.state::<artwork::ArtworkState>().release_desktop_cache();
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("failed to build desktop application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Ready) && std::env::args().any(|arg| arg == "--background") { low_usage::background(app); }
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                if code.is_none() && app.state::<low_usage::LowUsageState>().enabled() { api.prevent_exit(); }
+            }
+        });
 }
 
 #[cfg(test)]

@@ -63,3 +63,5 @@ pub fn resize_native_player(_window: tauri::WebviewWindow, _player: tauri::State
 
 #[tauri::command]
 pub fn stop_native_player(_window: tauri::WebviewWindow, _player: tauri::State<'_, NativePlayerState>) -> Result<(), String> { Ok(()) }
+
+impl NativePlayerState { pub fn release_desktop_session(&self) {} }
