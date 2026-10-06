@@ -508,6 +508,8 @@
 			} catch (error) { subtitleError = error instanceof Error ? error.message : String(error); return; }
 		}
 		activeSubtitle = index;
+		if (mobilePlayer) await tick();
+		if (playerDisposed || request !== subtitleSelectionRequest) return;
 		for (let trackIndex = 0; trackIndex < video.textTracks.length; trackIndex += 1) {
 			video.textTracks[trackIndex].mode = trackIndex === index ? 'showing' : 'disabled';
 			setCueOffset(video.textTracks[trackIndex]);
@@ -1084,6 +1086,7 @@
 			class:player-video--hidden={!!playbackError || activeEngine !== null || (mobilePlayer && !mediaReady)}
 			bind:this={video}
 			playsinline
+			crossorigin={mobilePlayer ? 'anonymous' : undefined}
 			preload="metadata"
 			aria-label={`${media.title} video`}
 			style={`--caption-size: ${subtitleSize}%; --caption-font: '${subtitleFont}', sans-serif;`}
