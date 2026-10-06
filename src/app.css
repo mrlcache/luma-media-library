@@ -214,3 +214,12 @@ html[data-reduce-transparency='true'] .sidebar { background: #090c10; }
 html[data-reduce-transparency='true'] .workspace { background: #101419; }
 html[data-reduce-transparency='true'] .window-controls { background: #171c22; }
 html[data-reduce-transparency='true'] .mobile-nav { background: #22272d; }
+
+/* Disable the app's underlying glass layers while Android composites video. */
+html[data-mobile-player-active='true'] *,
+html[data-mobile-player-active='true'] *::before,
+html[data-mobile-player-active='true'] *::after {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+}
+html[data-mobile-player-active='true'] .mobile-nav { visibility: hidden; }

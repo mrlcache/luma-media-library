@@ -826,6 +826,7 @@ pub fn run() {
             mobile_library_status,
             mobile_resolve_media_file,
             player_device::mobile_player_levels,
+            player_device::mobile_player_presentation,
             pairing::discover_luma_computers,
             pairing::request_mobile_pair,
             pairing::check_mobile_pair,

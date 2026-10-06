@@ -45,3 +45,16 @@ pub async fn mobile_player_levels(
         Ok(serde_json::Value::Null)
     }
 }
+
+#[tauri::command]
+pub async fn mobile_player_presentation(app: tauri::AppHandle, active: bool, controls_visible: bool) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        app.state::<PlayerDevice>().0.run_mobile_plugin_async::<serde_json::Value>(
+            "setPresentation", serde_json::json!({"active": active, "controlsVisible": controls_visible})
+        ).await.map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (app, active, controls_visible);
+    Ok(())
+}

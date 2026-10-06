@@ -15,6 +15,18 @@ class PlayerDevicePlugin(private val activity: Activity) : Plugin(activity) {
   private val audio get() = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
   @Command
+  fun setPresentation(invoke: Invoke) {
+    val args = invoke.getArgs()
+    activity.runOnUiThread {
+      try {
+        val mainActivity = activity as? MainActivity ?: throw IllegalStateException("Player activity unavailable")
+        mainActivity.setPlayerPresentation(args.optBoolean("active", false), args.optBoolean("controlsVisible", false))
+        invoke.resolve()
+      } catch (error: Exception) { invoke.reject("Could not update player presentation", error) }
+    }
+  }
+
+  @Command
   fun getLevels(invoke: Invoke) {
     val maximum = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
     val brightness = activity.window.attributes.screenBrightness
